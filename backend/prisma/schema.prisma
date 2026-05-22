@@ -1,0 +1,665 @@
+// https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+enum RoleName {
+  SUPER_ADMIN
+  ADMIN
+  FINANCIAL_SUPPORT
+  AGENT
+  CASHIER
+  PLAYER
+}
+
+enum WalletType {
+  PLAYER
+  CASHIER
+}
+
+enum TransactionType {
+  DEPOSIT
+  WITHDRAW
+  BET
+  PAYOUT
+  CASHOUT
+  BONUS
+}
+
+enum MatchStatus {
+  NOT_STARTED
+  LIVE
+  FINISHED
+  SUSPENDED
+}
+
+enum TicketStatus {
+  OPEN
+  PRINTED
+  WON
+  LOST
+  VOID
+  CANCELED
+  PAID
+  CASHED_OUT
+}
+
+enum SelectionResult {
+  PENDING
+  WON
+  LOST
+  VOID
+}
+
+enum BonusType {
+  WELCOME
+  FIRST_DEPOSIT
+  DEPOSIT
+  ACCUMULATOR
+  CASHBACK
+  REFERRAL
+}
+
+enum NotificationKind {
+  ADMIN_MESSAGE
+  BET_PLACED
+  DEPOSIT
+  WITHDRAW_PENDING
+  WITHDRAW_COMPLETED
+  DEVICE_APPROVAL_PENDING
+  DEVICE_APPROVED
+  DEVICE_REJECTED
+}
+
+enum CashierPendingDeviceStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model Role {
+  id          String   @id @default(uuid()) @map("_id")
+  name        RoleName @unique
+  description String?
+  created_at  DateTime @default(now())
+
+  users User[]
+
+  @@map("roles")
+}
+
+model User {
+  id         String   @id @default(uuid()) @map("_id")
+  role_id    String
+  name       String
+  email      String   @unique
+  phone      String?  @unique
+  password   String
+  status     Boolean  @default(true)
+  created_at DateTime @default(now())
+  first_deposit_at DateTime?
+
+  role Role @relation(fields: [role_id], references: [id], onDelete: Restrict)
+
+  wallets           Wallet[]
+  cashier_profile   Cashier?
+  agent_assignments AgentCashier[] @relation("AgentAssignments")
+  tickets           Ticket[]
+  processed_cashout     CashOut[]              @relation("CashOutProcessor")
+  audit_logs            AuditLog[]
+  shop_withdraw_intents ShopWithdrawIntent[]
+  notifications              Notification[]
+  sent_notifications         Notification[] @relation("NotificationSender")
+  cashier_trusted_devices    CashierTrustedDevice[]
+  cashier_pending_devices    CashierPendingDeviceApproval[]
+  cashier_login_attempts     CashierLoginAttempt[]
+
+  @@index([role_id])
+  @@map("users")
+}
+
+model ShopWithdrawIntent {
+  id              String    @id @default(uuid()) @map("_id")
+  user_id         String
+  transaction_id  String    @unique
+  amount          Float
+  code_digest     String    @unique
+  expires_at      DateTime
+  consumed_at     DateTime?
+  created_at      DateTime  @default(now())
+
+  user User @relation(fields: [user_id], references: [id], onDelete: Restrict)
+
+  @@index([user_id])
+  @@map("shop_withdraw_intents")
+}
+
+model Cashier {
+  id              String   @id @default(uuid()) @map("_id")
+  user_id         String   @unique
+  wallet_id       String   @unique
+  branch_name     String
+  branch_location String
+  status          Boolean  @default(true)
+  created_at      DateTime @default(now())
+
+  user   User   @relation(fields: [user_id], references: [id], onDelete: Restrict)
+  wallet Wallet @relation(fields: [wallet_id], references: [id], onDelete: Restrict)
+
+  tickets           Ticket[]
+  agent_assignments AgentCashier[]
+
+  @@map("cashiers")
+}
+
+model AgentCashier {
+  id         String   @id @default(uuid()) @map("_id")
+  agent_id   String
+  cashier_id String
+  created_at DateTime @default(now())
+
+  agent   User    @relation("AgentAssignments", fields: [agent_id], references: [id], onDelete: Cascade)
+  cashier Cashier @relation(fields: [cashier_id], references: [id], onDelete: Cascade)
+
+  @@unique([agent_id, cashier_id])
+  @@index([agent_id])
+  @@index([cashier_id])
+  @@map("agent_cashiers")
+}
+
+model Wallet {
+  id          String        @id @default(uuid()) @map("_id")
+  user_id     String
+  balance     Float         @default(0)
+  wallet_type WalletType
+
+  user User @relation(fields: [user_id], references: [id], onDelete: Restrict)
+
+  transactions Transaction[]
+  cashier      Cashier?
+
+  @@index([user_id])
+  @@index([wallet_type])
+  @@map("wallets")
+}
+
+model Transaction {
+  id             String          @id @default(uuid()) @map("_id")
+  wallet_id      String
+  type           TransactionType
+  amount         Float
+  balance_before Float
+  balance_after  Float
+  // IMPORTANT: `reference` is enforced unique at the DB layer so
+  // concurrent payout/settlement/refund attempts converge on a single
+  // transaction row. Prisma surfaces duplicate inserts as P2002 which
+  // controllers catch and translate to a 409 "already_paid". Every
+  // financial write MUST populate this field.
+  reference      String?         @unique
+  created_at     DateTime        @default(now())
+
+  wallet Wallet @relation(fields: [wallet_id], references: [id], onDelete: Restrict)
+
+  @@index([wallet_id])
+  @@map("transactions")
+}
+
+model Sport {
+  id   String  @id @default(uuid()) @map("_id")
+  name String  @unique
+  slug String? @unique
+  icon String?
+
+  leagues League[]
+
+  @@map("sports")
+}
+
+model League {
+  id              String  @id @default(uuid()) @map("_id")
+  sport_id        String
+  api_league_id   Int?    @unique
+  name            String
+  country         String?
+  country_flag    String?
+  logo            String?
+  season          Int?
+  active          Boolean @default(true)
+
+  sport    Sport     @relation(fields: [sport_id], references: [id], onDelete: Restrict)
+  matches  Match[]
+  teams    Team[]
+  fixtures Fixture[]
+
+  @@index([sport_id])
+  @@map("leagues")
+}
+
+model Team {
+  id          String @id @default(uuid()) @map("_id")
+  api_team_id Int    @unique
+  name        String
+  logo        String?
+  league_id   String
+
+  league        League    @relation(fields: [league_id], references: [id], onDelete: Restrict)
+  home_fixtures Fixture[] @relation("FixtureHomeTeam")
+  away_fixtures Fixture[] @relation("FixtureAwayTeam")
+
+  @@index([league_id])
+  @@map("teams")
+}
+
+model Fixture {
+  id             String   @id @default(uuid()) @map("_id")
+  api_fixture_id Int      @unique
+  start_time     DateTime
+  status         String
+  home_score     Int?
+  away_score     Int?
+  league_id      String
+  home_team_id   String
+  away_team_id   String
+  // Settlement bookkeeping. `settled_at` is set on every settlement
+  // attempt (even when legs remain PENDING due to missing data). The
+  // V2 settlement pipeline short-circuits ONLY when
+  // `grading_completed_at` is also set — ensuring fixtures with
+  // pending legs are retried automatically by the settlement:retry
+  // job.
+  settled_at           DateTime?
+  settled_status       String?
+  grading_completed_at DateTime?
+
+  // V2 match result enrichment (see services/matchResult/v2.js).
+  // Optional because today's ingestion doesn't populate them; the
+  // settlement:retry job + admin override + enriched sync jobs will.
+  ht_home_score  Int?
+  ht_away_score  Int?
+  et_home_score  Int?
+  et_away_score  Int?
+  pen_home_score Int?
+  pen_away_score Int?
+  events_payload Json?
+  stats_payload  Json?
+  result_version Int       @default(0)
+  result_hash    String?
+  finality       String?
+  /** Set when admin overrides result; sync jobs skip status/scores until cleared. */
+  result_locked_at DateTime?
+  result_locked_by String?
+  /** Per-market manual winning selections for admin settlement override. */
+  market_result_overrides Json?
+
+  /** Non–MW/DC markets with ≥1 odd line (any bookmaker); kept in sync when odds ingest runs. */
+  extra_markets_count Int @default(0)
+
+  league    League @relation(fields: [league_id], references: [id], onDelete: Restrict)
+  home_team Team   @relation("FixtureHomeTeam", fields: [home_team_id], references: [id], onDelete: Restrict)
+  away_team Team   @relation("FixtureAwayTeam", fields: [away_team_id], references: [id], onDelete: Restrict)
+
+  markets           FixtureMarket[]
+  ticket_selections TicketSelection[]
+
+  @@index([league_id])
+  @@index([start_time])
+  // Compound index used by `syncOdds` and the `/fixtures/upcoming` route,
+  // both of which filter by `start_time` window AND `status` (e.g. NS,
+  // LIVE, HT). With only single-field indexes on either column, those
+  // queries fall back to scanning one range and then filtering – a
+  // significant contributor to MongoDB CPU on horizons of 1000+ fixtures.
+  // NOTE: Run `npx prisma db push` to materialize this index in MongoDB.
+  @@index([start_time, status])
+  @@map("fixtures")
+}
+
+model Bookmaker {
+  id               String @id @default(uuid()) @map("_id")
+  api_bookmaker_id Int    @unique
+  name             String
+
+  odd_lines FixtureOddLine[]
+
+  @@map("bookmakers")
+}
+
+model FixtureMarket {
+  id         String @id @default(uuid()) @map("_id")
+  name       String
+  fixture_id String
+
+  fixture   Fixture          @relation(fields: [fixture_id], references: [id], onDelete: Cascade)
+  odd_lines FixtureOddLine[]
+
+  @@unique([fixture_id, name])
+  @@index([fixture_id])
+  @@map("fixture_markets")
+}
+
+model FixtureOddLine {
+  id           String @id @default(uuid()) @map("_id")
+  value        String
+  odd          Float
+  market_id    String
+  bookmaker_id String
+
+  market    FixtureMarket @relation(fields: [market_id], references: [id], onDelete: Cascade)
+  bookmaker Bookmaker     @relation(fields: [bookmaker_id], references: [id], onDelete: Restrict)
+
+  @@unique([market_id, bookmaker_id, value])
+  @@index([market_id])
+  @@index([bookmaker_id])
+  @@map("fixture_odd_lines")
+}
+
+model Match {
+  id         String      @id @default(uuid()) @map("_id")
+  league_id  String
+  home_team  String
+  away_team  String
+  start_time DateTime
+  status     MatchStatus @default(NOT_STARTED)
+  result     String?
+  // Settlement bookkeeping for the admin-managed Match path. Settled
+  // selections are not regraded once `settled_at` is populated.
+  settled_at     DateTime?
+
+  // V2 optional enrichment for admin matches (e.g. half-time result
+  // markets can be offered on admin matches if HT scores are set).
+  ht_home_score  Int?
+  ht_away_score  Int?
+  events_payload Json?
+
+  league League @relation(fields: [league_id], references: [id], onDelete: Restrict)
+
+  odds              Odd[]
+  ticket_selections TicketSelection[]
+
+  @@index([league_id])
+  @@index([start_time])
+  @@map("matches")
+}
+
+model Odd {
+  id        String          @id @default(uuid()) @map("_id")
+  match_id  String
+  market    String
+  selection String
+  odds      Float
+  status    Boolean         @default(true)
+
+  match Match @relation(fields: [match_id], references: [id], onDelete: Cascade)
+
+  @@index([match_id])
+  @@map("odds")
+}
+
+model Ticket {
+  id               String       @id @default(uuid()) @map("_id")
+  coupon_number    String
+  receipt_number   String?
+  idempotency_key  String?
+  channel          String?
+  validation_meta  Json?
+  user_id          String?
+  cashier_id       String?
+  branch_name      String
+  branch_location  String
+  stake               Float
+  total_odds          Float
+  /** Extra % on combined odds for settlement/display; snapshot at placement */
+  accumulator_bonus_percent Float    @default(0)
+  potential_win       Float
+  apply_winnings_tax  Boolean      @default(false)
+  winnings_tax_rate   Float?
+  selection_snapshot  Json?
+  status              TicketStatus @default(OPEN)
+  created_at          DateTime     @default(now())
+
+  user    User?    @relation(fields: [user_id], references: [id], onDelete: SetNull)
+  cashier Cashier? @relation(fields: [cashier_id], references: [id], onDelete: Restrict)
+  cashout CashOut?
+
+  selections TicketSelection[]
+
+  @@index([cashier_id])
+  @@index([coupon_number])
+  @@index([receipt_number])
+  @@index([idempotency_key])
+  @@map("tickets")
+}
+
+model TicketSelection {
+  id            String          @id @default(uuid()) @map("_id")
+  ticket_id     String
+  // Either match_id (admin-managed Match flow) or fixture_id (feed-driven
+  // Fixture flow) is populated at creation. We support both so the
+  // existing cashier ticket controller and the new prebook ingestion
+  // share the same selection table.
+  match_id      String?
+  fixture_id    String?
+  selection     String
+  // Canonical market metadata for the market evaluation engine. These
+  // are the locked values at placement time; settlement never re-reads
+  // live odds. `selection` keeps the human-readable label (e.g.
+  // "Over 2.5", "Home", "Yes") for display and audit.
+  market_code   String?
+  market_params Json?
+  odds          Float
+  server_odds       Float?
+  server_odds_at    DateTime?
+  server_odds_hash  String?
+  market_state      String?
+  live_at_placement Boolean         @default(false)
+  result        SelectionResult @default(PENDING)
+  // V2 audit trail: reason/engineVersion/marketVersion from the last
+  // grading run. Persisted so manual re-grades and shadow-mode diffs
+  // can be reconstructed offline.
+  result_meta    Json?
+  market_version Int?
+  server_market_version Int?
+
+  ticket  Ticket   @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
+  match   Match?   @relation(fields: [match_id], references: [id], onDelete: Restrict)
+  fixture Fixture? @relation(fields: [fixture_id], references: [id], onDelete: Restrict)
+
+  @@index([ticket_id])
+  @@index([match_id])
+  @@index([fixture_id])
+  @@map("ticket_selections")
+}
+
+model PlacementValidationLog {
+  id                       String   @id @default(uuid()) @map("_id")
+  actor_user_id            String?
+  actor_role               String?
+  ticket_id                String?
+  idempotency_key          String?
+  flow_channel             String
+  is_live                  Boolean  @default(false)
+  fixture_ids              Int[]
+  submitted_odds           Json?
+  server_odds              Json?
+  submitted_market_versions Json?
+  server_market_versions   Json?
+  market_states            Json?
+  rejection_reason         String?
+  status                   String
+  validation_latency_ms    Int      @default(0)
+  payload                  Json?
+  created_at               DateTime @default(now())
+
+  @@index([actor_user_id])
+  @@index([ticket_id])
+  @@index([rejection_reason])
+  @@index([status])
+  @@index([created_at])
+  @@map("placement_validation_logs")
+}
+
+model CashOut {
+  id           String   @id @default(uuid()) @map("_id")
+  ticket_id    String   @unique
+  amount       Float
+  processed_by String
+  created_at   DateTime @default(now())
+
+  ticket    Ticket @relation(fields: [ticket_id], references: [id], onDelete: Restrict)
+  processor User   @relation("CashOutProcessor", fields: [processed_by], references: [id], onDelete: Restrict)
+
+  @@index([processed_by])
+  @@map("cashout")
+}
+
+model Bonus {
+  id          String    @id @default(uuid()) @map("_id")
+  name        String
+  type        BonusType
+  percentage  Float
+  min_deposit Float?
+  /** Type-specific rules (accumulator tiers, cashback thresholds). */
+  rules       Json?
+  status      Boolean   @default(true)
+  created_at  DateTime  @default(now())
+
+  @@unique([type])
+  @@map("bonuses")
+}
+
+model Promotion {
+  id          String  @id @default(uuid()) @map("_id")
+  title       String
+  description String?
+  banner      String?
+  active      Boolean @default(true)
+
+  @@map("promotions")
+}
+
+model AuditLog {
+  id         String   @id @default(uuid()) @map("_id")
+  user_id    String?
+  actor_role String?
+  action     String
+  module     String
+  entity_type String?
+  entity_id   String?
+  before      Json?
+  after       Json?
+  meta        Json?
+  created_at DateTime @default(now())
+
+  user User? @relation(fields: [user_id], references: [id], onDelete: SetNull)
+
+  @@index([user_id])
+  @@index([action])
+  @@index([module])
+  @@index([entity_type])
+  @@index([created_at])
+  @@map("audit_logs")
+}
+
+model Report {
+  id           String   @id @default(uuid()) @map("_id")
+  type         String
+  data         Json
+  generated_at DateTime @default(now())
+
+  @@index([type])
+  @@map("reports")
+}
+
+model Notification {
+  id         String           @id @default(uuid()) @map("_id")
+  user_id    String
+  kind       NotificationKind
+  title      String
+  body       String
+  metadata   Json?
+  sender_id  String?
+  read_at    DateTime?
+  created_at DateTime         @default(now())
+
+  user   User  @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  sender User? @relation("NotificationSender", fields: [sender_id], references: [id], onDelete: SetNull)
+
+  @@index([user_id, created_at])
+  @@index([user_id, read_at])
+  @@map("notifications")
+}
+
+model CashierTrustedDevice {
+  id                String    @id @default(uuid()) @map("_id")
+  cashier_id        String
+  fingerprint_hash  String
+  device_token_hash String
+  first_ip          String?
+  latest_ip         String?
+  user_agent        String?
+  browser           String?
+  os                String?
+  country           String?
+  city              String?
+  approved_by_admin Boolean   @default(false)
+  is_active         Boolean   @default(true)
+  first_seen_at     DateTime  @default(now())
+  last_seen_at      DateTime  @updatedAt
+  revoked_at        DateTime?
+
+  cashier User @relation(fields: [cashier_id], references: [id], onDelete: Cascade)
+
+  @@index([cashier_id])
+  @@index([cashier_id, is_active])
+  @@map("cashier_trusted_devices")
+}
+
+model CashierPendingDeviceApproval {
+  id                String                     @id @default(uuid()) @map("_id")
+  cashier_id        String
+  fingerprint_hash  String
+  device_token_hash String
+  ip_address        String
+  user_agent        String?
+  status            CashierPendingDeviceStatus @default(PENDING)
+  created_at        DateTime                   @default(now())
+  resolved_at       DateTime?
+  resolved_by_id    String?
+
+  cashier User @relation(fields: [cashier_id], references: [id], onDelete: Cascade)
+
+  @@index([cashier_id])
+  @@index([status, created_at])
+  @@map("cashier_pending_device_approvals")
+}
+
+model CashierLoginAttempt {
+  id               String   @id @default(uuid()) @map("_id")
+  cashier_id       String?
+  ip_address       String
+  fingerprint_hash String?
+  user_agent       String?
+  success          Boolean
+  reason           String?
+  created_at       DateTime @default(now())
+
+  cashier User? @relation(fields: [cashier_id], references: [id], onDelete: SetNull)
+
+  @@index([cashier_id])
+  @@index([created_at])
+  @@map("cashier_login_attempts")
+}
+
+// Key-value platform settings (e.g. ticket cancel window) — updated by admin via API
+model Setting {
+  id         String   @id @default(uuid()) @map("_id")
+  key        String   @unique
+  value      String
+  updated_at DateTime @updatedAt
+
+  @@map("settings")
+}

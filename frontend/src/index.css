@@ -1,0 +1,122 @@
+@import url("https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700;800&display=swap");
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    font-family: "Barlow", sans-serif;
+    font-synthesis: none;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    --sb-bg-0: #06312a;
+    --sb-bg-1: #06312a;
+    --sb-bg-2: #084235;
+    --sb-bg-page: #06312a;
+    --sb-bg-card: #0a4538;
+    --sb-bg-card-elevated: #0c5042;
+    --sb-surface: #0a4538;
+    --sb-surface-soft: #0c5042;
+    --sb-border: rgba(255, 255, 255, 0.08);
+    --sb-border-strong: rgba(255, 255, 255, 0.14);
+    --sb-text: #ffffff;
+    --sb-text-muted: rgba(255, 255, 255, 0.55);
+    --sb-accent: #019052;
+    --sb-accent-soft: #7fd4a8;
+    --sb-positive: #019052;
+    --sb-accent-fill: #019052;
+    --sb-accent-fill-hover: #017a45;
+    --sb-accent-border: #019052;
+    --sb-accent-surface: #042820;
+    --sb-accent-surface-deep: #084235;
+    --sb-accent-surface-alt: #053528;
+    --sb-accent-text-on-dark: #ffffff;
+    --sb-accent-text-muted: rgba(255, 255, 255, 0.72);
+    --sb-accent-text-soft: #7fd4a8;
+    --sb-odds-label: rgba(255, 255, 255, 0.55);
+    --sb-odds-value: #019052;
+  }
+
+  html,
+  body,
+  #root {
+    @apply m-0 min-h-full max-w-full;
+  }
+
+  body {
+    @apply overflow-x-clip;
+    background:
+      radial-gradient(
+        1200px 680px at 55% -120px,
+        rgba(1, 144, 82, 0.1),
+        transparent 66%
+      ),
+      linear-gradient(180deg, var(--sb-bg-page) 0%, var(--sb-bg-0) 58%);
+    color: var(--sb-text);
+  }
+
+  body {
+    @apply min-w-[320px];
+  }
+}
+
+@layer components {
+  .sb-card {
+    background: linear-gradient(
+      180deg,
+      var(--sb-bg-card-elevated) 0%,
+      var(--sb-bg-card) 100%
+    );
+    box-shadow: 0 12px 32px -12px rgba(0, 0, 0, 0.42);
+  }
+
+  .sportsbook-surface {
+    background: linear-gradient(
+      180deg,
+      var(--sb-bg-card-elevated) 0%,
+      var(--sb-bg-card) 100%
+    );
+    border: 1px solid var(--sb-border);
+    box-shadow: 0 18px 32px rgba(0, 0, 0, 0.48);
+  }
+}
+
+@layer utilities {
+  @keyframes deposit-panel-in {
+    from {
+      opacity: 0;
+      transform: translateY(14px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+  .animate-deposit-panel {
+    animation: deposit-panel-in 0.48s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  @keyframes bet-slip-row-enter {
+    0% {
+      opacity: 0;
+      transform: translateX(-22px);
+    }
+    58% {
+      opacity: 1;
+      transform: translateX(8px);
+    }
+    76% {
+      transform: translateX(-4px);
+    }
+    90% {
+      transform: translateX(2px);
+    }
+    100% {
+      opacity: 1;
+      transform: translateX(0);
+    }
+  }
+
+  .animate-bet-slip-row-enter {
+    animation: bet-slip-row-enter 0.56s cubic-bezier(0.33, 1, 0.68, 1) both;
+  }
+}

@@ -1,0 +1,58 @@
+{
+  "name": "backend",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "predev": "prisma generate",
+    "dev": "node --watch index.js",
+    "dev:nodemon": "nodemon index.js",
+    "start": "node index.js",
+    "worker": "node worker.js",
+    "preworker:dev": "prisma generate",
+    "worker:dev": "node --watch worker.js",
+    "test": "node --test tests/marketEvaluator.test.js tests/marketEvaluatorV2.test.js tests/placementValidation.test.js tests/matchResult/v2.test.js tests/markets/matchWinner.test.js tests/markets/doubleChance.test.js tests/markets/drawNoBet.test.js tests/markets/overUnder.test.js tests/markets/btts.test.js tests/markets/oddEven.test.js tests/markets/correctScore.test.js tests/markets/winningMargin.test.js tests/markets/halfTimeResult.test.js tests/markets/htOverUnder.test.js tests/markets/htFt.test.js tests/markets/teamTotal.test.js tests/markets/handicapAsian.test.js tests/markets/handicapEuropean.test.js tests/markets/goalscorerAnytime.test.js tests/markets/firstGoalscorer.test.js tests/markets/lastGoalscorer.test.js tests/markets/cardsOverUnder.test.js tests/markets/cornersOverUnder.test.js tests/markets/playerCards.test.js tests/markets/playerShots.test.js tests/ticketSettlementService.test.js tests/cashoutService.test.js tests/winningsTax.test.js tests/oddsParser.test.js tests/leagueTiersSort.test.js tests/bettingLimits.test.js tests/onlineDeposit.test.js tests/depositSmsExtract.test.js tests/onlineDepositReceivers.test.js",
+    "test:evaluator": "node --test tests/marketEvaluator.test.js tests/marketEvaluatorV2.test.js",
+    "test:markets": "node --test tests/markets/matchWinner.test.js tests/markets/doubleChance.test.js tests/markets/drawNoBet.test.js tests/markets/overUnder.test.js tests/markets/btts.test.js tests/markets/oddEven.test.js tests/markets/correctScore.test.js tests/markets/winningMargin.test.js tests/markets/halfTimeResult.test.js tests/markets/htOverUnder.test.js tests/markets/htFt.test.js tests/markets/teamTotal.test.js tests/markets/handicapAsian.test.js tests/markets/handicapEuropean.test.js tests/markets/goalscorerAnytime.test.js tests/markets/firstGoalscorer.test.js tests/markets/lastGoalscorer.test.js tests/markets/cardsOverUnder.test.js tests/markets/cornersOverUnder.test.js tests/markets/playerCards.test.js tests/markets/playerShots.test.js",
+    "postinstall": "prisma generate",
+    "predb:seed": "prisma generate",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:push": "prisma db push",
+    "db:seed": "node prisma/seed.js",
+    "db:backfill-server-odds": "node scripts/backfillTicketSelectionServerOdds.mjs",
+    "db:backfill-market-versions": "node scripts/backfillTicketSelectionMarketVersions.mjs",
+    "db:reset-ingestion": "node scripts/resetIngestionData.mjs",
+    "db:reset-ingestion-and-sync": "node scripts/resetIngestionData.mjs --sync",
+    "settlement:shadow-report": "node scripts/shadowSettlementReport.js",
+    "settlement:backfill-references": "node scripts/backfillReferences.js --apply"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@prisma/client": "^6.16.0",
+    "axios": "^1.13.6",
+    "bcrypt": "^6.0.0",
+    "bullmq": "^5.76.2",
+    "cloudinary": "^2.5.1",
+    "cors": "^2.8.6",
+    "decimal.js": "^10.6.0",
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "ioredis": "^5.8.2",
+    "jsonwebtoken": "^9.0.3",
+    "mongoose": "^9.5.0",
+    "multer": "^2.1.1",
+    "node-cron": "^4.2.1",
+    "prisma": "^6.16.0",
+    "socket.io": "^4.8.3"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
+  },
+  "prisma": {
+    "seed": "node prisma/seed.js"
+  }
+}

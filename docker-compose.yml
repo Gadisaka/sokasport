@@ -1,0 +1,96 @@
+# Pin project name + container names to kizzabet. If you rename this repo folder,
+# run `docker compose down` once so backend/worker bind mounts pick up ./backend again.
+name: kizzabet
+
+services:
+  mongo:
+    image: mongo:7
+    container_name: kizzabet-mongo
+    command: ["--replSet", "rs0", "--bind_ip_all"]
+    ports:
+      - "27018:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: |
+        mongosh --eval "try { rs.status().ok } catch(e) { rs.initiate({ _id: 'rs0', members: [{ _id: 0, host: 'localhost:27017' }] }).ok }" --quiet
+      interval: 5s
+      timeout: 30s
+      retries: 30
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: kizzabet-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: kizzabet-backend
+    ports:
+      - "3001:3001"
+    # Loads API keys, JWT secret, schedule overrides, etc. The values listed
+    # under `environment` below override the file-loaded ones (used to point
+    # the container at the in-network mongo/redis hostnames instead of
+    # whatever the host uses).
+    env_file:
+      - ./backend/.env
+    environment:
+      - NODE_ENV=development
+      - PORT=3001
+      - DATABASE_URL=mongodb://mongo:27017/kizzabet?replicaSet=rs0&directConnection=true
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+    command: npm run dev
+
+  # Background worker process. Runs the BullMQ scheduler and processors so
+  # the API container is never blocked by long-running upstream calls. One
+  # worker is enough for the current footprint; scale by changing `replicas`
+  # if the queue depth grows.
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: kizzabet-worker
+    env_file:
+      - ./backend/.env
+    environment:
+      - NODE_ENV=development
+      - DATABASE_URL=mongodb://mongo:27017/kizzabet?replicaSet=rs0&directConnection=true
+      - REDIS_URL=redis://redis:6379
+      # The worker only makes sense when the cron/schedules are enabled. We
+      # force-on here so the API container can still ship with the cron flag
+      # off if needed without disabling the worker too.
+      - ENABLE_API_FOOTBALL_CRON=true
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_started
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+    command: npm run worker:dev
+
+volumes:
+  mongo_data:
+  redis_data:

@@ -1,0 +1,32 @@
+{
+  "name": "sokasport-printer-service",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Local ESC/POS print bridge for cashier thermal printers (POS80 COM port)",
+  "main": "index.js",
+  "bin": "dist/server.cjs",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js",
+    "build:exe": "node scripts/build-exe.mjs"
+  },
+  "pkg": {
+    "assets": [
+      "node_modules/@serialport/bindings-cpp/prebuilds/**/*",
+      "node_modules/serialport/**/*"
+    ],
+    "outputPath": "dist"
+  },
+  "dependencies": {
+    "cors": "^2.8.6",
+    "escpos": "^3.0.0-alpha.6",
+    "escpos-serialport": "^3.0.0-alpha.4",
+    "express": "^5.2.1",
+    "serialport": "^13.0.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "pkg": "^5.8.1"
+  }
+}

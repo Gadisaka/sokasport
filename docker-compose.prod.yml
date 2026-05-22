@@ -1,0 +1,87 @@
+# Production stack on a VPS (Docker): MongoDB (replica set for Prisma), Redis,
+# API + BullMQ worker. Mongo/Redis stay on the internal compose network — only the
+# API port is exposed to the host (bind nginx/caddy/firewall accordingly).
+#
+# Prerequisites on the VPS: Docker Engine + Compose plugin (`docker compose`).
+# Copy backend/.env.production.example → backend/.env and fill secrets, then run:
+#
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# First-time DB schema sync (Mongo):
+#   docker compose -f docker-compose.prod.yml exec backend npx prisma db push
+
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    command: ["--replSet", "rs0", "--bind_ip_all"]
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: |
+        mongosh --eval "try { rs.status().ok } catch(e) { rs.initiate({ _id: 'rs0', members: [{ _id: 0, host: 'mongo:27017' }] }).ok }" --quiet
+      interval: 5s
+      timeout: 30s
+      retries: 30
+      start_period: 15s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      # Must be true so `index.js` runs `runBootstrap()` (initial fixture enqueue).
+      # Worker has its own override; without this, grep "[bootstrap]" stays empty.
+      ENABLE_API_FOOTBALL_CRON: "true"
+      RUN_WORKER_INLINE: "false"
+      DATABASE_URL: mongodb://mongo:27017/kizzabet?replicaSet=rs0&directConnection=true
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "127.0.0.1:3001:3001"
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: ["node", "index.js"]
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: mongodb://mongo:27017/kizzabet?replicaSet=rs0&directConnection=true
+      REDIS_URL: redis://redis:6379
+      ENABLE_API_FOOTBALL_CRON: "true"
+      RUN_WORKER_INLINE: "false"
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: ["node", "worker.js"]
+
+volumes:
+  mongo_data:
+  redis_data:

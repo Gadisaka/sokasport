@@ -1,0 +1,150 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: light;
+  --bgApp: #f3f5f9;
+  --surface: #ffffff;
+  --surfaceMuted: #f6f8fb;
+  --border: #d8dfea;
+  --text: #1b2230;
+  --muted: #576176;
+  --accent: #3d63dd;
+  --danger: #a53636;
+  --dangerSoft: #dcb4b4;
+  --dangerSurface: #fff1f1;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bgApp: #12161f;
+  --surface: #1b2230;
+  --surfaceMuted: #232c3d;
+  --border: #35405a;
+  --text: #eef3ff;
+  --muted: #a8b4cb;
+  --accent: #4f7df2;
+  --danger: #f19494;
+  --dangerSoft: #6d3b3b;
+  --dangerSurface: #3d2424;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bgApp: #12161f;
+    --surface: #1b2230;
+    --surfaceMuted: #232c3d;
+    --border: #35405a;
+    --text: #eef3ff;
+    --muted: #a8b4cb;
+    --accent: #4f7df2;
+    --danger: #f19494;
+    --dangerSoft: #6d3b3b;
+    --dangerSurface: #3d2424;
+  }
+}
+
+body {
+  margin: 0;
+  background: var(--bgApp);
+  color: var(--text);
+  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+}
+
+/* ─── Thermal POS receipt print rules ───────────────────────────────────────
+ * The TicketTemplate is mounted off-screen inside a wrapper with
+ * `.thermal-print-area` so it never affects screen layout.
+ *
+ * When the cashier clicks "Print Ticket", PrintHandler.js toggles the
+ * `is-printing-thermal` body class right before calling window.print(). The
+ * @media print block below then:
+ *   1. hides everything else (the AdminShell, sidebars, modals, etc.),
+ *   2. moves the thermal area to the top-left and lets it size itself,
+ *   3. picks the right @page size based on width-class (80mm vs 58mm).
+ *
+ * Outside of the print path, .thermal-print-area is positioned far off-screen
+ * so html2pdf.js can still capture it for the PDF fallback without flashing
+ * it on the user's display.
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+.thermal-print-area {
+  position: fixed;
+  left: -10000px;
+  top: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: #ffffff;
+  color: #000000;
+}
+
+.thermal-print-area .thermal-receipt {
+  font-weight: 700;
+  -webkit-font-smoothing: grayscale;
+}
+
+.thermal-print-area .thermal-receipt,
+.thermal-print-area .thermal-receipt * {
+  color: #000000 !important;
+}
+
+@media print {
+  /* Default page size; PrintHandler.js injects an override <style> tag with
+   * the actual width (80mm or 58mm) right before window.print() so we don't
+   * need a body-class-scoped @page rule (which is invalid CSS — @page cannot
+   * be nested under a selector). */
+  @page {
+    size: 80mm auto;
+    margin: 0;
+  }
+
+  /* During a thermal print job, hide everything except the receipt.
+   * We use visibility:hidden (not display:none) so the thermal-print-area
+   * can break out with position:fixed even though its ancestors are hidden.
+   * visibility:hidden hides an element but it still exists in the layout tree,
+   * allowing descendants to override with visibility:visible. */
+  body.is-printing-thermal,
+  body.is-printing-thermal * {
+    visibility: hidden !important;
+  }
+
+  body.is-printing-thermal {
+    background: #ffffff !important;
+  }
+
+  body.is-printing-thermal .thermal-print-area {
+    visibility: visible !important;
+    position: fixed !important;
+    left: 0 !important;
+    top: 0 !important;
+    z-index: 99999 !important;
+    width: auto !important;
+    pointer-events: auto !important;
+    background: #ffffff !important;
+  }
+
+  body.is-printing-thermal .thermal-print-area *,
+  body.is-printing-thermal .thermal-receipt,
+  body.is-printing-thermal .thermal-receipt * {
+    visibility: visible !important;
+  }
+
+  body.is-printing-thermal .thermal-receipt {
+    page-break-inside: avoid;
+    color: #000000 !important;
+    font-weight: 700 !important;
+    -webkit-font-smoothing: grayscale !important;
+  }
+
+  body.is-printing-thermal .thermal-receipt * {
+    color: #000000 !important;
+  }
+
+  /* Generic helper used by the cashier dashboard reports too. */
+  .no-print {
+    display: none !important;
+  }
+}
