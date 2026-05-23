@@ -1,6 +1,6 @@
 {
   "comPort": "",
-  "baudRate": 9600,
+  "baudRate": 115200,
   "printerName": "",
   "apiKey": "sokasport-local-print-v1"
 }

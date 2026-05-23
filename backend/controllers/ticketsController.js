@@ -2476,6 +2476,9 @@ export async function confirmPrintTicket(req, res) {
               ? {
                   ...entry,
                   odds: Number(row.serverOdds),
+                  marketVersion: Number(
+                    row.serverMarketVersion || entry.marketVersion || 0,
+                  ),
                   serverMarketVersion: Number(row.serverMarketVersion || 0),
                   marketState: row.marketState || "OPEN",
                 }
@@ -2519,6 +2522,7 @@ export async function confirmPrintTicket(req, res) {
                 server_odds: Number(resolved.serverOdds),
                 server_odds_at: new Date(),
                 market_state: resolved.marketState || "OPEN",
+                market_version: Number(resolved.serverMarketVersion || 0),
                 server_market_version: Number(
                   resolved.serverMarketVersion || 0,
                 ),

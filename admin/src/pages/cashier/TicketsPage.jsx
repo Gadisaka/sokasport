@@ -53,6 +53,44 @@ function formatCurrency(value) {
   return `${toNumber(value).toLocaleString()} ETB`;
 }
 
+const PRINT_DRIFT_CODES = new Set(["odds_changed", "market_version_changed"]);
+
+function buildAcceptDriftSelections(changedRows, ticket) {
+  const snapshotSelections = Array.isArray(ticket?.selections)
+    ? ticket.selections
+    : [];
+  return changedRows.map((row) => {
+    const idx = Number(row.index);
+    const fromTicket = snapshotSelections[idx];
+    const acceptedOdds = Number.isFinite(Number(row.serverOdds))
+      ? Number(row.serverOdds)
+      : Number(fromTicket?.odds);
+    return {
+      index: idx,
+      acceptedOdds,
+      acceptedMarketVersion:
+        row.serverMarketVersion ??
+        row.submittedMarketVersion ??
+        fromTicket?.marketVersion ??
+        null,
+    };
+  });
+}
+
+function printDriftConfirmMessage(code) {
+  if (code === "market_version_changed") {
+    return "Market data was refreshed. Click OK to accept the latest market and continue printing.";
+  }
+  return "Ticket odds changed. Click OK to accept the latest odds and continue printing.";
+}
+
+function printDriftCancelMessage(code) {
+  if (code === "market_version_changed") {
+    return "Printing canceled. Review updated market and try again.";
+  }
+  return "Printing canceled. Review updated odds and try again.";
+}
+
 function formatTime(value) {
   if (!value) return "-";
   return new Date(value).toLocaleTimeString([], {
@@ -555,28 +593,24 @@ export default function CashierTicketsPage() {
           ticketId: ticketForWalletAndPrint.id,
         });
       } catch (error) {
-        if (error?.code === "odds_changed" && error?.details) {
+        const driftCode = String(error?.code || "");
+        if (PRINT_DRIFT_CODES.has(driftCode) && error?.details) {
           const changedRows = Array.isArray(error.details.selections)
             ? error.details.selections
             : [];
-          const shouldAccept = window.confirm(
-            "Ticket odds changed. Click OK to accept the latest odds and continue printing.",
-          );
+          const shouldAccept = window.confirm(printDriftConfirmMessage(driftCode));
           if (!shouldAccept) {
-            setSellError(
-              "Printing canceled. Review updated odds and try again.",
-            );
+            setSellError(printDriftCancelMessage(driftCode));
             setActionSuccess("");
             return;
           }
           confirmResult = await confirmPrint.mutateAsync({
             ticketId: ticketForWalletAndPrint.id,
             acceptOddsChanges: true,
-            selections: changedRows.map((row) => ({
-              index: row.index,
-              acceptedOdds: row.serverOdds,
-              acceptedMarketVersion: row.serverMarketVersion ?? null,
-            })),
+            selections: buildAcceptDriftSelections(
+              changedRows,
+              ticketForWalletAndPrint,
+            ),
           });
         } else {
           throw error;

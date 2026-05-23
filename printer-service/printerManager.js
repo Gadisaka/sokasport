@@ -3,7 +3,7 @@ import { log } from "./logger.js";
 import { getSerialPort } from "./serialportLoader.js";
 
 export const RECONNECT_INTERVAL_MS = 5000;
-export const WRITE_TIMEOUT_MS = Number(process.env.WRITE_TIMEOUT_MS) || 20_000;
+export const WRITE_TIMEOUT_MS = Number(process.env.WRITE_TIMEOUT_MS) || 60_000;
 const PORT_LIST_TTL_MS = 5000;
 
 export function classifySerialError(error) {

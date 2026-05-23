@@ -18,7 +18,7 @@ export const DEFAULT_API_KEY = "sokasport-local-print-v1";
 
 const DEFAULTS = {
   comPort: "",
-  baudRate: 9600,
+  baudRate: 115200,
   printerName: "",
   apiKey: DEFAULT_API_KEY,
 };
@@ -43,7 +43,7 @@ export function loadConfigFile() {
 export function saveConfigFile(config) {
   const next = {
     comPort: String(config.comPort ?? "").trim(),
-    baudRate: Number(config.baudRate) || 9600,
+    baudRate: Number(config.baudRate) || 115200,
     printerName: String(config.printerName ?? "").trim(),
     apiKey: String(config.apiKey ?? DEFAULT_API_KEY).trim() || DEFAULT_API_KEY,
   };
@@ -64,7 +64,7 @@ export function getEffectiveConfig() {
   const envBaud = Number(process.env.BAUD_RATE);
   return {
     comPort: envCom || file.comPort || "",
-    baudRate: Number.isFinite(envBaud) && envBaud > 0 ? envBaud : file.baudRate || 9600,
+    baudRate: Number.isFinite(envBaud) && envBaud > 0 ? envBaud : file.baudRate || 115200,
     printerName: file.printerName || "",
     apiKey: getApiKey(),
   };
