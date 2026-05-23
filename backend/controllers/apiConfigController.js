@@ -22,12 +22,20 @@ let isManualBookmakersSyncRunning = false;
 // (a rough "coverage" metric for the admin UI).
 export async function listBookmakers(_req, res) {
   try {
-    const rows = await prisma.bookmaker.findMany({
-      orderBy: { name: "asc" },
-      include: {
-        _count: { select: { odd_lines: true } },
-      },
-    });
+    const [rows, oddLineCounts] = await Promise.all([
+      prisma.bookmaker.findMany({ orderBy: { name: "asc" } }),
+      // Prisma `_count` on MongoDB uses a $lookup that blows the 100 MB
+      // pipeline limit once fixture_odd_lines grows large; group on the
+      // child collection instead.
+      prisma.fixtureOddLine.groupBy({
+        by: ["bookmaker_id"],
+        _count: { _all: true },
+      }),
+    ]);
+
+    const oddLineCountByBookmakerId = new Map(
+      oddLineCounts.map((row) => [row.bookmaker_id, row._count._all]),
+    );
 
     const preferredApiId = await getPreferredBookmakerApiId();
 
@@ -37,7 +45,7 @@ export async function listBookmakers(_req, res) {
         id: bk.id,
         apiBookmakerId: bk.api_bookmaker_id,
         name: bk.name,
-        oddLineCount: bk._count.odd_lines,
+        oddLineCount: oddLineCountByBookmakerId.get(bk.id) ?? 0,
         isPreferred: preferredApiId === bk.api_bookmaker_id,
       })),
     });
