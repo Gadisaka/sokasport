@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import AdminShell from "../../components/layout/AdminShell";
 import PanelCard from "../../components/ui/PanelCard";
 import PrimaryButton from "../../components/ui/PrimaryButton";
@@ -14,6 +14,8 @@ import {
   mapTicketDetail,
   useCancelTicketMutation,
   useConfirmPrintedTicketMutation,
+  usePreparePrintTicketMutation,
+  useValidatePrintTicketMutation,
   useCouponLookupMutation,
   useExecuteCashoutMutation,
   usePayoutTicketMutation,
@@ -395,7 +397,10 @@ export default function CashierTicketsPage() {
   const cashoutQuoteMutation = useCashoutQuoteMutation();
   const executeCashoutMutation = useExecuteCashoutMutation();
   const confirmPrint = useConfirmPrintedTicketMutation();
+  const validatePrint = useValidatePrintTicketMutation();
+  const preparePrint = usePreparePrintTicketMutation();
   const updateStake = useUpdateTicketStakeMutation();
+  const printInFlightRef = useRef(false);
 
   const sellStakeNum = Number(sellStakeInput);
   const sellAccPct = toNumber(sellTicket?.accumulatorBonusPercent);
@@ -469,6 +474,8 @@ export default function CashierTicketsPage() {
     cashoutQuoteMutation.isPending ||
     executeCashoutMutation.isPending ||
     confirmPrint.isPending ||
+    validatePrint.isPending ||
+    preparePrint.isPending ||
     updateStake.isPending;
   const printerConnected = Boolean(printerStatus?.connected);
   const printerPort = printerStatus?.port || "";
@@ -581,17 +588,15 @@ export default function CashierTicketsPage() {
   };
 
   const handlePrint = async () => {
-    if (!sellTicket) return;
+    if (!sellTicket || printInFlightRef.current) return;
+    printInFlightRef.current = true;
     setSellError("");
     const ticketForWalletAndPrint = sellTicket;
-    setActionSuccess("Confirming ticket and processing print...");
+    setActionSuccess("Validating ticket before print...");
 
-    try {
-      let confirmResult;
+    const runWithDriftRetry = async (mutateAsync, basePayload) => {
       try {
-        confirmResult = await confirmPrint.mutateAsync({
-          ticketId: ticketForWalletAndPrint.id,
-        });
+        return await mutateAsync(basePayload);
       } catch (error) {
         const driftCode = String(error?.code || "");
         if (PRINT_DRIFT_CODES.has(driftCode) && error?.details) {
@@ -600,22 +605,93 @@ export default function CashierTicketsPage() {
             : [];
           const shouldAccept = window.confirm(printDriftConfirmMessage(driftCode));
           if (!shouldAccept) {
-            setSellError(printDriftCancelMessage(driftCode));
-            setActionSuccess("");
-            return;
+            throw Object.assign(new Error(printDriftCancelMessage(driftCode)), {
+              handled: true,
+            });
           }
-          confirmResult = await confirmPrint.mutateAsync({
-            ticketId: ticketForWalletAndPrint.id,
+          return mutateAsync({
+            ...basePayload,
             acceptOddsChanges: true,
             selections: buildAcceptDriftSelections(
               changedRows,
               ticketForWalletAndPrint,
             ),
           });
+        }
+        throw error;
+      }
+    };
+
+    try {
+      await runWithDriftRetry(validatePrint.mutateAsync, {
+        ticketId: ticketForWalletAndPrint.id,
+      });
+
+      setActionSuccess("Preparing receipt...");
+      const prepareResult = await preparePrint.mutateAsync({
+        ticketId: ticketForWalletAndPrint.id,
+      });
+      const ticketToPrint = prepareResult?.ticket
+        ? mapTicketDetail(prepareResult.ticket)
+        : ticketForWalletAndPrint;
+
+      if (!printerConnected) {
+        setActionSuccess("");
+        setSellError(
+          "Printer offline. Ensure local print service is running and POS80 printer is connected.",
+        );
+        setTicketPreviewOpen(false);
+        return;
+      }
+
+      setActionSuccess("Sending ticket to printer...");
+      const escposData = await encodeTicketAsync(ticketToPrint, {
+        width: "80mm",
+        platformWinningsTax,
+      });
+      const localPrintResult = await printViaLocalService(escposData);
+      if (!localPrintResult.success) {
+        const localError = String(
+          localPrintResult.error?.message ||
+            "Failed to send ticket to local printer service.",
+        );
+        setActionSuccess("");
+        if (localPrintResult.code === "service_unreachable") {
+          setSellError(
+            "Local print service unreachable. Start PrinterBridge.exe on this PC.",
+          );
+        } else if (localPrintResult.code === "com_unavailable") {
+          setSellError(
+            "COM port unavailable. Check POS80 driver and printer connection.",
+          );
+        } else {
+          setSellError(localError);
+        }
+        setTicketPreviewOpen(false);
+        return;
+      }
+
+      setActionSuccess("Print sent. Confirming sale...");
+      let confirmResult;
+      try {
+        confirmResult = await runWithDriftRetry(confirmPrint.mutateAsync, {
+          ticketId: ticketForWalletAndPrint.id,
+        });
+      } catch (error) {
+        if (error?.code === "status_conflict") {
+          const existing = await loadTicketById.mutateAsync(
+            ticketForWalletAndPrint.id,
+          );
+          if (existing?.status === "PRINTED") {
+            confirmResult = { alreadyPrinted: true, deductedAmount: 0, ticket: existing };
+          } else {
+            throw error;
+          }
         } else {
           throw error;
         }
       }
+
       setPrintedTicket(ticketForWalletAndPrint.id);
 
       let updatedTicket;
@@ -631,58 +707,21 @@ export default function CashierTicketsPage() {
       await Promise.all([slipsQuery.refetch(), walletQuery.refetch()]);
 
       const walletMessage = confirmResult.alreadyPrinted
-        ? "Ticket already printed before; wallet was not deducted again."
+        ? "Ticket already confirmed; wallet was not deducted again."
         : `Wallet deducted by ${formatCurrency(confirmResult.deductedAmount)}.`;
 
-      if (!printerConnected) {
-        setActionSuccess("");
-        setSellError(
-          `${walletMessage} Printer offline. Ensure local print service is running and POS80 printer is connected.`,
-        );
-        setTicketPreviewOpen(false);
-        return;
-      }
-
-      const escposData = await encodeTicketAsync(updatedTicket, {
-        width: "80mm",
-        platformWinningsTax,
-      });
-      const localPrintResult = await printViaLocalService(escposData);
-      if (localPrintResult.success) {
-        setTicketPreviewOpen(false);
-        setActionSuccess(`${walletMessage} Ticket sent to printer.`);
-        return;
-      }
-
-      const localError = String(
-        localPrintResult.error?.message ||
-          "Failed to send ticket to local printer service.",
-      );
-      if (localPrintResult.code === "service_unreachable") {
-        setActionSuccess("");
-        setSellError(
-          `${walletMessage} Local print service unreachable. Start PrinterBridge.exe on this PC.`,
-        );
-        setTicketPreviewOpen(false);
-        return;
-      }
-
-      if (localPrintResult.code === "com_unavailable") {
-        setActionSuccess("");
-        setSellError(
-          `${walletMessage} COM port unavailable. Check POS80 driver and printer connection.`,
-        );
-        setTicketPreviewOpen(false);
-        return;
-      }
-
-      setActionSuccess("");
-      setSellError(`${walletMessage} ${localError}`);
       setTicketPreviewOpen(false);
+      setActionSuccess(`${walletMessage} Ticket printed successfully.`);
     } catch (error) {
-      setSellError(error?.message || "Failed to print ticket");
+      if (error?.handled) {
+        setSellError(error.message);
+      } else {
+        setSellError(error?.message || "Failed to print ticket");
+      }
       setActionSuccess("");
       setTicketPreviewOpen(false);
+    } finally {
+      printInFlightRef.current = false;
     }
   };
 

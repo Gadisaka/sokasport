@@ -34,6 +34,7 @@ import {
   MarketUnknownError,
 } from "../services/markets/errors.js";
 import { validatePlacementSelections } from "../services/odds-engine/validateSelections.js";
+import { validateOpenTicketForPrint } from "../services/ticketPrintValidation.js";
 import { getCache, setCache } from "../services/cacheService.js";
 import { withWalletLock } from "../lib/walletLock.js";
 import { logPlacementValidation } from "../lib/placementValidationLogger.js";
@@ -2315,6 +2316,129 @@ export async function updateTicketStake(req, res) {
   } catch (error) {
     console.error("updateTicketStake error:", error);
     return res.status(500).json({ message: "Failed to update ticket stake" });
+  }
+}
+
+/**
+ * POST /api/tickets/:id/validate-print
+ * Dry-run odds/market validation before physical print (no wallet debit).
+ */
+export async function validatePrintTicket(req, res) {
+  try {
+    const requestBody = req.body ?? {};
+    const acceptOddsChanges = parseAcceptOddsChanges(
+      requestBody.acceptOddsChanges,
+    );
+    const ticket = await prisma.ticket.findUnique({
+      where: { id: req.params.id },
+      include: { selections: true },
+    });
+    if (!ticket) {
+      return res.status(404).json({ message: "Ticket not found" });
+    }
+
+    const cashier = await resolveCashierByUserId(req.user.sub);
+    if (!cashier) {
+      return res.status(404).json({ message: CASHIER_PROFILE_MISSING_MESSAGE });
+    }
+    if (ticket.cashier_id && ticket.cashier_id !== cashier.id) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+    if (ticket.status !== "OPEN") {
+      return res.status(400).json({
+        message: "Only OPEN tickets can be validated for print",
+      });
+    }
+
+    const validation = await validateOpenTicketForPrint({
+      prismaClient: prisma,
+      ticket,
+      cashierId: cashier.id,
+      requestBody,
+      acceptOddsChanges,
+    });
+
+    if (!validation.ok) {
+      await logValidationFailure({
+        action: "TICKET_VALIDATE_PRINT_FAILED",
+        req,
+        code: validation.logCode,
+        meta: validation.logMeta || {},
+      });
+      return res.status(validation.statusCode).json(validation.body);
+    }
+
+    return res.json({
+      ok: true,
+      message: "Ticket is valid for print",
+      acceptOddsChanges,
+    });
+  } catch (error) {
+    console.error("validatePrintTicket error:", error);
+    return res.status(500).json({ message: "Failed to validate ticket print" });
+  }
+}
+
+/**
+ * POST /api/tickets/:id/prepare-print
+ * Reserves receipt number for an OPEN ticket before physical print (no wallet debit).
+ */
+export async function preparePrintTicket(req, res) {
+  try {
+    const ticket = await prisma.ticket.findUnique({
+      where: { id: req.params.id },
+    });
+    if (!ticket) {
+      return res.status(404).json({ message: "Ticket not found" });
+    }
+
+    const cashier = await resolveCashierByUserId(req.user.sub);
+    if (!cashier) {
+      return res.status(404).json({ message: CASHIER_PROFILE_MISSING_MESSAGE });
+    }
+    if (ticket.cashier_id && ticket.cashier_id !== cashier.id) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+    if (ticket.status !== "OPEN") {
+      return res.status(400).json({
+        message: "Only OPEN tickets can be prepared for print",
+      });
+    }
+
+    let receiptNumber = ticket.receipt_number;
+    if (!receiptNumber) {
+      receiptNumber = await reserveUniqueReceiptNumber(prisma);
+      await prisma.ticket.update({
+        where: { id: ticket.id },
+        data: {
+          receipt_number: receiptNumber,
+          cashier_id: ticket.cashier_id || cashier.id,
+          branch_name: ticket.branch_name || cashier.branch_name,
+          branch_location: ticket.branch_location || cashier.branch_location,
+        },
+      });
+    }
+
+    const preparedTicket = await prisma.ticket.findUnique({
+      where: { id: ticket.id },
+      include: ticketDetailInclude,
+    });
+    const printedSet = preparedTicket?.cashier_id
+      ? await getPrintedTicketIdSet({
+          cashierId: preparedTicket.cashier_id,
+          ticketIds: [ticket.id],
+        })
+      : new Set();
+
+    return res.json({
+      message: "Ticket prepared for print",
+      ticket: preparedTicket
+        ? mapTicket(preparedTicket, { printed: printedSet.has(ticket.id) })
+        : undefined,
+    });
+  } catch (error) {
+    console.error("preparePrintTicket error:", error);
+    return res.status(500).json({ message: "Failed to prepare ticket print" });
   }
 }
 

@@ -2,6 +2,8 @@ import express from "express";
 import {
   cancelTicket,
   confirmPrintTicket,
+  preparePrintTicket,
+  validatePrintTicket,
   createTicket,
   getTicketById,
   getTicketByReceipt,
@@ -32,6 +34,18 @@ router.patch(
   "/:id/stake",
   authorizePermission("tickets:create"),
   updateTicketStake,
+);
+router.post(
+  "/:id/prepare-print",
+  authorizePermission("tickets:create"),
+  createSportsbookRateLimiter("cashier_confirm_print"),
+  preparePrintTicket,
+);
+router.post(
+  "/:id/validate-print",
+  authorizePermission("tickets:create"),
+  createSportsbookRateLimiter("cashier_confirm_print"),
+  validatePrintTicket,
 );
 router.patch(
   "/:id/confirm-print",

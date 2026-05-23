@@ -22,6 +22,7 @@ import {
   PREFERRED_LEAGUE_IDS,
 } from "../Config/allowedLeagues.js";
 import { recomputeExtraMarketsCountForFixture } from "../services/extraMarketsCount.js";
+import { writeLiveOddsFromApiResponse } from "../services/liveOddsCache.js";
 
 const router = Router();
 const CACHE_SCAN_COUNT = 200;
@@ -93,10 +94,18 @@ async function getRawLiveOddsCoalesced() {
 
   liveOddsInflight = api("football")
     .getLiveOdds()
-    .then((raw) => {
+    .then(async (raw) => {
       // Reset transformed cache when raw changes – it will be lazily
       // rebuilt by the next call to `getTransformedLiveOddsCoalesced`.
       liveOddsSnapshot = { at: Date.now(), raw: raw ?? [], transformed: null };
+
+      // Write live odds to Redis for bet validation to use
+      if (raw?.length) {
+        writeLiveOddsFromApiResponse(raw).catch((err) => {
+          console.error("[getRawLiveOddsCoalesced] Redis write failed:", err);
+        });
+      }
+
       return liveOddsSnapshot.raw;
     })
     .finally(() => {

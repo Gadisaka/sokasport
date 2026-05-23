@@ -12,6 +12,7 @@ const MATCH_WINNER_MARKET_NAMES = [
   "Match Winner",
   "1X2",
   "Full Time Result",
+  "Fulltime Result",
   "Match Result",
 ];
 

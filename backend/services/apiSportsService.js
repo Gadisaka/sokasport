@@ -238,6 +238,12 @@ export function api(sport) {
     getLiveOdds: () =>
       request(sport, "/odds/live", {}, 0, { skipCache: true }),
     /**
+     * Fetch live odds for a single fixture by API fixture ID.
+     * Used as fallback when Redis cache is empty during bet validation.
+     */
+    getSingleFixtureLiveOdds: (fixtureId) =>
+      request(sport, "/odds/live", { fixture: fixtureId }, 0, { skipCache: true }),
+    /**
      * Fetch the full upstream bookmaker catalog (`/odds/bookmakers`).
      * The list is essentially static (rarely changes) so we cache it
      * aggressively – default 24h, override with `opts.cacheTtl`. The

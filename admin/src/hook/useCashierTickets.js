@@ -226,6 +226,33 @@ export function useUpdateTicketStakeMutation() {
   });
 }
 
+export function usePreparePrintTicketMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ ticketId }) =>
+      apiRequest(`/tickets/${ticketId}/prepare-print`, {
+        method: "POST",
+        body: JSON.stringify({}),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: TICKETS_KEY });
+    },
+  });
+}
+
+export function useValidatePrintTicketMutation() {
+  return useMutation({
+    mutationFn: ({ ticketId, acceptOddsChanges = false, selections = [] }) =>
+      apiRequest(`/tickets/${ticketId}/validate-print`, {
+        method: "POST",
+        body: JSON.stringify({
+          acceptOddsChanges,
+          selections,
+        }),
+      }),
+  });
+}
+
 export function useConfirmPrintedTicketMutation() {
   const qc = useQueryClient();
   return useMutation({

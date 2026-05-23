@@ -7,9 +7,12 @@ import { getEnabledSports } from "../services/sportsRegistry.js";
 import { getPreferredBookmakerApiId } from "../services/settingsService.js";
 import { buildOddsParseOptions } from "../Config/oddsFilters.js";
 import { recomputeExtraMarketsCountForFixture } from "../services/extraMarketsCount.js";
-import { bumpMarketVersion } from "../services/odds-engine/versioning.js";
 import { publishMarketEvent } from "../lib/socketHub.js";
 import { isFixtureResultLocked } from "../lib/fixtureResultLock.js";
+import {
+  writeLiveOddsSnapshot,
+  LIVE_ODDS_SNAPSHOT_TTL_SECONDS,
+} from "../services/liveOddsCache.js";
 
 /**
  * Live fixtures poller.
@@ -29,9 +32,6 @@ const STATUS_MAP = {
   P: "PEN",
   LIVE: "LIVE",
 };
-const LIVE_ODDS_SNAPSHOT_TTL_SECONDS = Number(
-  process.env.LIVE_ODDS_SNAPSHOT_TTL_SECONDS || 20,
-);
 const LIVE_MARKET_LOCK_MS = Math.max(
   1000,
   Number(process.env.LIVE_MARKET_LOCK_MS || 5000),
@@ -44,49 +44,6 @@ const MAJOR_LIVE_STATES = new Set(["HT", "LIVE", "PEN"]);
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function writeLiveOddsSnapshot(apiFixtureId, parsed) {
-  if (!Number.isFinite(Number(apiFixtureId))) return;
-  const redis = getRedisClient();
-  const oddsKey = `live-odds:${apiFixtureId}`;
-  const stateKey = `live-market-state:${apiFixtureId}`;
-  const versionKey = `live-market-version:${apiFixtureId}`;
-  const updatedAtKey = `live-market-updated-at:${apiFixtureId}`;
-  const oddsFields = {};
-  const stateFields = {};
-  const versionFields = {};
-  const updatedFields = {};
-  const prevVersionFields = await redis.hgetall(versionKey);
-  const nowIso = new Date().toISOString();
-  for (const bookmaker of parsed?.bookmakers || []) {
-    for (const market of bookmaker?.markets || []) {
-      const marketName = String(market?.name || "").trim();
-      if (!marketName) continue;
-      for (const value of market?.values || []) {
-        const label = String(value?.value || "").trim();
-        const odd = Number(value?.odd);
-        if (!label || !Number.isFinite(odd)) continue;
-        const field = `${marketName}|${label}`;
-        oddsFields[field] = odd;
-        stateFields[field] = "OPEN";
-        versionFields[field] = bumpMarketVersion(prevVersionFields[field], Date.now());
-        updatedFields[field] = nowIso;
-      }
-    }
-  }
-  if (!Object.keys(oddsFields).length) return;
-  await redis.del(oddsKey);
-  await redis.del(stateKey);
-  await redis.del(updatedAtKey);
-  await redis.hset(oddsKey, oddsFields);
-  await redis.hset(stateKey, stateFields);
-  await redis.hset(versionKey, versionFields);
-  await redis.hset(updatedAtKey, updatedFields);
-  await redis.expire(oddsKey, LIVE_ODDS_SNAPSHOT_TTL_SECONDS);
-  await redis.expire(stateKey, LIVE_ODDS_SNAPSHOT_TTL_SECONDS);
-  await redis.expire(versionKey, LIVE_ODDS_SNAPSHOT_TTL_SECONDS);
-  await redis.expire(updatedAtKey, LIVE_ODDS_SNAPSHOT_TTL_SECONDS);
 }
 
 async function lockFixtureMarkets(apiFixtureId, reason, lockMs) {
