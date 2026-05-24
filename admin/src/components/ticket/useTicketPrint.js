@@ -30,7 +30,9 @@ export function useTicketPrint(
   ticket,
   { width = "80mm", preferLocalService = true, platformWinningsTax = null } = {},
 ) {
+  const MAX_STATUS_FAILURES = 3;
   const ticketRef = useRef(null);
+  const statusFailuresRef = useRef(0);
   const [barcodeDataUrl, setBarcodeDataUrl] = useState("");
   const [pdfBusy, setPdfBusy] = useState(false);
   const [lastError, setLastError] = useState("");
@@ -47,6 +49,7 @@ export function useTicketPrint(
 
   const applyStatus = useCallback((status) => {
     if (status.success) {
+      statusFailuresRef.current = 0;
       setPrinterStatus({
         connected: status.connected,
         port: status.port || "",
@@ -59,6 +62,10 @@ export function useTicketPrint(
       });
       return;
     }
+    statusFailuresRef.current += 1;
+    if (statusFailuresRef.current < MAX_STATUS_FAILURES) {
+      return;
+    }
     setPrinterStatus((prev) => ({
       connected: false,
       port: "",
@@ -69,7 +76,7 @@ export function useTicketPrint(
       reconnectAttempts: 0,
       lastSuccessfulPrintAt: prev.lastSuccessfulPrintAt,
     }));
-  }, []);
+  }, [MAX_STATUS_FAILURES]);
 
   const barcodePayload = getBarcodePayload(ticket);
 
