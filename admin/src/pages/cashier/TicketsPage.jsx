@@ -662,7 +662,7 @@ export default function CashierTicketsPage() {
           );
         } else if (localPrintResult.code === "com_unavailable") {
           setSellError(
-            "COM port unavailable. Check POS80 driver and printer connection.",
+            "Printer queue unavailable. Check POS80 is installed in Windows Print queues.",
           );
         } else {
           setSellError(localError);
@@ -843,7 +843,7 @@ export default function CashierTicketsPage() {
         );
       } else if (localPrintResult.code === "com_unavailable") {
         setSellError(
-          "COM port unavailable. Check POS80 driver and printer connection.",
+          "Printer queue unavailable. Check POS80 is installed in Windows Print queues.",
         );
       } else {
         setSellError(localError);

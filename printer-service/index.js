@@ -1,9 +1,11 @@
 /**
  * Local print bridge — receives Base64 ESC/POS bytes from the cashier UI
- * and writes them sequentially to a POS80 thermal printer via COM port.
+ * and writes them sequentially to a Windows spooler printer queue.
  *
  * Env:
- *   PORT              — HTTP listen port (default 3005)
+ *   PORT              — HTTP listen port (default 3005; falls back to +1..+5 if busy)
+ *   PORT_FALLBACK_ATTEMPTS — consecutive ports to try (default 6)
+ *   PRINTER_NAME      — printer queue name override (e.g. POS80)
  *   PRINTER_COM       — COM port override (e.g. COM3)
  *   BAUD_RATE         — Serial baud rate override
  *   PRINTER_API_KEY   — API key override (default in config.json)
@@ -18,11 +20,13 @@ import { ensureConfigFile, getEffectiveConfig, loadConfigFile, updateConfig } fr
 import { log } from "./logger.js";
 import { PrintQueue } from "./printQueue.js";
 import { classifySerialError, PrinterManager } from "./printerManager.js";
+import { listenWithPortFallback } from "./listenPort.js";
 import { PROTOCOL_VERSION, VERSION } from "./version.js";
 
 const HOST = "127.0.0.1";
-const PORT = Number(process.env.PORT) || 3005;
 const startedAt = Date.now();
+/** @type {number} */
+let listenPort = Number(process.env.PORT) || 3005;
 
 if (HOST !== "127.0.0.1") {
   log("error", "security_warning", {
@@ -89,6 +93,7 @@ app.get("/health", (_req, res) => {
   const queueStats = printQueue.getStats();
   res.json({
     ok: true,
+    listenPort,
     uptimeSec: Math.floor((Date.now() - startedAt) / 1000),
     connected: managerState.connected,
     queueLength: queueStats.queueLength,
@@ -114,7 +119,7 @@ app.get("/status", async (_req, res) => {
     res.status(503).json({
       success: false,
       connected: false,
-      port: managerState.port || getEffectiveConfig().comPort || "",
+      port: managerState.port || getEffectiveConfig().printerName || "",
       message: classified.message,
       code: classified.code,
       queueLength: queueStats.queueLength,
@@ -223,21 +228,21 @@ async function start() {
     effective: {
       comPort: effective.comPort,
       baudRate: effective.baudRate,
+      printerName: effective.printerName,
     },
   });
 
   printerManager.startReconnectLoop();
   await printerManager.connect();
 
-  app.listen(PORT, HOST, () => {
-    log("info", "service_start", {
-      host: HOST,
-      port: PORT,
-      version: VERSION,
-      protocolVersion: PROTOCOL_VERSION,
-      comPort: effective.comPort || "auto-detect",
-      baudRate: effective.baudRate,
-    });
+  const { port } = await listenWithPortFallback(app, HOST);
+  listenPort = port;
+  log("info", "service_start", {
+    host: HOST,
+    port: listenPort,
+    version: VERSION,
+    protocolVersion: PROTOCOL_VERSION,
+    printerName: effective.printerName || "auto-detect",
   });
 }
 

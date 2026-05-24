@@ -3,14 +3,14 @@
 .SYNOPSIS
   Installs Sokasport PrinterBridge to C:\Sokasport\PrinterBridge and registers auto-start.
 
-.PARAMETER ComPort
-  Optional COM port (e.g. COM3). Leave empty for auto-detect.
+.PARAMETER PrinterName
+  Windows print queue name (e.g. POS80). Default POS80.
 
 .PARAMETER SkipStartup
   Do not add a Startup folder shortcut.
 #>
 param(
-  [string]$ComPort = "",
+  [string]$PrinterName = "POS80",
   [switch]$SkipStartup
 )
 
@@ -18,7 +18,6 @@ $ErrorActionPreference = "Stop"
 
 $InstallDest = "C:\Sokasport\PrinterBridge"
 $ApiKey = "sokasport-local-print-v1"
-$HealthUrl = "http://127.0.0.1:3005/health"
 
 function Write-Step([string]$Message) {
   Write-Host "`n==> $Message" -ForegroundColor Cyan
@@ -59,12 +58,12 @@ function Copy-BridgeFiles([string]$SourceDir, [string]$Dest) {
   }
 }
 
-function Write-Config([string]$Dest, [string]$Port) {
+function Write-Config([string]$Dest, [string]$PrinterName) {
   $configPath = Join-Path $Dest "config.json"
   $config = @{
-    comPort     = $Port
+    comPort     = ""
     baudRate    = 9600
-    printerName = "Shop Counter"
+    printerName = $PrinterName
     apiKey      = $ApiKey
   } | ConvertTo-Json -Compress
   [System.IO.File]::WriteAllText($configPath, $config + "`n", [System.Text.UTF8Encoding]::new($false))
@@ -92,14 +91,18 @@ function Register-StartupShortcut([string]$Dest) {
 
 function Test-BridgeHealth {
   param([int]$Retries = 8, [int]$DelaySec = 2)
+  $ports = 3005..3010
   for ($i = 1; $i -le $Retries; $i++) {
-    try {
-      $response = Invoke-RestMethod -Uri $HealthUrl -TimeoutSec 5
-      if ($response.ok) {
-        return $response
+    foreach ($port in $ports) {
+      try {
+        $url = "http://127.0.0.1:$port/health"
+        $response = Invoke-RestMethod -Uri $url -TimeoutSec 5
+        if ($response.ok) {
+          return $response
+        }
+      } catch {
+        # Bridge may still be starting or on another port
       }
-    } catch {
-      # Bridge may still be starting
     }
     Start-Sleep -Seconds $DelaySec
   }
@@ -127,12 +130,8 @@ Copy-BridgeFiles -SourceDir $SourceDir -Dest $InstallDest
 Write-Ok "Files copied"
 
 Write-Step "Writing config.json"
-Write-Config -Dest $InstallDest -Port $ComPort
-if ($ComPort) {
-  Write-Ok "COM port set to $ComPort"
-} else {
-  Write-Ok "COM port left empty (auto-detect on startup)"
-}
+Write-Config -Dest $InstallDest -PrinterName $PrinterName
+Write-Ok "Printer queue set to $PrinterName"
 
 Write-Step "Creating hidden launcher"
 Write-HiddenLauncher -Dest $InstallDest

@@ -1,10 +1,64 @@
+import os from "os";
+import path from "path";
+import { promises as fs } from "fs";
+import { createRequire } from "module";
 import { getEffectiveConfig } from "./config.js";
 import { log } from "./logger.js";
-import { getSerialPort } from "./serialportLoader.js";
 
 export const RECONNECT_INTERVAL_MS = 5000;
 export const WRITE_TIMEOUT_MS = Number(process.env.WRITE_TIMEOUT_MS) || 60_000;
-const PORT_LIST_TTL_MS = 5000;
+const PRINTER_LIST_TTL_MS = 5000;
+const DEFAULT_PRINTER_NAME = "POS80";
+
+let printerApiPromise = null;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function getPrinterApi() {
+  if (printerApiPromise) return printerApiPromise;
+  printerApiPromise = (async () => {
+    if (process.pkg) {
+      const base = path.dirname(process.execPath);
+      const requireFromDisk = createRequire(
+        path.join(base, "node_modules", "printer", "package.json"),
+      );
+      return requireFromDisk("printer");
+    }
+    const mod = await import("printer");
+    return mod.default ?? mod;
+  })();
+  return printerApiPromise;
+}
+
+function printerNameOf(entry) {
+  return String(entry?.name || entry?.printer || entry?.deviceId || "").trim();
+}
+
+function equalsIgnoreCase(a, b) {
+  return String(a || "").toLowerCase() === String(b || "").toLowerCase();
+}
+
+function printerLooksLikePos80(entry) {
+  return /pos80|pos-?80|thermal|receipt/i.test(
+    `${entry?.name || ""} ${entry?.driverName || ""} ${entry?.portName || ""}`,
+  );
+}
+
+function normalizePrinterInfo(entry) {
+  const name = printerNameOf(entry);
+  return {
+    path: name,
+    manufacturer: String(entry?.driverName || entry?.manufacturer || "").trim(),
+    serialNumber: "",
+    vendorId: "",
+    productId: "",
+    friendlyName: String(entry?.portName || "").trim(),
+    isDefault: Boolean(entry?.isDefault),
+    status: String(entry?.status || "").trim(),
+  };
+}
 
 export function classifySerialError(error) {
   const code = error?.code;
@@ -15,23 +69,16 @@ export function classifySerialError(error) {
   if (
     msg.includes("com port unavailable") ||
     msg.includes("no com port detected") ||
-    msg.includes("printer not connected")
+    msg.includes("no printer queue detected") ||
+    msg.includes("invalid printer") ||
+    msg.includes("printer queue unavailable") ||
+    msg.includes("the printer name is invalid") ||
+    msg.includes("printer not found")
   ) {
-    return { code: "com_unavailable", message: "COM port unavailable" };
+    return { code: "com_unavailable", message: "Printer queue unavailable" };
   }
   if (
-    msg.includes("access denied") ||
-    msg.includes("cannot open") ||
-    msg.includes("file not found") ||
-    msg.includes("enoent") ||
-    msg.includes("eacces") ||
-    msg.includes("error code 121") ||
-    msg.includes("unknown error code 121") ||
-    msg.includes("port not open")
-  ) {
-    return { code: "com_unavailable", message: "COM port unavailable" };
-  }
-  if (
+    msg.includes("offline") ||
     msg.includes("disconnected") ||
     msg.includes("not connected") ||
     msg.includes("device not found")
@@ -41,34 +88,9 @@ export function classifySerialError(error) {
   return { code: "print_failed", message: error?.message || "Print failed" };
 }
 
-export function parsePnpIds(pnpId) {
-  const raw = String(pnpId || "");
-  const vendorId = raw.match(/VID_([0-9A-F]{4})/i)?.[1]?.toLowerCase() || "";
-  const productId = raw.match(/PID_([0-9A-F]{4})/i)?.[1]?.toLowerCase() || "";
-  return { vendorId, productId };
-}
-
-export function mapPortInfo(port) {
-  const { vendorId, productId } = parsePnpIds(port.pnpId);
-  return {
-    path: port.path || "",
-    manufacturer: port.manufacturer || "",
-    serialNumber: port.serialNumber || "",
-    vendorId,
-    productId,
-    friendlyName: port.friendlyName || "",
-  };
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 export class PrinterManager {
   constructor() {
-    /** @type {import("serialport").SerialPort | null} */
-    this.port = null;
-    this.comPath = "";
+    this.printerName = "";
     /** @type {"connected"|"disconnected"|"reconnecting"} */
     this.connectionState = "disconnected";
     this.reconnectAttempts = 0;
@@ -76,160 +98,91 @@ export class PrinterManager {
     this.lastSuccessfulPrintAt = null;
     /** @type {ReturnType<typeof setInterval> | null} */
     this.reconnectTimer = null;
-    /** @type {import("serialport").PortInfo[] | null} */
-    this.cachedPortList = null;
-    this.cachedPortListAt = 0;
+    /** @type {Array<any> | null} */
+    this.cachedPrinters = null;
+    this.cachedPrintersAt = 0;
   }
 
-  async listPorts() {
+  async listQueues() {
     const now = Date.now();
-    if (this.cachedPortList && now - this.cachedPortListAt < PORT_LIST_TTL_MS) {
-      return this.cachedPortList;
+    if (this.cachedPrinters && now - this.cachedPrintersAt < PRINTER_LIST_TTL_MS) {
+      return this.cachedPrinters;
     }
     try {
-      const SerialPort = await getSerialPort();
-      this.cachedPortList = await SerialPort.list();
-      this.cachedPortListAt = now;
-      return this.cachedPortList;
+      const printerApi = await getPrinterApi();
+      const printers = await Promise.resolve(printerApi.getPrinters?.() || []);
+      this.cachedPrinters = Array.isArray(printers) ? printers : [];
+      this.cachedPrintersAt = now;
+      return this.cachedPrinters;
     } catch {
       return [];
     }
   }
 
-  async resolveComPort() {
+  async resolveQueueName() {
     const config = getEffectiveConfig();
-    if (config.comPort) return config.comPort;
+    const preferred = String(
+      process.env.PRINTER_NAME || config.printerName || DEFAULT_PRINTER_NAME,
+    ).trim();
+    const printers = await this.listQueues();
+    if (printers.length === 0) return "";
 
-    const ports = await this.listPorts();
-    const pos80 = ports.find(
-      (p) =>
-        /pos80|pos-?80|thermal|receipt|printer/i.test(p.manufacturer || "") ||
-        /pos80|pos-?80|thermal|receipt|printer/i.test(p.friendlyName || "") ||
-        /pos80|pos-?80|thermal|receipt|printer/i.test(p.pnpId || ""),
-    );
-    if (pos80?.path) return pos80.path;
+    if (preferred) {
+      const exact = printers.find((entry) =>
+        equalsIgnoreCase(printerNameOf(entry), preferred),
+      );
+      if (exact) return printerNameOf(exact);
+    }
 
-    const usbSerial = ports.find((p) =>
-      /usb|serial/i.test(
-        `${p.manufacturer || ""} ${p.friendlyName || ""} ${p.pnpId || ""}`,
-      ),
-    );
-    return usbSerial?.path || ports[0]?.path || "";
-  }
+    const pos80 = printers.find(printerLooksLikePos80);
+    if (pos80) return printerNameOf(pos80);
 
-  async openPort(comPath, baudRate) {
-    const SerialPort = await getSerialPort();
-    return new Promise((resolve, reject) => {
-      const port = new SerialPort({
-        path: comPath,
-        baudRate,
-        autoOpen: false,
-      });
-
-      port.open((err) => {
-        if (err) {
-          port.destroy();
-          reject(err);
-          return;
-        }
-        this.port = port;
-        port.on("error", (portErr) => {
-          log("warn", "disconnect", {
-            port: this.comPath,
-            error: portErr?.message || "port error",
-          });
-          void this.forceDisconnect(portErr);
-        });
-        port.on("close", () => {
-          if (this.connectionState === "connected") {
-            void this.forceDisconnect(new Error("Port closed unexpectedly"));
-          }
-        });
-        resolve();
-      });
-    });
-  }
-
-  closePort() {
-    return new Promise((resolve) => {
-      if (!this.port) {
-        resolve();
-        return;
-      }
-      const port = this.port;
-      this.port = null;
-      if (!port.isOpen) {
-        port.destroy();
-        resolve();
-        return;
-      }
-      port.close(() => {
-        port.destroy();
-        resolve();
-      });
-    });
+    const defaultQueue = printers.find((entry) => Boolean(entry?.isDefault));
+    return printerNameOf(defaultQueue || printers[0]);
   }
 
   async forceDisconnect(error) {
     const message = error?.message || "Disconnected";
     this.connectionState = "disconnected";
     this.lastError = message;
-    await this.closePort();
-    log("warn", "disconnect", { port: this.comPath, error: message });
+    log("warn", "disconnect", { printer: this.printerName, error: message });
   }
 
   async connect() {
-    const config = getEffectiveConfig();
-    const comPath = config.comPort || (await this.resolveComPort());
-    if (!comPath) {
+    const queueName = await this.resolveQueueName();
+    if (!queueName) {
       this.connectionState = "disconnected";
-      this.lastError = "No COM port detected. Install POS80 driver and connect printer.";
+      this.lastError =
+        "No printer queue detected. Install POS80 printer and verify Windows queue name.";
       return false;
     }
 
-    if (
-      this.connectionState === "connected" &&
-      this.port?.isOpen &&
-      this.comPath === comPath
-    ) {
-      return true;
-    }
-
-    this.connectionState = "reconnecting";
-    await this.closePort();
-
-    try {
-      await this.openPort(comPath, config.baudRate);
-      this.comPath = comPath;
-      this.connectionState = "connected";
-      this.reconnectAttempts = 0;
-      this.lastError = null;
-      log("info", "connect", { port: comPath, baudRate: config.baudRate });
-      return true;
-    } catch (error) {
+    const printers = await this.listQueues();
+    const exists = printers.some((entry) =>
+      equalsIgnoreCase(printerNameOf(entry), queueName),
+    );
+    if (!exists) {
       this.connectionState = "disconnected";
-      const classified = classifySerialError(error);
-      this.lastError = classified.message;
-      await this.closePort();
+      this.lastError = `Printer queue unavailable: ${queueName}`;
       return false;
     }
+
+    this.printerName = queueName;
+    this.connectionState = "connected";
+    this.reconnectAttempts = 0;
+    this.lastError = null;
+    log("info", "connect", { printer: queueName });
+    return true;
   }
 
-  writeAndDrain(buffer) {
+  async printFile(filename, queueName) {
+    const printerApi = await getPrinterApi();
     return new Promise((resolve, reject) => {
-      if (!this.port?.isOpen) {
-        reject(new Error("Port not open"));
-        return;
-      }
-      this.port.write(buffer, (writeErr) => {
-        if (writeErr) {
-          reject(writeErr);
-          return;
-        }
-        this.port.drain((drainErr) => {
-          if (drainErr) reject(drainErr);
-          else resolve();
-        });
+      printerApi.printFile({
+        filename,
+        printer: queueName,
+        success: () => resolve(),
+        error: (err) => reject(err),
       });
     });
   }
@@ -242,9 +195,14 @@ export class PrinterManager {
     }
 
     const start = Date.now();
+    const tempFile = path.join(
+      os.tmpdir(),
+      `sokasport-escpos-${jobId || Date.now()}.bin`,
+    );
     try {
+      await fs.writeFile(tempFile, buffer);
       await Promise.race([
-        this.writeAndDrain(buffer),
+        this.printFile(tempFile, this.printerName),
         sleep(timeoutMs).then(() => {
           const timeoutErr = new Error("Write timeout");
           timeoutErr.code = "write_timeout";
@@ -254,22 +212,28 @@ export class PrinterManager {
       this.lastSuccessfulPrintAt = new Date().toISOString();
       log("info", "print_success", {
         jobId,
-        port: this.comPath,
+        port: this.printerName,
         bytes: buffer.length,
         durationMs: Date.now() - start,
       });
     } catch (error) {
       if (error?.code === "write_timeout") {
-        log("error", "print_timeout", { jobId, port: this.comPath, timeoutMs });
+        log("error", "print_timeout", {
+          jobId,
+          printer: this.printerName,
+          timeoutMs,
+        });
       } else {
         log("error", "print_failure", {
           jobId,
-          port: this.comPath,
+          printer: this.printerName,
           error: error?.message || "Print failed",
         });
       }
       await this.forceDisconnect(error);
       throw error;
+    } finally {
+      await fs.unlink(tempFile).catch(() => {});
     }
   }
 
@@ -282,7 +246,7 @@ export class PrinterManager {
       const ok = await this.connect();
       if (ok) {
         log("info", "reconnect_success", {
-          port: this.comPath,
+          printer: this.printerName,
           attempts: this.reconnectAttempts,
         });
       }
@@ -298,8 +262,8 @@ export class PrinterManager {
 
   getState() {
     return {
-      connected: this.connectionState === "connected" && Boolean(this.port?.isOpen),
-      port: this.comPath,
+      connected: this.connectionState === "connected",
+      port: this.printerName,
       connectionState: this.connectionState,
       lastError: this.lastError,
       reconnectAttempts: this.reconnectAttempts,
@@ -308,13 +272,13 @@ export class PrinterManager {
   }
 
   async probe() {
-    const config = getEffectiveConfig();
-    const resolvedPort = config.comPort || (await this.resolveComPort());
-    if (!resolvedPort) {
+    const resolvedQueue = await this.resolveQueueName();
+    if (!resolvedQueue) {
       return {
         connected: false,
         port: "",
-        message: "No COM port detected. Install POS80 driver and connect printer.",
+        message:
+          "No printer queue detected. Install POS80 printer and verify Windows queue name.",
       };
     }
 
@@ -322,7 +286,7 @@ export class PrinterManager {
     if (ok) {
       return {
         connected: true,
-        port: this.comPath || resolvedPort,
+        port: this.printerName || resolvedQueue,
         message: "Printer ready",
       };
     }
@@ -330,21 +294,21 @@ export class PrinterManager {
     const classified = classifySerialError(new Error(this.lastError || "Probe failed"));
     return {
       connected: false,
-      port: resolvedPort,
+      port: resolvedQueue,
       message: this.lastError || classified.message,
       code: classified.code,
     };
   }
 
   async applyConfig() {
-    this.cachedPortList = null;
-    this.cachedPortListAt = 0;
+    this.cachedPrinters = null;
+    this.cachedPrintersAt = 0;
     await this.forceDisconnect(new Error("Config updated"));
     return this.connect();
   }
 
   async listPrinters() {
-    const ports = await this.listPorts();
-    return ports.map(mapPortInfo);
+    const printers = await this.listQueues();
+    return printers.map(normalizePrinterInfo);
   }
 }

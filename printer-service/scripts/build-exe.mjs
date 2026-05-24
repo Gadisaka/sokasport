@@ -29,12 +29,11 @@ function copyNativeDeps() {
     }
   };
 
-  copyPackage("serialport");
-  copyPackage("@serialport");
+  copyPackage("printer");
+  copyPackage("nan");
   copyPackage("node-gyp-build");
-  copyPackage("debug");
-  copyPackage("ms");
-  copyPackage("node-addon-api");
+  copyPackage("bindings");
+  copyPackage("file-uri-to-path");
 }
 
 fs.mkdirSync(distDir, { recursive: true });
@@ -46,13 +45,7 @@ await esbuild.build({
   target: "node18",
   format: "cjs",
   outfile: path.join(distDir, "server.cjs"),
-  external: [
-    "serialport",
-    "@serialport/bindings-cpp",
-    "@serialport/bindings-interface",
-    "@serialport/stream",
-    "@serialport/parser-readline",
-  ],
+  external: ["printer"],
   banner: {
     js: "/* Sokasport PrinterBridge bundled server */",
   },
@@ -88,4 +81,4 @@ if (fs.existsSync(installDir)) {
   }
 }
 
-console.log("Built dist/PrinterBridge.exe (+ node_modules native deps + installer)");
+console.log("Built dist/PrinterBridge.exe (+ node_modules/printer + installer)");

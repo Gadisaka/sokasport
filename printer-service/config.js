@@ -19,7 +19,7 @@ export const DEFAULT_API_KEY = "sokasport-local-print-v1";
 const DEFAULTS = {
   comPort: "",
   baudRate: 115200,
-  printerName: "",
+  printerName: "POS80",
   apiKey: DEFAULT_API_KEY,
 };
 
@@ -57,15 +57,16 @@ export function getApiKey() {
   return envKey || file.apiKey || DEFAULT_API_KEY;
 }
 
-/** config.json with env overrides (PRINTER_COM, BAUD_RATE). */
+/** config.json with env overrides (PRINTER_COM, BAUD_RATE, PRINTER_NAME). */
 export function getEffectiveConfig() {
   const file = loadConfigFile();
   const envCom = String(process.env.PRINTER_COM || "").trim();
   const envBaud = Number(process.env.BAUD_RATE);
+  const envPrinterName = String(process.env.PRINTER_NAME || "").trim();
   return {
     comPort: envCom || file.comPort || "",
     baudRate: Number.isFinite(envBaud) && envBaud > 0 ? envBaud : file.baudRate || 115200,
-    printerName: file.printerName || "",
+    printerName: envPrinterName || file.printerName || "POS80",
     apiKey: getApiKey(),
   };
 }

@@ -200,7 +200,9 @@ export function useTicketPrint(
         }
 
         if (result.code === "com_unavailable") {
-          setLastError("COM port unavailable. Check POS80 driver and PRINTER_COM.");
+          setLastError(
+            "Printer queue unavailable. Check POS80 is installed in Windows Print queues.",
+          );
           return {
             printed: false,
             method: "local_service",
@@ -219,7 +221,7 @@ export function useTicketPrint(
 
         const errorMessage = String(result.error?.message || "");
         if (/printer disconnected|offline/i.test(errorMessage)) {
-          setLastError("Printer disconnected. Check POS80 connection and COM port.");
+          setLastError("Printer disconnected. Check POS80 queue and USB connection.");
           return {
             printed: false,
             method: "local_service",

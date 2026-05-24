@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Local ESC/POS print bridge for cashier thermal printers (POS80 COM port)",
+  "description": "Local ESC/POS print bridge for cashier thermal printers (Windows spooler)",
   "main": "index.js",
   "bin": "dist/server.cjs",
   "scripts": {
@@ -13,17 +13,14 @@
   },
   "pkg": {
     "assets": [
-      "node_modules/@serialport/bindings-cpp/prebuilds/**/*",
-      "node_modules/serialport/**/*"
+      "node_modules/printer/**/*"
     ],
     "outputPath": "dist"
   },
   "dependencies": {
     "cors": "^2.8.6",
-    "escpos": "^3.0.0-alpha.6",
-    "escpos-serialport": "^3.0.0-alpha.4",
     "express": "^5.2.1",
-    "serialport": "^13.0.0"
+    "printer": "^0.4.0"
   },
   "devDependencies": {
     "esbuild": "^0.25.0",
