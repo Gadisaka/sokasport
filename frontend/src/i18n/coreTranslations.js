@@ -50,6 +50,11 @@ export const translations = Object.freeze({
       clear: "Clear",
       goToNextDay: "Show fixtures for",
     }),
+    matches: Object.freeze({
+      prev: "Previous",
+      next: "Next",
+      pageOf: "Page {page} of {total}",
+    }),
     menu: Object.freeze({
       title: "Menu",
       accountTitle: "Account",
@@ -80,6 +85,8 @@ export const translations = Object.freeze({
       searchClubsAria: "Search by club name",
       filterByTime: "Filter by time",
       dateWithGames: "Date (with games)",
+      pickDate: "Pick date",
+      pickDateAria: "Select a day from the list",
       noFixtures: "No fixtures",
       selectDay: "Select day…",
     }),
@@ -144,6 +151,11 @@ export const translations = Object.freeze({
       helpLegalNav: "እገዛ እና ህጎች",
       clear: "አጽዳ",
       goToNextDay: "ለዚህ ቀን ጨዋታዎችን አሳይ",
+    }),
+    matches: Object.freeze({
+      prev: "ቀዳሚ",
+      next: "ቀጣይ",
+      pageOf: "ገጽ {page} ከ {total}",
     }),
     menu: Object.freeze({
       title: "ምናሌ",

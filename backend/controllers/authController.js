@@ -11,6 +11,7 @@ import jwt from "jsonwebtoken";
 import { prisma } from "../Config/db.js";
 import { logAuditEvent } from "../lib/auditLog.js";
 import { handleCashierDeviceLogin } from "../lib/cashierDeviceAuth.js";
+import { normalizeEthiopiaPhone } from "../lib/phone.js";
 
 function publicUserShape(user) {
   return {
@@ -37,7 +38,7 @@ if (!JWT_SECRET) {
  */
 export async function login(req, res) {
   const { phone, password, fingerprint } = req.body ?? {};
-  const normalizedPhone = phone ? String(phone).trim() : null;
+  const normalizedPhone = phone ? normalizeEthiopiaPhone(phone) : null;
 
   if (!phone || !password) {
     await logAuditEvent({
@@ -249,14 +250,14 @@ export async function patchProfile(req, res) {
     }
 
     if (phoneProvided) {
-      const trimmedPhone = String(body.phone ?? "").trim();
-      if (!trimmedPhone) {
+      if (!String(body.phone ?? "").trim()) {
         return res.status(400).json({ message: "Phone cannot be empty" });
       }
-      if (trimmedPhone !== user.phone) {
-        data.phone = trimmedPhone;
+      const normalizedPhone = normalizeEthiopiaPhone(body.phone);
+      if (normalizedPhone !== user.phone) {
+        data.phone = normalizedPhone;
         if (roleName === "PLAYER") {
-          data.email = `${trimmedPhone}@player.local`;
+          data.email = `${normalizedPhone}@player.local`;
         }
       }
     }

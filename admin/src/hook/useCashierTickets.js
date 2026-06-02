@@ -75,6 +75,14 @@ export function mapTicketDetail(ticket) {
                   selection.match.awayTeam ?? selection.match.away_team ?? "",
                 startTime:
                   selection.match.startTime ?? selection.match.start_time ?? "",
+                leagueName:
+                  selection.match.leagueName ??
+                  selection.match.league_name ??
+                  "",
+                leagueType:
+                  selection.match.leagueType ??
+                  selection.match.league_type ??
+                  "",
               }
             : null,
         }))

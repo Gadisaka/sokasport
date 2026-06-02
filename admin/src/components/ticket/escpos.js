@@ -50,6 +50,12 @@ const LOGO_DOTS = {
   "80mm": 576,
 };
 
+/**
+ * Fraction of paper width the logo occupies. The raster stays full width
+ * (multiple of 8 dots) so rows never skew; only the drawn logo shrinks.
+ */
+const LOGO_SCALE = 0.6;
+
 /** @type {Record<string, Promise<Uint8Array>>} */
 const logoEscPosCache = {};
 
@@ -150,12 +156,28 @@ function formatDate(value) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-function formatKickoff(value) {
+/** Kickoff as "D/M/YYYY HH:MM" (matches the printed-ticket structure). */
+function formatKickoffFull(value) {
   if (!value) return "";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
   const pad = (n) => String(n).padStart(2, "0");
-  return `${pad(date.getDate())}/${pad(date.getMonth() + 1)} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  return `${date.getDate()}/${date.getMonth() + 1}/${date.getFullYear()} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+/** Kickoff time in ms for sorting; missing/invalid times sort last. */
+function selectionStartMs(selection) {
+  const value = selection?.match?.startTime;
+  if (!value) return Number.POSITIVE_INFINITY;
+  const ms = new Date(value).getTime();
+  return Number.isNaN(ms) ? Number.POSITIVE_INFINITY : ms;
+}
+
+/** Stable copy of selections ordered by kickoff date/time, earliest first. */
+function selectionsByKickoff(selections) {
+  return (Array.isArray(selections) ? [...selections] : []).sort(
+    (a, b) => selectionStartMs(a) - selectionStartMs(b),
+  );
 }
 
 /**
@@ -232,8 +254,13 @@ async function rasterLogoToEscPos(src, targetWidthDots) {
   const ih = img.naturalHeight || img.height;
   if (!iw || !ih) return new Uint8Array(0);
 
+  // Keep the raster the full paper width (multiple of 8 dots → no row skew),
+  // but draw the logo smaller and centered within it so it appears reduced.
   const w = targetWidthDots;
-  const h = Math.max(1, Math.round((ih * w) / iw));
+  const logoW = Math.max(1, Math.round(w * LOGO_SCALE));
+  const logoH = Math.max(1, Math.round((ih * logoW) / iw));
+  const h = logoH;
+  const dx = Math.max(0, Math.round((w - logoW) / 2));
 
   const canvas = document.createElement("canvas");
   canvas.width = w;
@@ -243,7 +270,7 @@ async function rasterLogoToEscPos(src, targetWidthDots) {
 
   ctx.fillStyle = "#ffffff";
   ctx.fillRect(0, 0, w, h);
-  ctx.drawImage(img, 0, 0, w, h);
+  ctx.drawImage(img, dx, 0, logoW, logoH);
 
   const imageData = ctx.getImageData(0, 0, w, h).data;
   return imageDataToGsV0(imageData, w, h);
@@ -318,10 +345,11 @@ function pushCashierLines(parts, ticket, chars) {
  * Ticket body after optional logo: metadata, legs, totals, footer. No INIT.
  */
 function buildTicketEscPosParts(ticket, opts) {
-  const { width = "80mm", platformWinningsTax = null } = opts;
+  const { width = "80mm", platformWinningsTax = null, barcodeBytes = null } =
+    opts;
 
   const chars = width === "58mm" ? CHARS_58MM : CHARS_80MM;
-  const selections = Array.isArray(ticket?.selections) ? ticket.selections : [];
+  const selections = selectionsByKickoff(ticket?.selections);
 
   const { tax, net, gross } = slipGrossTaxNetForTicket(
     ticket?.potentialWin,
@@ -334,9 +362,9 @@ function buildTicketEscPosParts(ticket, opts) {
 
   parts.push(new Uint8Array(CMD.ALIGN_LEFT));
   parts.push(line(divider(chars)));
-  parts.push(new Uint8Array(CMD.BOLD_ON));
 
   parts.push(line(leftRight("Coupon:", ticket.couponNumber || "-", chars)));
+  parts.push(line(leftRight("Receipt:", ticket.receiptNumber || "-", chars)));
   pushCashierLines(parts, ticket, chars);
   parts.push(line(leftRight("Date:", ticketDateForEscpos(ticket), chars)));
 
@@ -351,29 +379,46 @@ function buildTicketEscPosParts(ticket, opts) {
       const sel = selections[i];
       const home = sel?.match?.homeTeam || "";
       const away = sel?.match?.awayTeam || "";
-      const matchName = away ? `${home} vs ${away}` : home || "Match";
-      const kickoff = formatKickoff(sel?.match?.startTime);
+      const matchName = away ? `${home} Vs ${away}` : home || "Match";
+      const kickoff = formatKickoffFull(sel?.match?.startTime);
+      const leagueType = String(sel?.match?.leagueType || "").trim();
+      const leagueName = String(sel?.match?.leagueName || "").trim();
+      const leagueHeader = [leagueType, leagueName].filter(Boolean).join(": ");
       const pick = sel?.selection || sel?.pick || "-";
-      const market = sel?.marketLabel || "";
+      const market = String(sel?.marketLabel || "").trim();
       const odds = formatOdds(sel?.odds);
 
-      const matchLines = wrapText(`${i + 1}. ${matchName}`, chars);
-      for (const ml of matchLines) {
-        parts.push(line(ml));
+      // 1) League type + name (bold). Falls back to the teams when no league.
+      parts.push(new Uint8Array(CMD.BOLD_ON));
+      for (const hl of wrapText(leagueHeader || matchName, chars)) {
+        parts.push(line(hl));
       }
+      parts.push(new Uint8Array(CMD.BOLD_OFF));
 
+      // 2) Date / time
       if (kickoff) {
-        parts.push(line(`   ${kickoff}`));
+        parts.push(line(kickoff));
       }
 
-      const pickLabel = market ? `${market}: ${pick}` : pick;
-      const pickLines = wrapText(pickLabel, chars - 8);
-      for (let j = 0; j < pickLines.length; j++) {
-        if (j === pickLines.length - 1) {
-          parts.push(line(leftRight(`   ${pickLines[j]}`, odds, chars)));
-        } else {
-          parts.push(line(`   ${pickLines[j]}`));
+      // 3) Teams (only when the league header already showed above)
+      if (leagueHeader) {
+        for (const tl of wrapText(matchName, chars)) {
+          parts.push(line(tl));
         }
+      }
+
+      // 4) Market type + selection + odds
+      const right = `${pick} ${odds}`.trim();
+      const leftWidth = Math.max(1, chars - right.length - 1);
+      const marketText = market || "-";
+      if (marketText.length <= leftWidth) {
+        parts.push(line(leftRight(marketText, right, chars)));
+      } else {
+        const mLines = wrapText(marketText, leftWidth);
+        for (let k = 0; k < mLines.length - 1; k++) {
+          parts.push(line(mLines[k]));
+        }
+        parts.push(line(leftRight(mLines[mLines.length - 1], right, chars)));
       }
 
       if (i < selections.length - 1) {
@@ -384,15 +429,16 @@ function buildTicketEscPosParts(ticket, opts) {
 
   parts.push(line(divider(chars)));
 
+  parts.push(new Uint8Array(CMD.BOLD_ON));
   parts.push(line(leftRight("Bets:", String(selections.length), chars)));
   parts.push(line(leftRight("Stake:", formatCurrency(ticket.stake), chars)));
   parts.push(
     line(leftRight("Total Odds:", formatOdds(ticket.totalOdds), chars)),
   );
   if (showTax) {
-    parts.push(line(leftRight("Gross win:", formatCurrency(gross), chars)));
+    parts.push(line(leftRight("Gross Win:", formatCurrency(gross), chars)));
     parts.push(line(leftRight(`${taxLabel}:`, formatCurrency(tax), chars)));
-    parts.push(line(leftRight("Net payout:", formatCurrency(net), chars)));
+    parts.push(line(leftRight("Net Payout:", formatCurrency(net), chars)));
   } else {
     parts.push(
       line(
@@ -401,14 +447,18 @@ function buildTicketEscPosParts(ticket, opts) {
     );
   }
 
-  parts.push(line(divider(chars)));
+  parts.push(new Uint8Array(CMD.BOLD_OFF));
 
+  // Footer: barcode at the bottom (raster when available), else printed code.
+  parts.push(new Uint8Array(CMD.FEED_LINES(1)));
   parts.push(new Uint8Array(CMD.ALIGN_CENTER));
+  if (barcodeBytes && barcodeBytes.length > 0) {
+    parts.push(barcodeBytes);
+  }
   parts.push(
     line(center(ticket.receiptNumber || ticket.couponNumber || "", chars)),
   );
 
-  parts.push(new Uint8Array(CMD.BOLD_OFF));
   parts.push(new Uint8Array(CMD.FEED_LINES(2)));
   parts.push(new Uint8Array(CMD.CUT_PARTIAL));
 
@@ -429,6 +479,144 @@ export function encodeTicket(ticket, opts = {}) {
 }
 
 /**
+ * Compact payout/cancel confirmation receipt — logo + summary only, no legs.
+ *
+ * Fields: logo, branch, receipt number, status, bets count, payout (payout
+ * only), date. Intentionally small for a quick proof-of-action slip.
+ *
+ * @param {Object} ticket
+ * @param {{ width?: string, type?: "payout"|"cancel" }} [opts]
+ * @returns {Promise<Uint8Array>}
+ */
+export async function encodeActionReceiptAsync(ticket, opts = {}) {
+  const { width = "80mm", type = "payout" } = opts;
+  const chars = width === "58mm" ? CHARS_58MM : CHARS_80MM;
+  const isPayout = type === "payout";
+  const selections = Array.isArray(ticket?.selections) ? ticket.selections : [];
+
+  const logoBytes = await getLogoEscPosPromise(width);
+
+  const parts = [new Uint8Array(CMD.INIT)];
+
+  if (logoBytes.length > 0) {
+    parts.push(new Uint8Array(CMD.ALIGN_CENTER));
+    parts.push(logoBytes);
+  }
+
+  parts.push(new Uint8Array(CMD.ALIGN_CENTER));
+  parts.push(new Uint8Array(CMD.BOLD_ON));
+  parts.push(line(isPayout ? "PAYOUT RECEIPT" : "CANCELLATION RECEIPT"));
+  parts.push(new Uint8Array(CMD.BOLD_OFF));
+
+  parts.push(new Uint8Array(CMD.ALIGN_LEFT));
+  parts.push(line(divider(chars)));
+  parts.push(line(leftRight("Branch:", ticket?.branchName || "-", chars)));
+  parts.push(
+    line(leftRight("Receipt:", ticket?.receiptNumber || "-", chars)),
+  );
+  parts.push(line(leftRight("Status:", ticket?.status || "-", chars)));
+  parts.push(line(leftRight("Bets:", String(selections.length), chars)));
+
+  if (isPayout) {
+    const { net } = slipGrossTaxNetForTicket(ticket?.potentialWin, ticket);
+    const payoutAmount = net != null ? net : Number(ticket?.potentialWin || 0);
+    parts.push(line(leftRight("Payout:", formatCurrency(payoutAmount), chars)));
+  }
+
+  parts.push(line(leftRight("Date:", formatDate(new Date()), chars)));
+  parts.push(line(divider(chars)));
+
+  parts.push(new Uint8Array(CMD.FEED_LINES(2)));
+  parts.push(new Uint8Array(CMD.CUT_PARTIAL));
+
+  return concat(...parts);
+}
+
+/**
+ * Cashier sales report summary slip (logo + betting / payout / wallet totals).
+ *
+ * Mirrors the dashboard stats for a date range; printed on demand from the
+ * cashier dashboard "Print" button.
+ *
+ * @param {Object} report
+ * @param {{ width?: string }} [opts]
+ * @returns {Promise<Uint8Array>}
+ */
+export async function encodeSalesReportAsync(report, opts = {}) {
+  const { width = "80mm" } = opts;
+  const chars = width === "58mm" ? CHARS_58MM : CHARS_80MM;
+  const n = (v) => String(Math.round(Number(v) || 0));
+
+  const logoBytes = await getLogoEscPosPromise(width);
+
+  const parts = [new Uint8Array(CMD.INIT)];
+
+  if (logoBytes.length > 0) {
+    parts.push(new Uint8Array(CMD.ALIGN_CENTER));
+    parts.push(logoBytes);
+  }
+
+  parts.push(new Uint8Array(CMD.ALIGN_CENTER));
+  parts.push(new Uint8Array(CMD.BOLD_ON));
+  parts.push(line("SALES REPORT SUMMARY"));
+  parts.push(new Uint8Array(CMD.BOLD_OFF));
+
+  parts.push(new Uint8Array(CMD.ALIGN_LEFT));
+  const rangeRight = report?.toLabel
+    ? `${report?.fromLabel || ""} - ${report.toLabel}`
+    : report?.fromLabel || "";
+  parts.push(line(leftRight("DATE :", rangeRight, chars)));
+  parts.push(line(leftRight("TIME :", formatDate(new Date()), chars)));
+  if (report?.cashierName) {
+    parts.push(line(leftRight("Cashier:", report.cashierName, chars)));
+  }
+
+  parts.push(line(divider(chars)));
+
+  parts.push(new Uint8Array(CMD.BOLD_ON));
+  parts.push(line("BETTING"));
+  parts.push(new Uint8Array(CMD.BOLD_OFF));
+  parts.push(line(leftRight("Total Bets", n(report?.totalBets), chars)));
+  parts.push(
+    line(leftRight("Total Amount", formatCurrency(report?.totalBetsAmount), chars)),
+  );
+
+  parts.push(new Uint8Array(CMD.BOLD_ON));
+  parts.push(line("PAYOUT"));
+  parts.push(new Uint8Array(CMD.BOLD_OFF));
+  parts.push(
+    line(leftRight("Total Payout", n(report?.totalPayoutCount), chars)),
+  );
+  parts.push(
+    line(
+      leftRight("Total Amount", formatCurrency(report?.totalPayoutAmount), chars),
+    ),
+  );
+
+  parts.push(new Uint8Array(CMD.BOLD_ON));
+  parts.push(line("DEPOSIT/WITHDRAWAL"));
+  parts.push(new Uint8Array(CMD.BOLD_OFF));
+  parts.push(
+    line(leftRight("Deposit Amount", formatCurrency(report?.depositAmount), chars)),
+  );
+  parts.push(
+    line(
+      leftRight("Withdrawal Amount", formatCurrency(report?.withdrawAmount), chars),
+    ),
+  );
+
+  parts.push(line(divider(chars)));
+  parts.push(new Uint8Array(CMD.BOLD_ON));
+  parts.push(line(leftRight("ON HAND", formatCurrency(report?.onHand), chars)));
+  parts.push(new Uint8Array(CMD.BOLD_OFF));
+
+  parts.push(new Uint8Array(CMD.FEED_LINES(2)));
+  parts.push(new Uint8Array(CMD.CUT_PARTIAL));
+
+  return concat(...parts);
+}
+
+/**
  * Encode a ticket with proportional raster logo (browser canvas rasterization).
  *
  * @param {Object} ticket
@@ -440,6 +628,11 @@ export async function encodeTicketAsync(ticket, opts = {}) {
   const logoBytes = await getLogoEscPosPromise(width);
   const barcodePayload = getBarcodePayload(ticket);
 
+  let barcodeBytes = null;
+  if (barcodePayload) {
+    barcodeBytes = await getBarcodeEscPosPromise(width, barcodePayload);
+  }
+
   const parts = [new Uint8Array(CMD.INIT)];
 
   if (logoBytes.length > 0) {
@@ -447,14 +640,6 @@ export async function encodeTicketAsync(ticket, opts = {}) {
     parts.push(logoBytes);
   }
 
-  if (barcodePayload) {
-    const barcodeBytes = await getBarcodeEscPosPromise(width, barcodePayload);
-    if (barcodeBytes.length > 0) {
-      parts.push(new Uint8Array(CMD.ALIGN_CENTER));
-      parts.push(barcodeBytes);
-    }
-  }
-
-  parts.push(...buildTicketEscPosParts(ticket, opts));
+  parts.push(...buildTicketEscPosParts(ticket, { ...opts, barcodeBytes }));
   return concat(...parts);
 }

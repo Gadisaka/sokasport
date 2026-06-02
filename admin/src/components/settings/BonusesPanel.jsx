@@ -4,12 +4,12 @@ import PrimaryButton from "../ui/PrimaryButton";
 import Modal from "../ui/Modal";
 import { useBonusesQuery, useUpdateBonusMutation } from "../../hook/useSettingsQuery";
 
+// CASHBACK is managed in its own Settings -> Cashback tab (CashbackPanel).
 const TYPE_ORDER = [
   "WELCOME",
   "FIRST_DEPOSIT",
   "DEPOSIT",
   "ACCUMULATOR",
-  "CASHBACK",
   "REFERRAL",
 ];
 
@@ -22,8 +22,6 @@ const TYPE_HELP = {
     "Percentage of every deposit after the first (min deposit optional).",
   ACCUMULATOR:
     "Extra % on possible win when the slip has enough legs. Add tiers: e.g. 11+ legs → 3%.",
-  CASHBACK:
-    "When a lost ticket meets minimum total odds, % of stake is returned to the wallet.",
   REFERRAL:
     "Reserved for future use. Toggling on has no effect until the feature is built.",
 };
@@ -47,10 +45,6 @@ function bonusRowToForm(row) {
             bonusPercent: String(t.bonusPercent ?? ""),
           }))
         : [{ ...emptyTier }],
-    minTotalOdds:
-      rules.minTotalOdds != null ? String(rules.minTotalOdds) : "1.5",
-    percentOfStake:
-      rules.percentOfStake != null ? String(rules.percentOfStake) : "0",
   };
 }
 
@@ -126,9 +120,6 @@ export default function BonusesPanel() {
             bonusPercent: Number(x.bonusPercent),
           }));
         body.tiers = tiers;
-      } else if (t === "CASHBACK") {
-        body.minTotalOdds = Number(form.minTotalOdds);
-        body.percentOfStake = Number(form.percentOfStake);
       } else if (t === "REFERRAL") {
         body.percentage = Number(form.percentage);
       }
@@ -479,47 +470,6 @@ export default function BonusesPanel() {
               </>
             )}
 
-            {editingRow.type === "CASHBACK" && (
-              <>
-                <label className="block max-w-xs">
-                  <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
-                    Minimum ticket total odds
-                  </span>
-                  <input
-                    type="number"
-                    min="1"
-                    step="any"
-                    value={form.minTotalOdds}
-                    onChange={(e) =>
-                      setForm((f) => ({ ...f, minTotalOdds: e.target.value }))
-                    }
-                    required
-                    className="w-full rounded-sm border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm"
-                  />
-                </label>
-                <label className="block max-w-xs">
-                  <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
-                    % of stake returned on loss
-                  </span>
-                  <input
-                    type="number"
-                    min="0"
-                    max="100"
-                    step="any"
-                    value={form.percentOfStake}
-                    onChange={(e) =>
-                      setForm((f) => ({
-                        ...f,
-                        percentOfStake: e.target.value,
-                      }))
-                    }
-                    required
-                    className="w-full rounded-sm border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm"
-                  />
-                </label>
-              </>
-            )}
-
             {editingRow.type === "REFERRAL" && (
               <label className="block max-w-xs">
                 <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
@@ -581,12 +531,6 @@ function BriefSummary({ row }) {
         </span>
       );
     }
-    case "CASHBACK":
-      return (
-        <span>
-          min odds {r.minTotalOdds ?? "—"} · {r.percentOfStake ?? 0}% stake
-        </span>
-      );
     case "REFERRAL":
       return <span>{row.percentage ?? 0}% (reserved)</span>;
     default:

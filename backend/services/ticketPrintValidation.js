@@ -39,7 +39,7 @@ export function normalizeSnapshotForPrintValidation(
       : Number(entry?.odds),
     marketVersion: Number.isFinite(acceptedVersionsByIndex.get(index))
       ? acceptedVersionsByIndex.get(index)
-      : Number(entry?.marketVersion),
+      : Number(entry?.serverMarketVersion ?? entry?.marketVersion),
     fromLive: false,
   }));
 

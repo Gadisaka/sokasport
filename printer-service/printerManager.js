@@ -1,9 +1,11 @@
-import os from "os";
 import path from "path";
-import { promises as fs } from "fs";
 import { createRequire } from "module";
 import { getEffectiveConfig } from "./config.js";
 import { log } from "./logger.js";
+import {
+  listWindowsPrintersViaPowerShell,
+  printRawViaPowerShell,
+} from "./windowsPrinters.js";
 
 export const RECONNECT_INTERVAL_MS = 5000;
 export const WRITE_TIMEOUT_MS = Number(process.env.WRITE_TIMEOUT_MS) || 60_000;
@@ -11,23 +13,34 @@ const PRINTER_LIST_TTL_MS = 5000;
 const DEFAULT_PRINTER_NAME = "POS80";
 
 let printerApiPromise = null;
+let nativePrinterDisabled = false;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function getPrinterApi() {
+  if (nativePrinterDisabled) return null;
   if (printerApiPromise) return printerApiPromise;
   printerApiPromise = (async () => {
-    if (process.pkg) {
-      const base = path.dirname(process.execPath);
-      const requireFromDisk = createRequire(
-        path.join(base, "node_modules", "printer", "package.json"),
-      );
-      return requireFromDisk("printer");
+    try {
+      if (process.pkg) {
+        const base = path.dirname(process.execPath);
+        const requireFromDisk = createRequire(
+          path.join(base, "node_modules", "printer", "package.json"),
+        );
+        return requireFromDisk("printer");
+      }
+      const mod = await import("printer");
+      return mod.default ?? mod;
+    } catch (error) {
+      nativePrinterDisabled = true;
+      log("warn", "native_printer_disabled", {
+        message: "Falling back to PowerShell printing",
+        error: error?.message || "native module load failed",
+      });
+      return null;
     }
-    const mod = await import("printer");
-    return mod.default ?? mod;
   })();
   return printerApiPromise;
 }
@@ -38,12 +51,6 @@ function printerNameOf(entry) {
 
 function equalsIgnoreCase(a, b) {
   return String(a || "").toLowerCase() === String(b || "").toLowerCase();
-}
-
-function printerLooksLikePos80(entry) {
-  return /pos80|pos-?80|thermal|receipt/i.test(
-    `${entry?.name || ""} ${entry?.driverName || ""} ${entry?.portName || ""}`,
-  );
 }
 
 function normalizePrinterInfo(entry) {
@@ -108,15 +115,37 @@ export class PrinterManager {
     if (this.cachedPrinters && now - this.cachedPrintersAt < PRINTER_LIST_TTL_MS) {
       return this.cachedPrinters;
     }
-    try {
-      const printerApi = await getPrinterApi();
-      const printers = await Promise.resolve(printerApi.getPrinters?.() || []);
-      this.cachedPrinters = Array.isArray(printers) ? printers : [];
-      this.cachedPrintersAt = now;
-      return this.cachedPrinters;
-    } catch {
-      return [];
+
+    /** @type {Array<any>} */
+    let printers = [];
+
+    if (!nativePrinterDisabled) {
+      try {
+        const printerApi = await getPrinterApi();
+        if (printerApi) {
+          const native = await Promise.resolve(printerApi.getPrinters?.() || []);
+          if (Array.isArray(native) && native.length > 0) {
+            printers = native;
+          }
+        }
+      } catch (error) {
+        nativePrinterDisabled = true;
+        log("warn", "native_printer_disabled", {
+          error: error?.message || "Native printer enumeration failed",
+        });
+      }
     }
+
+    if (printers.length === 0) {
+      const fallback = await listWindowsPrintersViaPowerShell();
+      if (fallback.length > 0) {
+        printers = fallback;
+      }
+    }
+
+    this.cachedPrinters = printers;
+    this.cachedPrintersAt = now;
+    return this.cachedPrinters;
   }
 
   async resolveQueueName() {
@@ -127,18 +156,14 @@ export class PrinterManager {
     const printers = await this.listQueues();
     if (printers.length === 0) return "";
 
-    if (preferred) {
-      const exact = printers.find((entry) =>
-        equalsIgnoreCase(printerNameOf(entry), preferred),
-      );
-      if (exact) return printerNameOf(exact);
-    }
+    const exact = printers.find((entry) =>
+      equalsIgnoreCase(printerNameOf(entry), preferred),
+    );
+    if (exact) return printerNameOf(exact);
 
-    const pos80 = printers.find(printerLooksLikePos80);
-    if (pos80) return printerNameOf(pos80);
-
-    const defaultQueue = printers.find((entry) => Boolean(entry?.isDefault));
-    return printerNameOf(defaultQueue || printers[0]);
+    // Strict mode: do NOT silently fall back to a different printer.
+    // If the configured queue name does not exist, report disconnected.
+    return "";
   }
 
   async forceDisconnect(error) {
@@ -149,11 +174,14 @@ export class PrinterManager {
   }
 
   async connect() {
+    const config = getEffectiveConfig();
+    const expected = String(
+      process.env.PRINTER_NAME || config.printerName || DEFAULT_PRINTER_NAME,
+    ).trim();
     const queueName = await this.resolveQueueName();
     if (!queueName) {
       this.connectionState = "disconnected";
-      this.lastError =
-        "No printer queue detected. Install POS80 printer and verify Windows queue name.";
+      this.lastError = `Printer queue "${expected}" not found in Windows. Check Settings → Printers & scanners.`;
       return false;
     }
 
@@ -175,16 +203,49 @@ export class PrinterManager {
     return true;
   }
 
-  async printFile(filename, queueName) {
+  async sendRawWithNative(buffer, queueName) {
     const printerApi = await getPrinterApi();
-    return new Promise((resolve, reject) => {
-      printerApi.printFile({
-        filename,
-        printer: queueName,
-        success: () => resolve(),
-        error: (err) => reject(err),
+    if (!printerApi) {
+      throw Object.assign(new Error("native_unavailable"), {
+        code: "native_unavailable",
       });
+    }
+    return new Promise((resolve, reject) => {
+      try {
+        printerApi.printDirect({
+          data: buffer,
+          printer: queueName,
+          type: "RAW",
+          docname: "Sokasport Ticket",
+          success: () => resolve(),
+          error: (err) => reject(err),
+        });
+      } catch (err) {
+        reject(err);
+      }
     });
+  }
+
+  async sendRawWithPowerShell(buffer, queueName) {
+    const result = await printRawViaPowerShell(buffer, queueName);
+    if (!result.ok) {
+      throw new Error(result.error || "PowerShell raw print failed");
+    }
+  }
+
+  async sendRaw(buffer, queueName) {
+    if (!nativePrinterDisabled) {
+      try {
+        await this.sendRawWithNative(buffer, queueName);
+        return;
+      } catch (err) {
+        nativePrinterDisabled = true;
+        log("warn", "native_print_disabled", {
+          error: err?.message || "native print failed; falling back to PowerShell",
+        });
+      }
+    }
+    await this.sendRawWithPowerShell(buffer, queueName);
   }
 
   async write(buffer, timeoutMs = WRITE_TIMEOUT_MS, jobId = "") {
@@ -195,14 +256,9 @@ export class PrinterManager {
     }
 
     const start = Date.now();
-    const tempFile = path.join(
-      os.tmpdir(),
-      `sokasport-escpos-${jobId || Date.now()}.bin`,
-    );
     try {
-      await fs.writeFile(tempFile, buffer);
       await Promise.race([
-        this.printFile(tempFile, this.printerName),
+        this.sendRaw(buffer, this.printerName),
         sleep(timeoutMs).then(() => {
           const timeoutErr = new Error("Write timeout");
           timeoutErr.code = "write_timeout";
@@ -210,6 +266,7 @@ export class PrinterManager {
         }),
       ]);
       this.lastSuccessfulPrintAt = new Date().toISOString();
+      this.lastError = null;
       log("info", "print_success", {
         jobId,
         port: this.printerName,
@@ -232,8 +289,6 @@ export class PrinterManager {
       }
       await this.forceDisconnect(error);
       throw error;
-    } finally {
-      await fs.unlink(tempFile).catch(() => {});
     }
   }
 

@@ -5,6 +5,8 @@ import AppIcon from "../common/AppIcon";
 import LogoImg from "../common/LogoImg";
 import { useTranslation } from "../../i18n/LanguageContext.jsx";
 import { timeOptionDisplayLabel } from "../../i18n/coreTranslations.js";
+import MobileCalendarTimeBar from "../common/MobileCalendarTimeBar";
+import { isCalendarDayTimeId } from "../../utils/sportsbookTimeOptions";
 
 function SelectStub({ label }) {
   return (
@@ -20,12 +22,6 @@ function SelectStub({ label }) {
 
 const selectClassName =
   "h-8 w-full cursor-pointer rounded bg-(--sb-accent-surface-deep) px-2 text-[11px] font-semibold text-[#ffffff] outline-none";
-
-function isCalendarDayTimeId(id) {
-  return (
-    id === "today" || id === "tomorrow" || /^day\d+$/i.test(String(id || ""))
-  );
-}
 
 const REGION_ICONS = {
   international: "globe",
@@ -46,6 +42,7 @@ function TopLeaguesSidebar({
   onTimeChange,
   timeOptions = [],
   dateDropdownOptions = [],
+  horizonDays = 14,
   searchQuery = "",
   onSearchChange,
   panelClassName = "",
@@ -183,71 +180,85 @@ function TopLeaguesSidebar({
 
           {/* <SelectStub label="View" /> */}
 
-          <div className="grid grid-cols-2 gap-1">
-            <button
-              type="button"
-              onClick={() => todayOption?.id && onTimeChange?.(todayOption.id)}
-              className={`h-7 cursor-pointer rounded border text-[11px] font-bold ${
-                selectedTimeId === todayOption?.id
-                  ? "border-transparent bg-[#019052] text-white"
-                  : "border-transparent bg-(--sb-bg-2) text-[rgba(255,255,255,0.72)]"
-              }`}
-            >
-              {timeOptionDisplayLabel(todayOption, t) || t("time.today")}
-            </button>
-            <button
-              type="button"
-              onClick={() =>
-                tomorrowOption?.id && onTimeChange?.(tomorrowOption.id)
-              }
-              className={`h-7 cursor-pointer rounded border text-[11px] font-bold ${
-                selectedTimeId === tomorrowOption?.id
-                  ? "border-transparent bg-[#019052] text-white"
-                  : "border-transparent bg-(--sb-bg-2) text-[rgba(255,255,255,0.72)]"
-              }`}
-            >
-              {timeOptionDisplayLabel(tomorrowOption, t) || t("time.tomorrow")}
-            </button>
+          <div className="lg:hidden">
+            <MobileCalendarTimeBar
+              timeOptions={timeOptions}
+              dateDropdownOptions={dateDropdownOptions}
+              selectedTimeId={selectedTimeId}
+              onTimeChange={onTimeChange}
+              horizonDays={horizonDays}
+              compact
+            />
           </div>
 
-          <label className="block text-[10px] font-bold uppercase tracking-wide text-[#5b6a8f]">
-            {t("sidebar.filterByTime")}
-            <select
-              className={`${selectClassName} mt-0.5`}
-              value={selectedTimeId}
-              onChange={(e) => onTimeChange?.(e.target.value)}
-            >
-              {timeOptions.map((opt) => (
-                <option key={opt.id} value={opt.id}>
-                  {timeOptionDisplayLabel(opt, t)}
-                </option>
-              ))}
-            </select>
-          </label>
+          <div className="hidden lg:block">
+            <div className="grid grid-cols-2 gap-1">
+              <button
+                type="button"
+                onClick={() => todayOption?.id && onTimeChange?.(todayOption.id)}
+                className={`h-7 cursor-pointer rounded border text-[11px] font-bold ${
+                  selectedTimeId === todayOption?.id
+                    ? "border-transparent bg-[#019052] text-white"
+                    : "border-transparent bg-(--sb-bg-2) text-[rgba(255,255,255,0.72)]"
+                }`}
+              >
+                {timeOptionDisplayLabel(todayOption, t) || t("time.today")}
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  tomorrowOption?.id && onTimeChange?.(tomorrowOption.id)
+                }
+                className={`h-7 cursor-pointer rounded border text-[11px] font-bold ${
+                  selectedTimeId === tomorrowOption?.id
+                    ? "border-transparent bg-[#019052] text-white"
+                    : "border-transparent bg-(--sb-bg-2) text-[rgba(255,255,255,0.72)]"
+                }`}
+              >
+                {timeOptionDisplayLabel(tomorrowOption, t) ||
+                  t("time.tomorrow")}
+              </button>
+            </div>
 
-          <label className="block text-[10px] font-bold uppercase tracking-wide text-[#5b6a8f]">
-            {t("sidebar.dateWithGames")}
-            <select
-              className={`${selectClassName} mt-0.5`}
-              value={dateSelectValue}
-              disabled={dateDropdownOptions.length === 0}
-              onChange={(e) => {
-                const v = e.target.value;
-                if (v) onTimeChange?.(v);
-              }}
-            >
-              <option value="">
-                {dateDropdownOptions.length === 0
-                  ? t("sidebar.noFixtures")
-                  : t("sidebar.selectDay")}
-              </option>
-              {dateDropdownOptions.map((o) => (
-                <option key={o.id} value={o.id}>
-                  {timeOptionDisplayLabel(o, t)} ({o.count})
+            <label className="mt-2 block text-[10px] font-bold uppercase tracking-wide text-[#5b6a8f]">
+              {t("sidebar.filterByTime")}
+              <select
+                className={`${selectClassName} mt-0.5`}
+                value={selectedTimeId}
+                onChange={(e) => onTimeChange?.(e.target.value)}
+              >
+                {timeOptions.map((opt) => (
+                  <option key={opt.id} value={opt.id}>
+                    {timeOptionDisplayLabel(opt, t)}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="block text-[10px] font-bold uppercase tracking-wide text-[#5b6a8f]">
+              {t("sidebar.dateWithGames")}
+              <select
+                className={`${selectClassName} mt-0.5`}
+                value={dateSelectValue}
+                disabled={dateDropdownOptions.length === 0}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (v) onTimeChange?.(v);
+                }}
+              >
+                <option value="">
+                  {dateDropdownOptions.length === 0
+                    ? t("sidebar.noFixtures")
+                    : t("sidebar.selectDay")}
                 </option>
-              ))}
-            </select>
-          </label>
+                {dateDropdownOptions.map((o) => (
+                  <option key={o.id} value={o.id}>
+                    {timeOptionDisplayLabel(o, t)} ({o.count})
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
         </>
       ) : null}
 

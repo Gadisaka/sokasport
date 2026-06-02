@@ -14,6 +14,12 @@ import TopLeaguesSidebar from "../components/sections/TopLeaguesSidebar";
 import { topHeaderData, topNavItems, sportsList } from "../data/homepageData";
 import { fetchFixturesLive, fetchLiveOdds } from "../services/api";
 import { mapFixtureToMatch } from "../services/fixtureMapper";
+import { sortMatchesForDisplay } from "../utils/matchDisplaySort";
+import {
+  clampSelectionsToMax,
+  slipCountsFromSlips,
+  toggleSlipSelection,
+} from "../utils/betSlipLimits";
 import { normalizeApiFixtureId } from "../utils/fixtureId";
 import {
   MARKET_FILTER_CHIPS,
@@ -565,6 +571,7 @@ function Live() {
   const [expandedMatchId, setExpandedMatchId] = useState(null);
   const [activeSlip, setActiveSlip] = useState(initialBet.activeSlip);
   const [slips, setSlips] = useState(initialBet.slips);
+  const [slipLimitNotice, setSlipLimitNotice] = useState(null);
 
   const refreshLiveAbortRef = useRef(null);
 
@@ -730,8 +737,11 @@ function Live() {
   }, []);
 
   const filteredMatches = useMemo(() => {
-    if (selectedLeagueId === "all-leagues") return allMatches;
-    return allMatches.filter((m) => m.league === selectedLeagueId);
+    const list =
+      selectedLeagueId === "all-leagues"
+        ? allMatches
+        : allMatches.filter((m) => m.league === selectedLeagueId);
+    return sortMatchesForDisplay(list);
   }, [allMatches, selectedLeagueId]);
 
   const leagueCounts = useMemo(() => {
@@ -779,25 +789,18 @@ function Live() {
 
   const handleOddsClick = useCallback(
     (oddData) => {
-      setSlips((prev) => {
-        const current = prev[activeSlip];
-        const exists = current.find((s) => s.id === oddData.id);
-        if (exists) {
-          return {
-            ...prev,
-            [activeSlip]: current.filter((s) => s.id !== oddData.id),
-          };
-        }
-        const withoutSameMatch = current.filter(
-          (s) => s.matchName !== oddData.matchName,
-        );
-        return {
-          ...prev,
-          [activeSlip]: [...withoutSameMatch, oddData],
-        };
-      });
+      setSlipLimitNotice(null);
+      const { next, blocked, message } = toggleSlipSelection(
+        slips[activeSlip] || [],
+        oddData,
+      );
+      if (blocked) {
+        if (message) setSlipLimitNotice(message);
+        return;
+      }
+      setSlips((prev) => ({ ...prev, [activeSlip]: next }));
     },
-    [activeSlip],
+    [activeSlip, slips],
   );
 
   const handleRemoveSelection = useCallback(
@@ -816,13 +819,18 @@ function Live() {
 
   const handleReplaceSlipSelections = useCallback(
     (nextSelections) => {
+      setSlipLimitNotice(null);
       setSlips((prev) => ({
         ...prev,
-        [activeSlip]: Array.isArray(nextSelections) ? nextSelections : [],
+        [activeSlip]: clampSelectionsToMax(
+          Array.isArray(nextSelections) ? nextSelections : [],
+        ),
       }));
     },
     [activeSlip],
   );
+
+  const slipCounts = useMemo(() => slipCountsFromSlips(slips), [slips]);
 
   const totalLeagueCount = Math.max(
     regionGroups.reduce((s, r) => s + r.leagues.length, 0) +
@@ -899,6 +907,9 @@ function Live() {
               onReplaceSelections={handleReplaceSlipSelections}
               activeSlip={activeSlip}
               onChangeSlip={setActiveSlip}
+              slipCounts={slipCounts}
+              slipLimitNotice={slipLimitNotice}
+              onDismissSlipLimitNotice={() => setSlipLimitNotice(null)}
             />
           }
         />
@@ -909,6 +920,8 @@ function Live() {
         onRemoveSelection={handleRemoveSelection}
         onClearSelections={handleClearSelections}
         onReplaceSelections={handleReplaceSlipSelections}
+        slipLimitNotice={slipLimitNotice}
+        onDismissSlipLimitNotice={() => setSlipLimitNotice(null)}
       />
     </PageContainer>
   );

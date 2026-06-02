@@ -18,6 +18,11 @@ import {
   topNavItems,
 } from "../data/homepageData";
 import useMatches, { PREMATCH_HORIZON_DAYS } from "../hooks/useMatches";
+import {
+  clampSelectionsToMax,
+  slipCountsFromSlips,
+  toggleSlipSelection,
+} from "../utils/betSlipLimits";
 import { useFootballSidebarCatalog } from "../hooks/useFootballSidebarCatalog";
 import {
   buildLeagueSidebarGroups,
@@ -57,6 +62,12 @@ function Home() {
   const [expandedMatchId, setExpandedMatchId] = useState(null);
   const [activeSlip, setActiveSlip] = useState(initialBet.activeSlip);
   const [slips, setSlips] = useState(initialBet.slips);
+  const [slipLimitNotice, setSlipLimitNotice] = useState(null);
+  const [matchPageMeta, setMatchPageMeta] = useState({
+    isLastPage: true,
+    totalMatches: 0,
+    showPagination: false,
+  });
   const selectedOdds = useMemo(
     () => new Set((slips[activeSlip] || []).map((selection) => selection.id)),
     [activeSlip, slips],
@@ -205,25 +216,18 @@ function Home() {
 
   const handleOddsClick = useCallback(
     (oddData) => {
-      setSlips((prev) => {
-        const current = prev[activeSlip];
-        const exists = current.find((s) => s.id === oddData.id);
-        if (exists) {
-          return {
-            ...prev,
-            [activeSlip]: current.filter((s) => s.id !== oddData.id),
-          };
-        }
-        const withoutSameMatch = current.filter(
-          (s) => s.matchName !== oddData.matchName,
-        );
-        return {
-          ...prev,
-          [activeSlip]: [...withoutSameMatch, oddData],
-        };
-      });
+      setSlipLimitNotice(null);
+      const { next, blocked, message } = toggleSlipSelection(
+        slips[activeSlip] || [],
+        oddData,
+      );
+      if (blocked) {
+        if (message) setSlipLimitNotice(message);
+        return;
+      }
+      setSlips((prev) => ({ ...prev, [activeSlip]: next }));
     },
-    [activeSlip],
+    [activeSlip, slips],
   );
 
   const handleRemoveSelection = useCallback(
@@ -245,13 +249,18 @@ function Home() {
 
   const handleReplaceSlipSelections = useCallback(
     (nextSelections) => {
+      setSlipLimitNotice(null);
       setSlips((prev) => ({
         ...prev,
-        [activeSlip]: Array.isArray(nextSelections) ? nextSelections : [],
+        [activeSlip]: clampSelectionsToMax(
+          Array.isArray(nextSelections) ? nextSelections : [],
+        ),
       }));
     },
     [activeSlip],
   );
+
+  const slipCounts = useMemo(() => slipCountsFromSlips(slips), [slips]);
 
   const sportCounts = useMemo(() => {
     const counts = new Map();
@@ -348,6 +357,7 @@ function Home() {
       onTimeChange: setSelectedTimeId,
       timeOptions,
       dateDropdownOptions,
+      horizonDays: PREMATCH_HORIZON_DAYS,
       searchQuery: clubSearch,
       onSearchChange: setClubSearch,
     }),
@@ -407,6 +417,8 @@ function Home() {
               <MatchesTabs
                 sports={toolbarSports}
                 times={timeOptions}
+                dateDropdownOptions={dateDropdownOptions}
+                horizonDays={PREMATCH_HORIZON_DAYS}
                 leagues={leagueOptions}
                 selectedSportId={selectedSportId}
                 selectedTimeId={resolvedTimeId}
@@ -424,6 +436,7 @@ function Home() {
                 selectedOdds={selectedOdds}
                 expandedMatchId={expandedMatchId}
                 oddsDetailByFixtureId={oddsDetailByFixtureId}
+                onPageMetaChange={setMatchPageMeta}
               />
               {!loading && !String(clubSearch).trim() ? (
                 <NextCalendarDayFooter
@@ -431,6 +444,8 @@ function Home() {
                   timeOptions={timeOptions}
                   horizonDays={PREMATCH_HORIZON_DAYS}
                   onSelectDay={handleNextCalendarDay}
+                  requireLastMatchPage
+                  isLastMatchPage={matchPageMeta.isLastPage}
                 />
               ) : null}
             </>
@@ -443,6 +458,9 @@ function Home() {
               onReplaceSelections={handleReplaceSlipSelections}
               activeSlip={activeSlip}
               onChangeSlip={setActiveSlip}
+              slipCounts={slipCounts}
+              slipLimitNotice={slipLimitNotice}
+              onDismissSlipLimitNotice={() => setSlipLimitNotice(null)}
             />
           }
         />
@@ -475,6 +493,8 @@ function Home() {
         onRemoveSelection={handleRemoveSelection}
         onClearSelections={handleClearSelections}
         onReplaceSelections={handleReplaceSlipSelections}
+        slipLimitNotice={slipLimitNotice}
+        onDismissSlipLimitNotice={() => setSlipLimitNotice(null)}
       />
     </PageContainer>
   );

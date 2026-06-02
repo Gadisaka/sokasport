@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "../../i18n/LanguageContext.jsx";
+import { paginateGroupedMatches } from "../../utils/matchPagination";
 import AppIcon from "../common/AppIcon";
 import LogoImg from "../common/LogoImg";
 import ExpansionMarketSection from "../common/ExpansionMarketSection";
@@ -8,7 +10,7 @@ import {
   MARKET_FILTER_ALL_CHIP_ID,
   filterCategoriesByChipId,
 } from "../../data/footballMarketsByCategory";
-import { getTopLeagueOrder } from "../../utils/topLeagues";
+import { groupMatchesByLeague } from "../../utils/matchDisplaySort";
 
 const TABLE_GRID_COLS =
   "grid-cols-[64px_minmax(220px,1fr)_repeat(6,82px)_58px_22px]";
@@ -237,8 +239,8 @@ function MatchExpansionSkeleton({ onClose }) {
     >
       <div className="flex items-center justify-between border-b border-white/8 px-3 py-2.5">
         <div className="flex min-w-0 flex-1 items-center gap-2">
-          <div className="h-5 w-24 shrink-0 animate-pulse rounded bg-[#0a4538]" />
-          <div className="h-4 w-40 max-w-[50%] animate-pulse rounded bg-[#0a4538]" />
+          <div className="h-5 w-24 shrink-0 animate-pulse rounded bg-(--sb-bg-card)" />
+          <div className="h-4 w-40 max-w-[50%] animate-pulse rounded bg-(--sb-bg-card)" />
         </div>
         <button
           type="button"
@@ -250,16 +252,16 @@ function MatchExpansionSkeleton({ onClose }) {
       </div>
 
       <div className="border-b border-white/8 bg-(--sb-bg-page)/92 px-3 py-3">
-        <div className="mx-auto mb-2 h-3 w-24 animate-pulse rounded bg-[#0a4538]" />
+        <div className="mx-auto mb-2 h-3 w-24 animate-pulse rounded bg-(--sb-bg-card)" />
         <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
           <div className="flex flex-col items-center gap-2">
-            <div className="h-9 w-9 animate-pulse rounded-full bg-[#0a4538]" />
-            <div className="h-3 w-20 animate-pulse rounded bg-[#0a4538]" />
+            <div className="h-9 w-9 animate-pulse rounded-full bg-(--sb-bg-card)" />
+            <div className="h-3 w-20 animate-pulse rounded bg-(--sb-bg-card)" />
           </div>
-          <div className="h-3 w-6 animate-pulse rounded bg-[#0a4538]" />
+          <div className="h-3 w-6 animate-pulse rounded bg-(--sb-bg-card)" />
           <div className="flex flex-col items-center gap-2">
-            <div className="h-9 w-9 animate-pulse rounded-full bg-[#0a4538]" />
-            <div className="h-3 w-20 animate-pulse rounded bg-[#0a4538]" />
+            <div className="h-9 w-9 animate-pulse rounded-full bg-(--sb-bg-card)" />
+            <div className="h-3 w-20 animate-pulse rounded bg-(--sb-bg-card)" />
           </div>
         </div>
       </div>
@@ -268,7 +270,7 @@ function MatchExpansionSkeleton({ onClose }) {
         {[1, 2, 3, 4].map((i) => (
           <div
             key={i}
-            className="h-7 w-16 animate-pulse rounded-full bg-[#0a4538]"
+            className="h-7 w-16 animate-pulse rounded-full bg-(--sb-bg-card)"
           />
         ))}
       </div>
@@ -280,13 +282,13 @@ function MatchExpansionSkeleton({ onClose }) {
             className="overflow-hidden rounded-xl bg-(--sb-accent-surface-deep)/35"
           >
             <div className="border-b border-white/8 px-3 py-2">
-              <div className="h-3 w-28 animate-pulse rounded bg-[#0a4538]" />
+              <div className="h-3 w-28 animate-pulse rounded bg-(--sb-bg-card)" />
             </div>
             <div className="grid grid-cols-2 gap-1.5 p-2 sm:grid-cols-3 lg:grid-cols-4">
               {Array.from({ length: 8 }).map((_, j) => (
                 <div
                   key={j}
-                  className="h-9 animate-pulse rounded bg-[#0a4538]"
+                  className="h-9 animate-pulse rounded bg-(--sb-bg-card)"
                 />
               ))}
             </div>
@@ -473,39 +475,51 @@ function MatchesTable({
   selectedOdds,
   expandedMatchId,
   oddsDetailByFixtureId,
+  onPageMetaChange,
 }) {
-  const groupedMatches = useMemo(() => {
-    const groups = new Map();
-    matches.forEach((match) => {
-      const key = match.league || "Other";
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key).push(match);
-    });
+  const { t } = useTranslation();
+  const [pageIndex, setPageIndex] = useState(0);
 
-    const nonTopRank = 1_000;
-    const rankOf = (leagueKey) => {
-      const o = getTopLeagueOrder(leagueKey);
-      return o === null ? nonTopRank : o;
-    };
-    const earliestKickMs = (leagueMatches) => {
-      let min = Infinity;
-      for (const m of leagueMatches) {
-        const ts = m.kickoffAt ? new Date(m.kickoffAt).getTime() : NaN;
-        if (Number.isFinite(ts) && ts < min) min = ts;
-      }
-      return min;
-    };
+  const allGrouped = useMemo(() => groupMatchesByLeague(matches), [matches]);
 
-    return Array.from(groups.entries()).sort(([la, ma], [lb, mb]) => {
-      const ra = rankOf(la);
-      const rb = rankOf(lb);
-      if (ra !== rb) return ra - rb;
-      const ka = earliestKickMs(ma);
-      const kb = earliestKickMs(mb);
-      if (ka !== kb) return ka - kb;
-      return String(la).localeCompare(String(lb));
-    });
+  const pagination = useMemo(
+    () => paginateGroupedMatches(allGrouped, pageIndex),
+    [allGrouped, pageIndex],
+  );
+
+  const groupedMatches = pagination.grouped;
+
+  useEffect(() => {
+    setPageIndex(0);
   }, [matches]);
+
+  useEffect(() => {
+    onPageMetaChange?.({
+      page: pagination.page,
+      totalPages: pagination.totalPages,
+      isLastPage: pagination.isLastPage,
+      totalMatches: pagination.totalMatches,
+      showPagination: pagination.showPagination,
+    });
+  }, [
+    onPageMetaChange,
+    pagination.page,
+    pagination.totalPages,
+    pagination.isLastPage,
+    pagination.totalMatches,
+    pagination.showPagination,
+  ]);
+
+  const goToPage = useCallback((nextPage) => {
+    setPageIndex((p) => {
+      const max = Math.max(0, pagination.totalPages - 1);
+      const clamped = Math.min(Math.max(0, nextPage), max);
+      if (clamped !== p) {
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      }
+      return clamped;
+    });
+  }, [pagination.totalPages]);
 
   const matchRowRefs = useRef(new Map());
   const prevExpandedMatchIdRef = useRef(expandedMatchId);
@@ -632,6 +646,34 @@ function MatchesTable({
           );
         })}
       </div>
+
+      {pagination.showPagination ? (
+        <div className="flex flex-col items-center gap-2 border-t border-white/8 px-3 py-3">
+          <p className="m-0 text-[11px] font-semibold text-(--sb-text-muted)">
+            {t("matches.pageOf")
+              .replace("{page}", String(pagination.page + 1))
+              .replace("{total}", String(pagination.totalPages))}
+          </p>
+          <div className="flex w-full max-w-xs items-center justify-center gap-2">
+            <button
+              type="button"
+              disabled={pagination.isFirstPage}
+              onClick={() => goToPage(pageIndex - 1)}
+              className="min-h-9 flex-1 cursor-pointer rounded-xl border border-transparent bg-(--sb-accent-surface-deep) px-3 text-[12px] font-bold text-[#ffffff] transition-all hover:bg-(--sb-bg-2) disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {t("matches.prev")}
+            </button>
+            <button
+              type="button"
+              disabled={pagination.isLastPage}
+              onClick={() => goToPage(pageIndex + 1)}
+              className="min-h-9 flex-1 cursor-pointer rounded-xl border border-transparent bg-(--sb-accent-fill) px-3 text-[12px] font-bold text-white shadow-[0_6px_16px_-6px_rgba(1,144,82,0.3)] transition-all hover:bg-(--sb-accent-fill-hover) disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {t("matches.next")}
+            </button>
+          </div>
+        </div>
+      ) : null}
     </Panel>
   );
 }

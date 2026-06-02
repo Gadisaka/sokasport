@@ -196,7 +196,6 @@ export default function AgentTicketsPage() {
               <tr className="border-b border-(--border) text-xs uppercase tracking-wide text-(--muted)">
                 <th className="px-4 py-3 w-8" aria-hidden />
                 <th className="px-4 py-3 font-semibold">Time</th>
-                <th className="px-4 py-3 font-semibold">Receipt</th>
                 <th className="px-4 py-3 font-semibold">Coupon</th>
                 <th className="px-4 py-3 font-semibold">Branch</th>
                 <th className="px-4 py-3 font-semibold">Stake</th>
@@ -207,13 +206,13 @@ export default function AgentTicketsPage() {
             <tbody>
               {query.isLoading ? (
                 <tr>
-                  <td className="px-4 py-4 text-(--muted)" colSpan={8}>
+                  <td className="px-4 py-4 text-(--muted)" colSpan={7}>
                     Loading tickets...
                   </td>
                 </tr>
               ) : items.length === 0 ? (
                 <tr>
-                  <td className="px-4 py-4 text-(--muted)" colSpan={8}>
+                  <td className="px-4 py-4 text-(--muted)" colSpan={7}>
                     No tickets found for this filter.
                   </td>
                 </tr>
@@ -228,9 +227,6 @@ export default function AgentTicketsPage() {
                       >
                         <td className="px-4 py-3 text-(--muted)">{open ? "▼" : "▶"}</td>
                         <td className="px-4 py-3">{formatDateTime(item.created_at)}</td>
-                        <td className="px-4 py-3 font-mono">
-                          {item.receipt_number || "—"}
-                        </td>
                         <td className="px-4 py-3 font-mono">{item.coupon_number}</td>
                         <td className="px-4 py-3">{item.branch_name || "-"}</td>
                         <td className="px-4 py-3">
@@ -243,7 +239,7 @@ export default function AgentTicketsPage() {
                       </tr>
                       {open ? (
                         <tr key={`${item.id}-detail`} className="border-b border-(--border)/60 bg-(--surface)/80">
-                          <td colSpan={8} className="px-4 py-4">
+                          <td colSpan={7} className="px-4 py-4">
                             {detailQuery.isLoading ? (
                               <p className="text-sm text-(--muted)">Loading slip...</p>
                             ) : detailQuery.isError ? (

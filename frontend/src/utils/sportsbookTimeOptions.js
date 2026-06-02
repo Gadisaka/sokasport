@@ -119,3 +119,98 @@ export function getNextCalendarDayTimeId(timeId, horizonDays = 14) {
   const nextOff = off >= maxOff ? 0 : off + 1;
   return dayOffsetToTimeId(nextOff);
 }
+
+/** Mobile home: first N days as chips; all later days (e.g. 11 jun, 12 jun) in one dropdown. */
+export const MOBILE_QUICK_DAY_COUNT = 4;
+export const MOBILE_PICKER_MIN_OFFSET = 4;
+
+export function isHourBucketTimeId(timeId) {
+  const id = String(timeId || "");
+  return id === "1h" || id === "3h" || id === "12h";
+}
+
+export function isCalendarDayTimeId(timeId) {
+  return calendarTimeIdToUtcDayOffset(timeId) !== null;
+}
+
+/** Local calendar `YYYY-MM-DD` for a day offset from today (local midnight). */
+export function localYmdForDayOffset(offset, now = new Date()) {
+  const o = Number(offset);
+  if (!Number.isFinite(o)) return "";
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const d = new Date(start);
+  d.setDate(d.getDate() + o);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/** Inverse of `localYmdForDayOffset`; null when outside local today..+N. */
+export function dayOffsetFromLocalYmd(ymd, now = new Date()) {
+  const raw = String(ymd || "").trim();
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw);
+  if (!m) return null;
+  const picked = new Date(
+    Number(m[1]),
+    Number(m[2]) - 1,
+    Number(m[3]),
+  );
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const hourMs = 24 * 60 * 60 * 1000;
+  return Math.round((picked.getTime() - today.getTime()) / hourMs);
+}
+
+/**
+ * @param {{ id: string, label?: string, labelKey?: string | null }[]} timeOptions
+ * @param {{ id: string, label?: string, labelKey?: string | null, count?: number }[]} [dateDropdownOptions]
+ * @param {number} [horizonDays]
+ */
+export function buildMobileCalendarGroups(
+  timeOptions = [],
+  { dateDropdownOptions = [], horizonDays = 14 } = {},
+) {
+  const safe = Math.min(Math.max(Number(horizonDays) || 14, 2), 31);
+  const countsById = new Map(
+    (dateDropdownOptions || []).map((o) => [o.id, o.count ?? 0]),
+  );
+  const metaById = new Map(
+    (timeOptions || [])
+      .filter((t) => isCalendarDayTimeId(t.id))
+      .map((t) => [t.id, t]),
+  );
+
+  const hourBuckets = (timeOptions || []).filter((t) =>
+    isHourBucketTimeId(t.id),
+  );
+  const quickTabs = [];
+  const pickerDays = [];
+
+  for (let off = 0; off < safe; off += 1) {
+    const id = dayOffsetToTimeId(off);
+    if (!id) continue;
+    const meta = metaById.get(id);
+    const drop = (dateDropdownOptions || []).find((o) => o.id === id);
+    const entry = {
+      id,
+      label: drop?.label ?? meta?.label ?? id,
+      labelKey: drop?.labelKey ?? meta?.labelKey ?? null,
+      count: countsById.get(id) ?? drop?.count ?? 0,
+      offset: off,
+      ymd: localYmdForDayOffset(off),
+    };
+
+    if (off < MOBILE_QUICK_DAY_COUNT) {
+      quickTabs.push(entry);
+    } else if (off >= MOBILE_PICKER_MIN_OFFSET) {
+      pickerDays.push(entry);
+    }
+  }
+
+  return {
+    hourBuckets,
+    quickTabs,
+    pickerDays,
+    listedTabs: [],
+  };
+}

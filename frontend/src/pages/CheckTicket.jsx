@@ -12,6 +12,7 @@ import {
 } from "../components/common/accountFormClasses";
 import { topHeaderData, topNavItems } from "../data/homepageData";
 import { fetchPublicCouponTicket } from "../services/api";
+import CouponReceipt from "../components/common/CouponReceipt";
 
 function CheckTicket() {
   const navigate = useNavigate();
@@ -117,43 +118,9 @@ function CheckTicket() {
         </form>
 
         {preview ? (
-          <SoftPanel className="animate-deposit-panel mt-4">
-            <p className="mb-1 text-center font-mono text-lg font-bold tracking-wide text-[#ffffff]">
-              {preview.couponNumber}
-            </p>
-            <p className="mb-4 text-center text-[11px] text-[rgba(255,255,255,0.5)]">
-              Games on this coupon
-            </p>
-            <div className="overflow-x-auto rounded-[1rem] ">
-              <table className="w-full min-w-[320px] text-left text-[11px]">
-                <thead>
-                  <tr className="border-b border-white/8 bg-(--sb-accent-surface-deep)/70 text-[rgba(255,255,255,0.72)]">
-                    <th className="px-2 py-2 font-semibold">Match</th>
-                    <th className="px-2 py-2 font-semibold">Market</th>
-                    <th className="px-2 py-2 font-semibold">Pick</th>
-                    <th className="px-2 py-2 text-right font-semibold">Odds</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(preview.selections || []).map((sel, idx) => (
-                    <tr
-                      key={`${preview.couponNumber}-${idx}`}
-                      className="border-b border-[#2a2a3e] text-[#ffffff]"
-                    >
-                      <td className="max-w-[120px] px-2 py-2 align-top">
-                        {sel.matchName}
-                      </td>
-                      <td className="px-2 py-2 align-top">{sel.marketLabel}</td>
-                      <td className="px-2 py-2 align-top">{sel.label}</td>
-                      <td className="px-2 py-2 text-right align-top font-bold">
-                        {Number(sel.odds).toFixed(2)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </SoftPanel>
+          <div className="animate-deposit-panel mt-6 flex justify-center">
+            <CouponReceipt ticket={preview} />
+          </div>
         ) : null}
       </div>
 

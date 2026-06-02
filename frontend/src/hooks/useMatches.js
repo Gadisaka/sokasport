@@ -13,6 +13,7 @@ import {
   parseUiDateToDate,
   utcTodayYmd,
 } from "../utils/matchTimeUtils";
+import { sortMatchesForDisplay } from "../utils/matchDisplaySort";
 import {
   buildSportsbookTimeOptions,
   calendarTimeIdToUtcDayOffset,
@@ -321,9 +322,7 @@ export function useMatches({ includeLive = true, filters = {} } = {}) {
       byFixtureId.set(live.api_fixture_id, mapFixtureToMatch(live));
     }
 
-    return Array.from(byFixtureId.values()).sort(
-      (a, b) => Number(a.apiFixtureId) - Number(b.apiFixtureId),
-    );
+    return sortMatchesForDisplay(Array.from(byFixtureId.values()));
   }, [flatPrematchFixtures, liveFixtures]);
 
   const hydrateMatchOdds = useCallback(async (apiFixtureId) => {

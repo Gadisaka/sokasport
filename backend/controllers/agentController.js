@@ -193,6 +193,8 @@ export async function getAgentDashboard(req, res) {
           pendingSettlement: 0,
           liveTickets: 0,
         },
+        wonToday: { tickets: 0, payable: 0 },
+        wonYesterday: { tickets: 0, payable: 0 },
         activityByHour: [],
         liveTickets: [],
         cashierPerformance: [],
@@ -208,6 +210,53 @@ export async function getAgentDashboard(req, res) {
       .map((cashier) => cashier.id);
 
     const ticketCashierIds = branchName ? scopedCashierIds : cashierIds;
+
+    // --- Fixed today / yesterday WON ticket buckets (filter-independent) ---
+    const nowForBuckets = new Date();
+    const startOfToday = new Date(
+      Date.UTC(
+        nowForBuckets.getUTCFullYear(),
+        nowForBuckets.getUTCMonth(),
+        nowForBuckets.getUTCDate(),
+        0,
+        0,
+        0,
+        0,
+      ),
+    );
+    const endOfToday = new Date(
+      Date.UTC(
+        nowForBuckets.getUTCFullYear(),
+        nowForBuckets.getUTCMonth(),
+        nowForBuckets.getUTCDate(),
+        23,
+        59,
+        59,
+        999,
+      ),
+    );
+    const startOfYesterday = new Date(startOfToday.getTime() - 86400000);
+    const endOfYesterday = new Date(endOfToday.getTime() - 86400000);
+
+    const wonWindow = async (start, end) => {
+      const rows = await prisma.ticket.findMany({
+        where: {
+          cashier_id: { in: ticketCashierIds },
+          status: "WON",
+          created_at: { gte: start, lte: end },
+        },
+        select: { potential_win: true },
+      });
+      return {
+        tickets: rows.length,
+        payable: rows.reduce((s, t) => s + Number(t.potential_win || 0), 0),
+      };
+    };
+
+    const [wonToday, wonYesterday] = await Promise.all([
+      wonWindow(startOfToday, endOfToday),
+      wonWindow(startOfYesterday, endOfYesterday),
+    ]);
 
     const tickets = await prisma.ticket.findMany({
       where: {
@@ -316,6 +365,8 @@ export async function getAgentDashboard(req, res) {
         pendingSettlement,
         liveTickets: Math.min(10, tickets.length),
       },
+      wonToday,
+      wonYesterday,
       activityByHour: [...byHour.entries()]
         .map(([hour, ticketCount]) => ({ hour, tickets: ticketCount }))
         .sort((a, b) => a.hour.localeCompare(b.hour)),

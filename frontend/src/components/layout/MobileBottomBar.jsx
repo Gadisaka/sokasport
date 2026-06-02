@@ -37,6 +37,8 @@ function MobileBottomBar({
   onClearSelections = () => {},
   onReplaceSelections = () => {},
   useParentSlip = false,
+  slipLimitNotice = null,
+  onDismissSlipLimitNotice = () => {},
 }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -228,6 +230,8 @@ function MobileBottomBar({
         onStakeInputChange={setStakeInput}
         limits={limits}
         winningsTax={winningsTax}
+        slipLimitNotice={slipLimitNotice}
+        onDismissSlipLimitNotice={onDismissSlipLimitNotice}
       />
       <MobilePromotionSheet
         open={promotionOpen}

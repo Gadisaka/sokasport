@@ -32,6 +32,7 @@ import {
   getActiveBonus,
   welcomeBonusRef,
 } from "../lib/bonusEngine.js";
+import { normalizeEthiopiaPhone } from "../lib/phone.js";
 
 const JWT_SECRET = process.env.JWT_SECRET;
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "1d";
@@ -80,13 +81,14 @@ export async function register(req, res) {
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
+    const phoneNorm = normalizeEthiopiaPhone(phone);
 
     const user = await prisma.$transaction(async (tx) => {
       const newUser = await tx.user.create({
         data: {
           name: String(name).trim(),
-          phone: String(phone).trim(),
-          email: `${String(phone).trim()}@player.local`,
+          phone: phoneNorm,
+          email: `${phoneNorm}@player.local`,
           password: hashedPassword,
           role_id: playerRole.id,
           status: true,

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import AppIcon from "../common/AppIcon";
+import CouponReceipt from "../common/CouponReceipt";
 import {
   fetchPublicCouponTicket,
   hasAuthToken,
@@ -26,6 +27,11 @@ import {
   accumulatorPercentFromBonusesList,
 } from "../../utils/accumulatorBonus";
 import { useOddsSocket } from "../../hooks/useOddsSocket";
+import {
+  MAX_SLIP_SELECTIONS,
+  clampSelectionsToMax,
+  slipLegCountViolation,
+} from "../../utils/betSlipLimits";
 
 const modalBackdrop =
   "fixed inset-0 flex items-center justify-center bg-black/55 p-4 backdrop-blur-sm";
@@ -109,6 +115,8 @@ function MobileBetSlip({
   onStakeInputChange,
   limits = null,
   winningsTax = null,
+  slipLimitNotice = null,
+  onDismissSlipLimitNotice = () => {},
 }) {
   const stakeNum = parseStakeNumeric(stakeInput) ?? 0;
   const [placing, setPlacing] = useState(false);
@@ -200,9 +208,12 @@ function MobileBetSlip({
       : null;
 
   const stakeFieldInvalid = stakeBoundsInvalid(limits, stakeInput);
+  const selectionCount = selections.length;
+  const atMaxSelections = selectionCount >= MAX_SLIP_SELECTIONS;
+  const legViolation = slipLegCountViolation(selectionCount);
 
   async function handlePlaceBet() {
-    if (!selections.length || placing) return;
+    if (legViolation || placing) return;
     if (slipHasExpiredSelection(selections)) {
       setBetResult({
         type: "error",
@@ -395,7 +406,15 @@ function MobileBetSlip({
         setTimeout(() => setBetResult(null), 4000);
         return;
       }
-      onReplaceSelections(rows);
+      const clamped = clampSelectionsToMax(rows);
+      if (clamped.length < rows.length) {
+        setBetResult({
+          type: "error",
+          message: `This coupon has more than ${MAX_SLIP_SELECTIONS} matches. Only the first ${MAX_SLIP_SELECTIONS} were loaded.`,
+        });
+        setTimeout(() => setBetResult(null), 5000);
+      }
+      onReplaceSelections(clamped);
       setBetResult({
         type: "success",
         message: "Coupon template loaded onto this slip.",
@@ -532,6 +551,36 @@ function MobileBetSlip({
             </button>
           </div>
         </div>
+
+        {slipLimitNotice ? (
+          <div
+            className={`shrink-0 border-b px-3 py-2 text-center text-xs font-semibold text-[#fecaca] ring-1 ring-red-900/25 ${slipDivider} bg-[#3a1515]/90`}
+          >
+            <span>{slipLimitNotice}</span>
+            <button
+              type="button"
+              onClick={onDismissSlipLimitNotice}
+              className="ml-2 cursor-pointer border-0 bg-transparent text-[10px] font-bold uppercase tracking-wide text-[#fca5a5] underline"
+            >
+              Dismiss
+            </button>
+          </div>
+        ) : null}
+
+        {selectionCount > 0 ? (
+          <div
+            className={`shrink-0 flex items-center justify-between border-b px-4 py-1.5 text-[11px] font-semibold ${slipDivider} ${
+              atMaxSelections
+                ? "bg-[#3a2a10]/80 text-[#fcd34d]"
+                : "bg-(--sb-accent-surface-deep)/15 text-[rgba(255,255,255,0.72)]"
+            }`}
+          >
+            <span>
+              {selectionCount} / {MAX_SLIP_SELECTIONS} matches
+            </span>
+            {atMaxSelections ? <span>Maximum reached</span> : null}
+          </div>
+        ) : null}
 
         {/* Selections list */}
         <div className="flex-1 overflow-y-auto">
@@ -718,7 +767,7 @@ function MobileBetSlip({
               type="button"
               disabled={
                 placing ||
-                !selections.length ||
+                Boolean(legViolation) ||
                 hasExpiredSelection ||
                 hasLockedSelection ||
                 Boolean(stakeViolation)
@@ -739,54 +788,8 @@ function MobileBetSlip({
                 onClick={() => setCouponCheckPreview(null)}
                 label="Close ticket preview"
               />
-              <div className="mb-4 text-center">
-                <h2 className="text-xl font-extrabold text-(--sb-accent)">
-                  Coupon template
-                </h2>
-                <p className="mt-1 font-mono text-lg font-bold tracking-wide text-[#ffffff]">
-                  {couponCheckPreview.couponNumber}
-                </p>
-                <p className="mt-3 text-left text-xs leading-relaxed text-[rgba(255,255,255,0.72)]">
-                  This shows the selections linked to this coupon code. Stake,
-                  status, and payout use your receipt number (issued when you
-                  pay or when the slip is printed at the shop).
-                </p>
-              </div>
-              <div className="overflow-hidden rounded-[1rem] ring-1 ring-white/10 shadow-inner shadow-black/20">
-                <div className="bg-(--sb-accent-fill) px-3 py-2 text-sm font-bold text-white">
-                  Games on this coupon
-                </div>
-                <table className="w-full text-left text-[11px]">
-                  <thead>
-                    <tr className="border-b border-white/8 bg-(--sb-accent-surface-deep)/70 text-[rgba(255,255,255,0.72)] backdrop-blur-sm">
-                      <th className="px-2 py-2 font-semibold">Match</th>
-                      <th className="px-2 py-2 font-semibold">Market</th>
-                      <th className="px-2 py-2 font-semibold">Pick</th>
-                      <th className="px-2 py-2 text-right font-semibold">
-                        Odds
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(couponCheckPreview.selections || []).map((sel, idx) => (
-                      <tr
-                        key={`${couponCheckPreview.couponNumber}-${idx}`}
-                        className="border-b border-[#2a2a3e] text-[#ffffff]"
-                      >
-                        <td className="max-w-[120px] px-2 py-2 align-top">
-                          {sel.matchName}
-                        </td>
-                        <td className="px-2 py-2 align-top">
-                          {sel.marketLabel}
-                        </td>
-                        <td className="px-2 py-2 align-top">{sel.label}</td>
-                        <td className="px-2 py-2 text-right align-top font-bold">
-                          {Number(sel.odds).toFixed(2)}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              <div className="flex justify-center">
+                <CouponReceipt ticket={couponCheckPreview} />
               </div>
             </div>
           </div>,

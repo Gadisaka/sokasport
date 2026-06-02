@@ -17,6 +17,7 @@ import {
   getStakeAndPotentialWinViolation,
   capGrossPotentialWin,
 } from "../lib/bettingLimits.js";
+import { validateTicketLegCount } from "../lib/betSlipLegLimits.js";
 import { resolveCancelWindowMinutes } from "../lib/ticketCancelWindow.js";
 import {
   snapshotWinningsTaxForNewTicket,
@@ -111,28 +112,21 @@ function toPositiveInt(value, fallback) {
 const CASHIER_PROFILE_MISSING_MESSAGE =
   "Cashier profile not found. Ask admin to create/assign this cashier in Agents & Cashiers.";
 
-function randomLowerLetter() {
-  return String.fromCharCode(97 + Math.floor(Math.random() * 26));
+/** Random 5-digit zero-padded group. */
+function randomFiveDigits() {
+  return Math.floor(Math.random() * 100_000)
+    .toString()
+    .padStart(5, "0");
 }
 
-/** Unique human-facing id for offline lookup / printing — two letters + six digits (lowercase) */
+/** Unique human-facing id for offline lookup / printing — #####-##### (digits only). */
 function buildCouponNumber() {
-  const letters = randomLowerLetter() + randomLowerLetter();
-  const digits = Math.floor(Math.random() * 1_000_000)
-    .toString()
-    .padStart(6, "0");
-  return `${letters}${digits}`;
+  return `${randomFiveDigits()}-${randomFiveDigits()}`;
 }
 
 /** Unique payout id — #####-##### (digits). Uniqueness enforced when assigning (Mongo has no sparse unique in Prisma). */
 function buildReceiptNumber() {
-  const a = Math.floor(Math.random() * 100_000)
-    .toString()
-    .padStart(5, "0");
-  const b = Math.floor(Math.random() * 100_000)
-    .toString()
-    .padStart(5, "0");
-  return `${a}-${b}`;
+  return `${randomFiveDigits()}-${randomFiveDigits()}`;
 }
 
 const RECEIPT_ASSIGN_MAX_ATTEMPTS = 12;
@@ -151,6 +145,24 @@ async function reserveUniqueReceiptNumber(client) {
     if (!clash) return candidate;
   }
   throw new Error("RECEIPT_NUMBER_EXHAUSTED");
+}
+
+const COUPON_ASSIGN_MAX_ATTEMPTS = 12;
+
+/**
+ * @param {import("@prisma/client").PrismaClient | import("@prisma/client").Prisma.TransactionClient} client
+ * @returns {Promise<string>}
+ */
+async function reserveUniqueCouponNumber(client) {
+  for (let i = 0; i < COUPON_ASSIGN_MAX_ATTEMPTS; i++) {
+    const candidate = buildCouponNumber();
+    const clash = await client.ticket.findFirst({
+      where: { coupon_number: candidate },
+      select: { id: true },
+    });
+    if (!clash) return candidate;
+  }
+  throw new Error("COUPON_NUMBER_EXHAUSTED");
 }
 
 function stableMarketParams(params) {
@@ -261,7 +273,7 @@ async function resolveCouponNumberForCreate(
 ) {
   const trimmed = String(couponRaw ?? "").trim();
   if (!trimmed) {
-    return buildCouponNumber();
+    return reserveUniqueCouponNumber(client);
   }
 
   const { compact, compactLower } = normalizeCouponLookupInput(trimmed);
@@ -348,11 +360,16 @@ function parseTeamsFromMatchName(matchName) {
 /** Prisma include for ticket legs: admin Match path + sportsbook Fixture path */
 const ticketSelectionRelationArgs = {
   include: {
-    match: true,
+    match: {
+      include: {
+        league: { include: { sport: true } },
+      },
+    },
     fixture: {
       include: {
         home_team: true,
         away_team: true,
+        league: { include: { sport: true } },
       },
     },
   },
@@ -380,6 +397,8 @@ function buildMatchPayloadForTicketSelection(selection, snapshotEntry) {
       awayTeam: selection.match.away_team,
       startTime: selection.match.start_time,
       status: selection.match.status,
+      leagueName: selection.match.league?.name ?? null,
+      leagueType: selection.match.league?.sport?.name ?? null,
     };
   }
   if (selection.fixture) {
@@ -390,6 +409,8 @@ function buildMatchPayloadForTicketSelection(selection, snapshotEntry) {
       awayTeam: f.away_team?.name || "Away",
       startTime: f.start_time,
       status: f.status,
+      leagueName: f.league?.name ?? null,
+      leagueType: f.league?.sport?.name ?? null,
     };
   }
   if (snapshotEntry?.matchName) {
@@ -400,6 +421,8 @@ function buildMatchPayloadForTicketSelection(selection, snapshotEntry) {
       awayTeam: teams.awayTeam,
       startTime: null,
       status: "NOT_STARTED",
+      leagueName: snapshotEntry?.leagueName ?? null,
+      leagueType: snapshotEntry?.leagueType ?? null,
     };
   }
   return null;
@@ -542,6 +565,8 @@ function mapPublicCouponPayload(ticket) {
             marketCode: snap?.marketCode ?? selection.market_code ?? null,
             marketParams: snap?.marketParams ?? selection.market_params ?? null,
             kickoffAt,
+            result: selection.result ?? "PENDING",
+            status: matchPayload?.status ?? null,
           };
         })
       : snapshot.map((snap) => {
@@ -567,6 +592,8 @@ function mapPublicCouponPayload(ticket) {
             marketCode: snap?.marketCode ?? null,
             marketParams: snap?.marketParams ?? null,
             kickoffAt: toIsoOrNull(snap?.kickoffAt),
+            result: "PENDING",
+            status: null,
           };
         });
 
@@ -586,8 +613,9 @@ function mapPublicCouponPayload(ticket) {
 }
 
 /**
- * Clean pasted coupon digits/letters copy (NBSP/BOM/zero-width trimmed, inner spaces removed).
- * Coupons are alphanumeric; DB stores lowercase from `buildCouponNumber`.
+ * Clean pasted coupon copy (NBSP/BOM/zero-width trimmed, inner spaces removed).
+ * Coupons are now numeric `#####-#####`; lowercasing is retained harmlessly for
+ * legacy alphanumeric rows.
  *
  * @param {unknown} raw
  * @returns {{ compact: string, compactLower: string }}
@@ -617,6 +645,14 @@ function couponLookupCandidates(compact, compactLower) {
   };
   push(compactLower);
   push(compact);
+  // Numeric coupons are stored hyphenated (`#####-#####`). Accept input typed
+  // without the hyphen (or with spaces) by matching both digit-only and
+  // hyphen-grouped forms.
+  const digits = compact.replace(/\D/g, "");
+  if (digits.length === 10) {
+    push(`${digits.slice(0, 5)}-${digits.slice(5)}`);
+    push(digits);
+  }
   return out;
 }
 
@@ -719,6 +755,11 @@ export async function createTicket(req, res) {
       return res
         .status(400)
         .json({ message: "Each selection must have a unique matchId" });
+    }
+
+    const legCountMsg = validateTicketLegCount(selections.length);
+    if (legCountMsg) {
+      return res.status(400).json({ message: legCountMsg });
     }
 
     const matches = await prisma.match.findMany({
@@ -1061,6 +1102,14 @@ export async function validatePrebookTicket(req, res) {
       });
     }
 
+    const legCountMsg = validateTicketLegCount(selections.length);
+    if (legCountMsg) {
+      return res.status(400).json({
+        code: "invalid_selections",
+        message: legCountMsg,
+      });
+    }
+
     const { normalizedSelections, validationErrors } =
       normalizePrebookSelectionsInput(selections);
     if (validationErrors.length) {
@@ -1176,6 +1225,11 @@ export async function createPrebookTicket(req, res) {
       });
     }
 
+    const legCountMsg = validateTicketLegCount(selections.length);
+    if (legCountMsg) {
+      return res.status(400).json({ error: legCountMsg });
+    }
+
     const { normalizedSelections, validationErrors } =
       normalizePrebookSelectionsInput(selections);
 
@@ -1187,6 +1241,13 @@ export async function createPrebookTicket(req, res) {
     }
     if (normalizedSelections.length === 0) {
       return res.status(400).json({ error: "Selections odds are invalid" });
+    }
+
+    const normalizedLegMsg = validateTicketLegCount(
+      normalizedSelections.length,
+    );
+    if (normalizedLegMsg) {
+      return res.status(400).json({ error: normalizedLegMsg });
     }
 
     const numericStake = Number(stake);
@@ -2559,7 +2620,7 @@ export async function confirmPrintTicket(req, res) {
           : Number(entry?.odds),
         marketVersion: Number.isFinite(acceptedVersionsByIndex.get(index))
           ? acceptedVersionsByIndex.get(index)
-          : Number(entry?.marketVersion),
+          : Number(entry?.serverMarketVersion ?? entry?.marketVersion),
         fromLive: false,
       }));
       const fullyStructuredSnapshot = normalizedForValidation.every(

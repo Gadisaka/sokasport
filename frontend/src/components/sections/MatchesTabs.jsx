@@ -1,5 +1,6 @@
 import AppIcon from "../common/AppIcon";
 import LogoImg from "../common/LogoImg";
+import MobileCalendarTimeBar from "../common/MobileCalendarTimeBar";
 
 import { useTranslation } from "../../i18n/LanguageContext.jsx";
 import { timeOptionDisplayLabel } from "../../i18n/coreTranslations.js";
@@ -8,6 +9,8 @@ function MatchesTabs({
   sports = [],
   times = [],
   leagues = [],
+  dateDropdownOptions = [],
+  horizonDays = 14,
   selectedSportId,
   selectedTimeId,
   selectedLeagueId,
@@ -40,14 +43,24 @@ function MatchesTabs({
         </div>
       </div>
 
-      <div className="border-b border-white/8 px-2 py-1.5">
-        <div className="flex items-center gap-1.5 overflow-x-auto whitespace-nowrap text-[11px] font-bold md:gap-1 md:text-[10px]">
+      <div className="border-b border-white/8 px-2 py-1.5 md:hidden">
+        <MobileCalendarTimeBar
+          timeOptions={times}
+          dateDropdownOptions={dateDropdownOptions}
+          selectedTimeId={selectedTimeId}
+          onTimeChange={onTimeChange}
+          horizonDays={horizonDays}
+        />
+      </div>
+
+      <div className="hidden border-b border-white/8 px-2 py-1.5 md:block">
+        <div className="flex items-center gap-1.5 overflow-x-auto whitespace-nowrap text-[10px] font-bold">
           {times.map((time) => (
             <button
               key={time.id}
               type="button"
               onClick={() => onTimeChange?.(time.id)}
-              className={`h-8 min-h-[32px] cursor-pointer rounded-xl border px-3 transition-all duration-200 md:h-6 md:min-h-0 md:px-2.5 ${
+              className={`h-6 min-h-0 cursor-pointer rounded-xl border px-2.5 transition-all duration-200 ${
                 time.id === selectedTimeId
                   ? "border-transparent bg-(--sb-accent-fill) text-white shadow-[0_6px_16px_-6px_rgba(1,144,82,0.3)]"
                   : "border-transparent bg-(--sb-bg-page) text-[rgba(255,255,255,0.72)] hover:bg-(--sb-bg-card-elevated)"

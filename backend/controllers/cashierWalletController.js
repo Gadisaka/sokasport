@@ -13,6 +13,7 @@ import {
 } from "../lib/notificationMessages.js";
 import { completePendingPlayerWithdrawal } from "../lib/completePendingPlayerWithdrawal.js";
 import { applyDepositBonusesInTx } from "../lib/bonusEngine.js";
+import { normalizeEthiopiaPhone } from "../lib/phone.js";
 import {
   digestShopWithdrawCode,
   normalizeSixDigitWithdrawCode,
@@ -46,7 +47,7 @@ export async function cashierDeposit(req, res) {
       return res.status(400).json({ message: "Valid phone and positive amount are required" });
     }
 
-    const normalizedPhone = String(phone).trim();
+    const normalizedPhone = normalizeEthiopiaPhone(phone);
 
     // Find player by phone
     const player = await prisma.user.findUnique({
@@ -192,10 +193,10 @@ export async function cashierDeposit(req, res) {
  */
 export async function getWithdrawRequest(req, res) {
   try {
-    const phone = String(req.query.phone || "").trim();
-    if (!phone) {
+    if (!String(req.query.phone || "").trim()) {
       return res.status(400).json({ message: "Phone number is required" });
     }
+    const phone = normalizeEthiopiaPhone(req.query.phone);
 
     const player = await prisma.user.findUnique({
       where: { phone },

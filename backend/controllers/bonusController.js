@@ -35,11 +35,21 @@ const ALLOWED_PATCH_KEYS = new Set([
   "min_deposit",
   "welcomeFixedAmount",
   "tiers",
+  // Legacy flat cashback (kept for backward compatibility).
   "minTotalOdds",
   "percentOfStake",
+  // Tiered cashback (v2).
+  "minSelections",
+  "minStake",
+  "maxHours",
+  "minResult",
+  "cashbackTiers",
+  "disqualifyFixtureStatuses",
+  "disqualifyMatchStatuses",
 ]);
 
 const MAX_ACCUMULATOR_TIERS = 5;
+const MAX_CASHBACK_TIERS = 10;
 
 function validateTiers(raw) {
   if (!Array.isArray(raw)) return "tiers must be an array";
@@ -58,6 +68,74 @@ function validateTiers(raw) {
     }
   }
   return null;
+}
+
+/**
+ * Validate + normalize tiered cashback ranges. Returns `{ tiers }` on
+ * success (sorted, normalized) or `{ error }`. Ranges are inclusive,
+ * must not overlap, and only the last tier may be open-ended
+ * (`maxResult: null`).
+ */
+function validateCashbackTiers(raw) {
+  if (!Array.isArray(raw)) return { error: "cashbackTiers must be an array" };
+  if (raw.length === 0) return { error: "At least one cashback tier is required" };
+  if (raw.length > MAX_CASHBACK_TIERS) {
+    return { error: `At most ${MAX_CASHBACK_TIERS} cashback tiers allowed` };
+  }
+
+  const tiers = [];
+  for (const t of raw) {
+    if (!t || typeof t !== "object") {
+      return { error: "Each cashback tier must be an object" };
+    }
+    const minResult = Number(t.minResult);
+    const stakeMultiplier = Number(t.stakeMultiplier);
+    const maxResult =
+      t.maxResult === null || t.maxResult === "" || t.maxResult === undefined
+        ? null
+        : Number(t.maxResult);
+    if (!Number.isFinite(minResult) || minResult < 0) {
+      return { error: "tier.minResult must be a number >= 0" };
+    }
+    if (maxResult !== null && (!Number.isFinite(maxResult) || maxResult < minResult)) {
+      return { error: "tier.maxResult must be null or a number >= minResult" };
+    }
+    if (!Number.isFinite(stakeMultiplier) || stakeMultiplier < 0) {
+      return { error: "tier.stakeMultiplier must be a number >= 0" };
+    }
+    tiers.push({ minResult, maxResult, stakeMultiplier });
+  }
+
+  tiers.sort((a, b) => a.minResult - b.minResult);
+  for (let i = 0; i < tiers.length; i++) {
+    const t = tiers[i];
+    if (t.maxResult === null && i !== tiers.length - 1) {
+      return { error: "Only the last cashback tier may be open-ended (null maxResult)" };
+    }
+    if (i > 0) {
+      const prev = tiers[i - 1];
+      if (prev.maxResult === null) {
+        return { error: "Open-ended cashback tier must be the last tier" };
+      }
+      if (t.minResult <= prev.maxResult) {
+        return { error: "Cashback tier ranges must not overlap" };
+      }
+    }
+  }
+  return { tiers };
+}
+
+/** Validate a list of uppercase status codes (e.g. ["PST","CANC"]). */
+function validateStatusList(raw, label) {
+  if (!Array.isArray(raw)) return { error: `${label} must be an array` };
+  const out = [];
+  for (const s of raw) {
+    if (typeof s !== "string" || s.trim() === "") {
+      return { error: `${label} entries must be non-empty strings` };
+    }
+    out.push(s.trim().toUpperCase());
+  }
+  return { list: [...new Set(out)] };
 }
 
 /**
@@ -131,29 +209,90 @@ function buildSafeUpdateData(existing, body) {
   }
 
   if (type === "CASHBACK") {
-    const hasMin = Object.prototype.hasOwnProperty.call(body, "minTotalOdds");
-    const hasPct = Object.prototype.hasOwnProperty.call(body, "percentOfStake");
-    if (hasMin || hasPct) {
-      const base =
-        existing.rules && typeof existing.rules === "object" && !Array.isArray(existing.rules)
-          ? { ...existing.rules }
-          : {};
-      if (hasMin) {
-        const m = Number(body.minTotalOdds);
-        if (!Number.isFinite(m) || m < 1) {
-          return { error: "minTotalOdds must be a number >= 1" };
-        }
-        base.minTotalOdds = m;
+    const base =
+      existing.rules && typeof existing.rules === "object" && !Array.isArray(existing.rules)
+        ? { ...existing.rules }
+        : {};
+    const has = (k) => Object.prototype.hasOwnProperty.call(body, k);
+    let touched = false;
+
+    // --- Legacy flat fields (kept for backward compatibility) ---
+    if (has("minTotalOdds")) {
+      const m = Number(body.minTotalOdds);
+      if (!Number.isFinite(m) || m < 1) {
+        return { error: "minTotalOdds must be a number >= 1" };
       }
-      if (hasPct) {
-        const p = Number(body.percentOfStake);
-        if (!Number.isFinite(p) || p < 0 || p > 100) {
-          return { error: "percentOfStake must be between 0 and 100" };
-        }
-        base.percentOfStake = p;
-      }
-      data.rules = base;
+      base.minTotalOdds = m;
+      touched = true;
     }
+    if (has("percentOfStake")) {
+      const p = Number(body.percentOfStake);
+      if (!Number.isFinite(p) || p < 0 || p > 100) {
+        return { error: "percentOfStake must be between 0 and 100" };
+      }
+      base.percentOfStake = p;
+      touched = true;
+    }
+
+    // --- Tiered (v2) fields ---
+    if (has("minSelections")) {
+      const n = Number(body.minSelections);
+      if (!Number.isInteger(n) || n < 0) {
+        return { error: "minSelections must be an integer >= 0" };
+      }
+      base.minSelections = n;
+      touched = true;
+    }
+    if (has("minStake")) {
+      const n = Number(body.minStake);
+      if (!Number.isFinite(n) || n < 0) {
+        return { error: "minStake must be a number >= 0" };
+      }
+      base.minStake = n;
+      touched = true;
+    }
+    if (has("maxHours")) {
+      const n = Number(body.maxHours);
+      if (!Number.isFinite(n) || n < 0) {
+        return { error: "maxHours must be a number >= 0" };
+      }
+      base.maxHours = n;
+      touched = true;
+    }
+    if (has("minResult")) {
+      const n = Number(body.minResult);
+      if (!Number.isFinite(n) || n < 0) {
+        return { error: "minResult must be a number >= 0" };
+      }
+      base.minResult = n;
+      touched = true;
+    }
+    if (has("cashbackTiers")) {
+      const { tiers, error } = validateCashbackTiers(body.cashbackTiers);
+      if (error) return { error };
+      base.tiers = tiers;
+      touched = true;
+    }
+    if (has("disqualifyFixtureStatuses")) {
+      const { list, error } = validateStatusList(
+        body.disqualifyFixtureStatuses,
+        "disqualifyFixtureStatuses",
+      );
+      if (error) return { error };
+      base.disqualifyFixtureStatuses = list;
+      touched = true;
+    }
+    if (has("disqualifyMatchStatuses")) {
+      const { list, error } = validateStatusList(
+        body.disqualifyMatchStatuses,
+        "disqualifyMatchStatuses",
+      );
+      if (error) return { error };
+      base.disqualifyMatchStatuses = list;
+      touched = true;
+    }
+
+    if (touched) data.rules = base;
   }
 
   return { data };

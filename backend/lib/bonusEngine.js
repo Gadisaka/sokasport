@@ -26,6 +26,13 @@ export function cashbackBonusRef(ticketId) {
   return `bonus:cashback:${ticketId}`;
 }
 
+/** Fixture feed statuses that void a ticket's cashback eligibility. */
+export const DEFAULT_DISQUALIFY_FIXTURE_STATUSES = ["PST", "CANC", "ABD"];
+/** Admin-managed Match statuses that void a ticket's cashback eligibility. */
+export const DEFAULT_DISQUALIFY_MATCH_STATUSES = ["SUSPENDED"];
+
+const MS_PER_HOUR = 1000 * 60 * 60;
+
 /**
  * @param {import("@prisma/client").Prisma.TransactionClient | import("@prisma/client").PrismaClient} db
  * @param {import("@prisma/client").BonusType} type
@@ -151,14 +158,179 @@ export async function resolveAccumulatorForNewTicket(db, legCount, stake, totalO
 }
 
 /**
- * @param {import("@prisma/client").Ticket} ticket — should still reflect pre-LOST total_odds & stake
- * @param {import("@prisma/client").Bonus | null} bonus
+ * Pick the cashback tier matching `result`. Ranges are inclusive on both
+ * ends; a tier with `maxResult == null` is open-ended (matches everything
+ * at or above its `minResult`). Returns the first matching tier or null.
+ *
+ * @param {number} result
+ * @param {Array<{ minResult: number, maxResult: number | null, stakeMultiplier: number }>} tiers
  */
-export function computeCashbackAmount(ticket, bonus) {
-  if (!bonus || bonus.type !== "CASHBACK" || !bonus.status) return 0;
-  if (!ticket.user_id) return 0;
+export function pickCashbackTier(result, tiers) {
+  if (!Array.isArray(tiers)) return null;
+  const r = Number(result);
+  if (!Number.isFinite(r)) return null;
+  for (const t of tiers) {
+    if (!t || typeof t !== "object") continue;
+    const min = Number(t.minResult);
+    const mult = Number(t.stakeMultiplier);
+    if (!Number.isFinite(min) || !Number.isFinite(mult)) continue;
+    const max = t.maxResult == null ? Infinity : Number(t.maxResult);
+    if (Number.isNaN(max)) continue;
+    if (r >= min && r <= max) {
+      return {
+        minResult: min,
+        maxResult: t.maxResult == null ? null : max,
+        stakeMultiplier: mult,
+      };
+    }
+  }
+  return null;
+}
+
+/**
+ * Tiered cashback evaluation (pure, no DB). Computes eligibility against
+ * the configured gates and resolves the payout tier from the ratio
+ * `result = total_odds / largestLostLegOdds`.
+ *
+ * @param {Object} p
+ * @param {import("@prisma/client").Ticket} p.ticket — pre-LOST total_odds, stake, created_at
+ * @param {Array<{ result?: string, odds?: number }>} [p.selections]
+ * @param {Array<string>} [p.fixtureStatuses] — feed statuses for the ticket's fixtures
+ * @param {Array<string>} [p.matchStatuses] — admin Match statuses for the ticket's matches
+ * @param {import("@prisma/client").Bonus | null} p.bonus
+ * @param {Date} [p.now]
+ * @returns {{ eligible: boolean, amount: number, reason: string, result: number | null, tier: object | null }}
+ */
+export function evaluateCashback({
+  ticket,
+  selections = [],
+  fixtureStatuses = [],
+  matchStatuses = [],
+  bonus,
+  now = new Date(),
+}) {
+  const fail = (reason) => ({
+    eligible: false,
+    amount: 0,
+    reason,
+    result: null,
+    tier: null,
+  });
+
+  if (!bonus || bonus.type !== "CASHBACK" || !bonus.status) {
+    return fail("inactive");
+  }
+  if (!ticket || !ticket.user_id) return fail("no_user");
+
   const rules =
     bonus.rules && typeof bonus.rules === "object" ? bonus.rules : {};
+  const tiers = Array.isArray(rules.tiers) ? rules.tiers : [];
+  if (tiers.length === 0) return fail("no_tiers");
+
+  const stake = Number(ticket.stake);
+  if (!Number.isFinite(stake) || stake <= 0) return fail("invalid_stake");
+
+  const minStake = Number(rules.minStake ?? 0);
+  if (Number.isFinite(minStake) && minStake > 0 && stake < minStake) {
+    return fail("below_min_stake");
+  }
+
+  const minSelections = Number(rules.minSelections ?? 0);
+  const selectionCount = Array.isArray(selections) ? selections.length : 0;
+  if (
+    Number.isFinite(minSelections) &&
+    minSelections > 0 &&
+    !(selectionCount > minSelections)
+  ) {
+    return fail("too_few_selections");
+  }
+
+  const maxHours = Number(rules.maxHours ?? 0);
+  if (Number.isFinite(maxHours) && maxHours > 0 && ticket.created_at) {
+    const created = new Date(ticket.created_at).getTime();
+    const settledAt = new Date(now).getTime();
+    if (Number.isFinite(created) && Number.isFinite(settledAt)) {
+      const elapsedHours = (settledAt - created) / MS_PER_HOUR;
+      if (elapsedHours > maxHours) return fail("outside_time_window");
+    }
+  }
+
+  const fixtureDq = Array.isArray(rules.disqualifyFixtureStatuses)
+    ? rules.disqualifyFixtureStatuses
+    : DEFAULT_DISQUALIFY_FIXTURE_STATUSES;
+  const matchDq = Array.isArray(rules.disqualifyMatchStatuses)
+    ? rules.disqualifyMatchStatuses
+    : DEFAULT_DISQUALIFY_MATCH_STATUSES;
+  const fixtureDqSet = new Set(fixtureDq.map((s) => String(s).toUpperCase()));
+  const matchDqSet = new Set(matchDq.map((s) => String(s).toUpperCase()));
+  const hasDqFixture = fixtureStatuses.some(
+    (s) => s && fixtureDqSet.has(String(s).toUpperCase()),
+  );
+  const hasDqMatch = matchStatuses.some(
+    (s) => s && matchDqSet.has(String(s).toUpperCase()),
+  );
+  if (hasDqFixture || hasDqMatch) return fail("disqualified_selection");
+
+  let largestLostOdds = 0;
+  for (const sel of selections) {
+    if (!sel) continue;
+    if (String(sel.result ?? "").toUpperCase() !== "LOST") continue;
+    const o = Number(sel.odds);
+    if (Number.isFinite(o) && o > largestLostOdds) largestLostOdds = o;
+  }
+  if (largestLostOdds <= 0) return fail("no_lost_leg");
+
+  const totalOdds = Number(ticket.total_odds);
+  if (!Number.isFinite(totalOdds) || totalOdds <= 0) {
+    return fail("invalid_total_odds");
+  }
+
+  const result = totalOdds / largestLostOdds;
+  const minResult = Number(rules.minResult ?? 0);
+  if (Number.isFinite(minResult) && minResult > 0 && result < minResult) {
+    return fail("below_min_result");
+  }
+
+  const tier = pickCashbackTier(result, tiers);
+  if (!tier) return fail("no_matching_tier");
+
+  const amount = roundMoney(stake * tier.stakeMultiplier);
+  if (!(amount > 0)) return fail("non_positive_amount");
+
+  return { eligible: true, amount, reason: "eligible", result, tier };
+}
+
+/**
+ * Cashback amount for a LOST ticket. When the bonus uses v2 tiered rules
+ * (`rules.tiers` present) the full eligibility + tier evaluation runs and
+ * requires `context` (selections, fixture/match statuses, now). Otherwise
+ * falls back to the legacy flat `% of stake` model for backward compat.
+ *
+ * @param {import("@prisma/client").Ticket} ticket — pre-LOST total_odds & stake
+ * @param {import("@prisma/client").Bonus | null} bonus
+ * @param {{ selections?: Array, fixtureStatuses?: Array<string>, matchStatuses?: Array<string>, now?: Date } | null} [context]
+ */
+export function computeCashbackAmount(ticket, bonus, context = null) {
+  if (!bonus || bonus.type !== "CASHBACK" || !bonus.status) return 0;
+  if (!ticket || !ticket.user_id) return 0;
+
+  const rules =
+    bonus.rules && typeof bonus.rules === "object" ? bonus.rules : {};
+  const tiers = Array.isArray(rules.tiers) ? rules.tiers : [];
+
+  if (tiers.length > 0) {
+    const ev = evaluateCashback({
+      ticket,
+      selections: context?.selections ?? [],
+      fixtureStatuses: context?.fixtureStatuses ?? [],
+      matchStatuses: context?.matchStatuses ?? [],
+      bonus,
+      now: context?.now ?? new Date(),
+    });
+    return ev.eligible ? ev.amount : 0;
+  }
+
+  // Legacy flat `% of stake` when total odds meet a single minimum.
   const minOdds = Number(rules.minTotalOdds ?? 1);
   const pctStake = Number(rules.percentOfStake ?? bonus.percentage ?? 0);
   const totalOdds = Number(ticket.total_odds);
@@ -268,7 +440,41 @@ export async function creditCashbackOnLostTicketInTx(tx, ticketId) {
   if (cashierPrint) return { credited: false, reason: "cashier_print" };
 
   const bonus = await getActiveBonus(tx, "CASHBACK");
-  const amount = computeCashbackAmount(ticket, bonus);
+  if (!bonus) return { credited: false, reason: "not_eligible" };
+
+  // Tiered rules need the slip's selections plus the live fixture/match
+  // statuses to enforce the count / disqualified-leg gates. Legacy flat
+  // rules ignore this context (passed but unused).
+  const selections = await tx.ticketSelection.findMany({
+    where: { ticket_id: ticketId },
+  });
+  const fixtureIds = [
+    ...new Set(selections.map((s) => s.fixture_id).filter(Boolean)),
+  ];
+  const matchIds = [
+    ...new Set(selections.map((s) => s.match_id).filter(Boolean)),
+  ];
+  const [fixtures, matches] = await Promise.all([
+    fixtureIds.length
+      ? tx.fixture.findMany({
+          where: { id: { in: fixtureIds } },
+          select: { status: true },
+        })
+      : Promise.resolve([]),
+    matchIds.length
+      ? tx.match.findMany({
+          where: { id: { in: matchIds } },
+          select: { status: true },
+        })
+      : Promise.resolve([]),
+  ]);
+
+  const amount = computeCashbackAmount(ticket, bonus, {
+    selections,
+    fixtureStatuses: fixtures.map((f) => f.status).filter(Boolean),
+    matchStatuses: matches.map((m) => m.status).filter(Boolean),
+    now: new Date(),
+  });
   if (amount <= 0) return { credited: false, reason: "not_eligible" };
 
   const wallet = await tx.wallet.findFirst({

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import AppIcon from "../common/AppIcon";
+import CouponReceipt from "../common/CouponReceipt";
 import {
   fetchPublicCouponTicket,
   hasAuthToken,
@@ -28,6 +29,12 @@ import {
 } from "../../utils/accumulatorBonus";
 import { slipGrossTaxNet, winningsTaxLabel } from "../../utils/winningsTax";
 import { useOddsSocket } from "../../hooks/useOddsSocket";
+import {
+  MAX_SLIP_SELECTIONS,
+  MIN_SLIP_SELECTIONS,
+  clampSelectionsToMax,
+  slipLegCountViolation,
+} from "../../utils/betSlipLimits";
 
 const slipDivider = "border-white/8";
 
@@ -58,6 +65,10 @@ const tabs = [
   { id: "betslip2", label: "Slip 2" },
   { id: "betslip3", label: "Slip 3" },
 ];
+
+function slipTabLabel(tab, count) {
+  return count > 0 ? `${tab.label} (${count})` : tab.label;
+}
 
 function computePlacementSnapshot(
   selections,
@@ -115,6 +126,9 @@ function BetSlipPanel({
   activeSlip,
   onChangeSlip,
   onReplaceSelections = () => {},
+  slipCounts = null,
+  slipLimitNotice = null,
+  onDismissSlipLimitNotice = () => {},
 }) {
   const [stakeInput, setStakeInput] = useState("20");
   const [placing, setPlacing] = useState(false);
@@ -246,9 +260,16 @@ function BetSlipPanel({
       : null;
 
   const stakeFieldInvalid = stakeBoundsInvalid(limits, stakeInput);
+  const selectionCount = selections.length;
+  const atMaxSelections = selectionCount >= MAX_SLIP_SELECTIONS;
+  const legViolation = slipLegCountViolation(selectionCount);
+  const countsBySlip =
+    slipCounts && typeof slipCounts === "object"
+      ? slipCounts
+      : { [activeSlip]: selectionCount };
 
   async function handlePlaceBet() {
-    if (!selections.length || placing) return;
+    if (legViolation || placing) return;
     if (slipHasExpiredSelection(selections)) {
       setBetResult({
         type: "error",
@@ -442,7 +463,15 @@ function BetSlipPanel({
         setTimeout(() => setBetResult(null), 4000);
         return;
       }
-      onReplaceSelections(rows);
+      const clamped = clampSelectionsToMax(rows);
+      if (clamped.length < rows.length) {
+        setBetResult({
+          type: "error",
+          message: `This coupon has more than ${MAX_SLIP_SELECTIONS} matches. Only the first ${MAX_SLIP_SELECTIONS} were loaded.`,
+        });
+        setTimeout(() => setBetResult(null), 5000);
+      }
+      onReplaceSelections(clamped);
       setBetResult({
         type: "success",
         message: "Coupon template loaded onto this slip.",
@@ -487,20 +516,26 @@ function BetSlipPanel({
         <div
           className={`flex items-center border-b bg-(--sb-accent-surface-deep)/35 p-2 backdrop-blur-md ${slipDivider}`}
         >
-          {tabs.map((tab) => (
-            <button
-              key={tab.id}
-              type="button"
-              onClick={() => onChangeSlip(tab.id)}
-              className={`mx-0.5 flex-1 cursor-pointer rounded-xl border py-2 text-[11px] font-bold transition-all duration-200 ${
-                activeSlip === tab.id
-                  ? "border-transparent bg-[#019052] text-white shadow-[0_6px_16px_-6px_rgba(1,144,82,0.3)]"
-                  : "border-transparent bg-(--sb-accent-surface-deep)/45 text-[rgba(255,255,255,0.72)] hover:bg-(--sb-bg-2)"
-              }`}
-            >
-              {tab.label}
-            </button>
-          ))}
+          {tabs.map((tab) => {
+            const count = countsBySlip[tab.id] ?? 0;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => {
+                  onDismissSlipLimitNotice();
+                  onChangeSlip(tab.id);
+                }}
+                className={`mx-0.5 flex-1 cursor-pointer rounded-xl border py-2 text-[11px] font-bold transition-all duration-200 ${
+                  activeSlip === tab.id
+                    ? "border-transparent bg-[#019052] text-white shadow-[0_6px_16px_-6px_rgba(1,144,82,0.3)]"
+                    : "border-transparent bg-(--sb-accent-surface-deep)/45 text-[rgba(255,255,255,0.72)] hover:bg-(--sb-bg-2)"
+                }`}
+              >
+                {slipTabLabel(tab, count)}
+              </button>
+            );
+          })}
 
           {selections.length > 0 && (
             <button
@@ -512,6 +547,21 @@ function BetSlipPanel({
             </button>
           )}
         </div>
+
+        {slipLimitNotice ? (
+          <div
+            className={`border-b px-3 py-2 text-center text-xs font-semibold text-[#fecaca] ring-1 ring-red-900/25 ${slipDivider} bg-[#3a1515]/90`}
+          >
+            <span>{slipLimitNotice}</span>
+            <button
+              type="button"
+              onClick={onDismissSlipLimitNotice}
+              className="ml-2 cursor-pointer border-0 bg-transparent text-[10px] font-bold uppercase tracking-wide text-[#fca5a5] underline"
+            >
+              Dismiss
+            </button>
+          </div>
+        ) : null}
 
         <div
           className={`space-y-2 border-b bg-(--sb-accent-surface-deep)/25 px-2 pb-2.5 pt-2 backdrop-blur-sm ${slipDivider}`}
@@ -575,11 +625,26 @@ function BetSlipPanel({
         {/* Content */}
         {selections.length === 0 ? (
           <div className="flex flex-1 items-center justify-center px-4 py-10 text-center text-sm text-[rgba(255,255,255,0.72)]">
-            Click on odds to add selections to your bet slip. Minimum 3, maximum
-            30 selections.
+            Click on odds to add selections to your bet slip. Minimum{" "}
+            {MIN_SLIP_SELECTIONS}, maximum {MAX_SLIP_SELECTIONS} matches per
+            ticket.
           </div>
         ) : (
           <>
+            <div
+              className={`flex items-center justify-between border-b px-3 py-1.5 text-[11px] font-semibold ${slipDivider} ${
+                atMaxSelections
+                  ? "bg-[#3a2a10]/80 text-[#fcd34d]"
+                  : "bg-(--sb-accent-surface-deep)/15 text-[rgba(255,255,255,0.72)]"
+              }`}
+            >
+              <span>
+                {selectionCount} / {MAX_SLIP_SELECTIONS} matches
+              </span>
+              {atMaxSelections ? (
+                <span>Maximum reached</span>
+              ) : null}
+            </div>
             {/* Selections */}
             <div className="flex-1 overflow-x-hidden overflow-y-auto">
               {selections.map((sel) => {
@@ -802,7 +867,7 @@ function BetSlipPanel({
           type="button"
           disabled={
             placing ||
-            !selections.length ||
+            Boolean(legViolation) ||
             hasExpiredSelection ||
             hasLockedSelection ||
             Boolean(stakeViolation)
@@ -821,54 +886,8 @@ function BetSlipPanel({
                 onClick={() => setCouponCheckPreview(null)}
                 label="Close ticket preview"
               />
-              <div className="mb-4 text-center">
-                <h2 className="text-xl font-extrabold text-(--sb-accent)">
-                  Coupon template
-                </h2>
-                <p className="mt-1 font-mono text-lg font-bold tracking-wide text-[#ffffff]">
-                  {couponCheckPreview.couponNumber}
-                </p>
-                <p className="mt-3 text-left text-xs leading-relaxed text-[rgba(255,255,255,0.72)]">
-                  This shows the selections linked to this coupon code. Stake,
-                  status, and payout use your receipt number (issued when you
-                  pay or when the slip is printed at the shop).
-                </p>
-              </div>
-              <div className="overflow-hidden rounded-[1rem]  shadow-inner shadow-black/20">
-                <div className="bg-(--sb-accent-fill) px-3 py-2 text-sm font-bold text-white">
-                  Games on this coupon
-                </div>
-                <table className="w-full text-left text-[11px]">
-                  <thead>
-                    <tr className="border-b border-white/8 bg-(--sb-accent-surface-deep)/70 text-[rgba(255,255,255,0.72)] backdrop-blur-sm">
-                      <th className="px-2 py-2 font-semibold">Match</th>
-                      <th className="px-2 py-2 font-semibold">Market</th>
-                      <th className="px-2 py-2 font-semibold">Pick</th>
-                      <th className="px-2 py-2 text-right font-semibold">
-                        Odds
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(couponCheckPreview.selections || []).map((sel, idx) => (
-                      <tr
-                        key={`${couponCheckPreview.couponNumber}-${idx}`}
-                        className="border-b border-[#2a2a3e] text-[#ffffff]"
-                      >
-                        <td className="max-w-[120px] px-2 py-2 align-top">
-                          {sel.matchName}
-                        </td>
-                        <td className="px-2 py-2 align-top">
-                          {sel.marketLabel}
-                        </td>
-                        <td className="px-2 py-2 align-top">{sel.label}</td>
-                        <td className="px-2 py-2 text-right align-top font-bold">
-                          {Number(sel.odds).toFixed(2)}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              <div className="flex justify-center">
+                <CouponReceipt ticket={couponCheckPreview} />
               </div>
             </div>
           </div>,

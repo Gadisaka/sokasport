@@ -6,6 +6,7 @@ import PanelCard from "../components/ui/PanelCard";
 import PrimaryButton from "../components/ui/PrimaryButton";
 import OnlineDepositReceiversPanel from "../components/settings/OnlineDepositReceiversPanel";
 import BonusesPanel from "../components/settings/BonusesPanel";
+import CashbackPanel from "../components/settings/CashbackPanel";
 import {
   useCancelWindowQuery,
   useCashoutMarginQuery,
@@ -22,6 +23,7 @@ const TABS = [
   { key: "limits", label: "Limits" },
   { key: "payments", label: "Payments" },
   { key: "bonuses", label: "Bonuses" },
+  { key: "cashback", label: "Cashback" },
 ];
 
 const VALID_TAB = new Set(TABS.map((t) => t.key));
@@ -102,6 +104,11 @@ export default function SettingsPage() {
       {activeTab === "bonuses" && (
         <div className="space-y-6">
           <BonusesPanel />
+        </div>
+      )}
+      {activeTab === "cashback" && (
+        <div className="space-y-6">
+          <CashbackPanel />
         </div>
       )}
     </AdminShell>

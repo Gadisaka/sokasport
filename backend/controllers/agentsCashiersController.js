@@ -12,6 +12,7 @@
 import bcrypt from "bcrypt";
 import { prisma } from "../Config/db.js";
 import { logAuditEvent } from "../lib/auditLog.js";
+import { normalizePhoneOrNull } from "../lib/phone.js";
 
 function toPositiveInt(value, fallback) {
   const n = Number.parseInt(value, 10);
@@ -191,7 +192,7 @@ export async function createCashier(req, res) {
         data: {
           name: String(name).trim(),
           email: String(email).toLowerCase().trim(),
-          phone: phone ? String(phone).trim() : null,
+          phone: normalizePhoneOrNull(phone),
           password: hashed,
           role_id: cashierRole.id,
           status: Boolean(status),
@@ -297,7 +298,7 @@ export async function updateCashier(req, res) {
       if (email !== undefined)
         userData.email = String(email).toLowerCase().trim();
       if (phone !== undefined)
-        userData.phone = phone ? String(phone).trim() : null;
+        userData.phone = normalizePhoneOrNull(phone);
       if (status !== undefined) userData.status = Boolean(status);
       if (password) userData.password = await bcrypt.hash(password, 10);
 
@@ -501,7 +502,7 @@ export async function createAgent(req, res) {
         data: {
           name: String(name).trim(),
           email: String(email).toLowerCase().trim(),
-          phone: phone ? String(phone).trim() : null,
+          phone: normalizePhoneOrNull(phone),
           password: hashed,
           role_id: agentRole.id,
           status: Boolean(status),
@@ -535,7 +536,7 @@ export async function createAgent(req, res) {
           id: createdAgentId,
           name: String(name).trim(),
           email: String(email).toLowerCase().trim(),
-          phone: phone ? String(phone).trim() : null,
+          phone: normalizePhoneOrNull(phone),
           status: Boolean(status),
         },
       });
@@ -575,7 +576,7 @@ export async function updateAgent(req, res) {
     const data = {};
     if (name !== undefined) data.name = String(name).trim();
     if (email !== undefined) data.email = String(email).toLowerCase().trim();
-    if (phone !== undefined) data.phone = phone ? String(phone).trim() : null;
+    if (phone !== undefined) data.phone = normalizePhoneOrNull(phone);
     if (status !== undefined) data.status = Boolean(status);
     if (password) data.password = await bcrypt.hash(password, 10);
 

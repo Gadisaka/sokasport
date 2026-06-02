@@ -53,6 +53,16 @@ export default function AgentDashboardPage() {
     { label: "Live Tickets", value: summary.liveTickets.toString(), trend: "Recent ticket stream", tone: "neutral" },
   ];
 
+  const wonToday = query.data?.wonToday ?? { tickets: 0, payable: 0 };
+  const wonYesterday = query.data?.wonYesterday ?? { tickets: 0, payable: 0 };
+
+  const wonStats = [
+    { label: "Won Tickets (Today)", value: Number(wonToday.tickets || 0).toLocaleString() },
+    { label: "Payable (Today)", value: `${Number(wonToday.payable || 0).toLocaleString()} ETB` },
+    { label: "Won Tickets (Yesterday)", value: Number(wonYesterday.tickets || 0).toLocaleString() },
+    { label: "Payable (Yesterday)", value: `${Number(wonYesterday.payable || 0).toLocaleString()} ETB` },
+  ];
+
   const branches = useMemo(
     () => [{ id: "all", name: "All" }].concat((query.data?.branches ?? []).map((name) => ({ id: name, name }))),
     [query.data?.branches],
@@ -173,6 +183,20 @@ export default function AgentDashboardPage() {
               </p>
             </PanelCard>
           ))}
+        </section>
+
+        <section>
+          <p className="mb-3 text-xs uppercase tracking-wide text-(--muted)">
+            Winning Tickets (Today / Yesterday)
+          </p>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            {wonStats.map((stat) => (
+              <PanelCard key={stat.label} className="p-4">
+                <p className="text-xs uppercase tracking-wide text-(--muted)">{stat.label}</p>
+                <p className="mt-2 text-xl font-semibold">{stat.value}</p>
+              </PanelCard>
+            ))}
+          </div>
         </section>
 
         <section className="grid grid-cols-1 gap-5 xl:grid-cols-3">

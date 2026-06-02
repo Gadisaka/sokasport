@@ -561,3 +561,79 @@ test("LOST player ticket credits cashback when CASHBACK bonus active", async () 
   const wallet = store.wallet.get("w-cb");
   assert.equal(wallet.balance, 10);
 });
+
+const TIERED_CASHBACK_RULES = {
+  minSelections: 2,
+  minStake: 10,
+  maxHours: 0,
+  minResult: 20,
+  disqualifyFixtureStatuses: ["PST", "CANC", "ABD"],
+  disqualifyMatchStatuses: ["SUSPENDED"],
+  tiers: [
+    { minResult: 20, maxResult: 44, stakeMultiplier: 1 },
+    { minResult: 45, maxResult: 79, stakeMultiplier: 2 },
+    { minResult: 80, maxResult: 99, stakeMultiplier: 3 },
+    { minResult: 100, maxResult: 199, stakeMultiplier: 4 },
+    { minResult: 200, maxResult: 399, stakeMultiplier: 5 },
+    { minResult: 400, maxResult: null, stakeMultiplier: 10 },
+  ],
+};
+
+function seedTieredCashbackBonus() {
+  getStore().bonus.set("cash-tier", {
+    id: "cash-tier",
+    type: "CASHBACK",
+    name: "Tiered cashback",
+    percentage: 0,
+    min_deposit: null,
+    status: true,
+    rules: TIERED_CASHBACK_RULES,
+  });
+}
+
+test("LOST ticket credits tiered cashback (totalOdds/lostOdds picks tier)", async () => {
+  resetStore();
+  const store = getStore();
+  seedTieredCashbackBonus();
+  // Two home-win legs (4, 10) + one away-win leg (odds 2) that loses.
+  // After recompute total_odds = 4*10*2 = 80; result = 80/2 = 40 -> tier x1.
+  seedFixture({ id: "fx-w1", status: "FT", homeScore: 2, awayScore: 0 });
+  seedFixture({ id: "fx-w2", status: "FT", homeScore: 1, awayScore: 0 });
+  seedFixture({ id: "fx-l", status: "FT", homeScore: 0, awayScore: 2 });
+  seedTicket({ id: "tk-t", userId: "u-t", stake: 10, totalOdds: 80 });
+  seedSelection({ id: "s-w1", ticketId: "tk-t", fixtureId: "fx-w1", selection: "1", marketCode: "MATCH_WINNER", odds: 4 });
+  seedSelection({ id: "s-w2", ticketId: "tk-t", fixtureId: "fx-w2", selection: "1", marketCode: "MATCH_WINNER", odds: 10 });
+  seedSelection({ id: "s-l", ticketId: "tk-t", fixtureId: "fx-l", selection: "1", marketCode: "MATCH_WINNER", odds: 2 });
+  seedWallet({ id: "w-t", userId: "u-t", balance: 0 });
+
+  const summary = await settlement.settleFixture("fx-l");
+  assert.equal(summary.ticketsLost, 1);
+
+  const bonusTx = [...store.transaction.values()].find((t) => t.type === "BONUS");
+  assert.ok(bonusTx, "expected a BONUS cashback transaction");
+  assert.equal(bonusTx.reference, "bonus:cashback:tk-t");
+  assert.equal(bonusTx.amount, 10); // stake 10 x tier multiplier 1
+  assert.equal(store.wallet.get("w-t").balance, 10);
+});
+
+test("LOST ticket with a postponed leg is NOT eligible for tiered cashback", async () => {
+  resetStore();
+  const store = getStore();
+  seedTieredCashbackBonus();
+  // Same shape, but one leg sits on a postponed (PST) fixture -> disqualified.
+  seedFixture({ id: "fx-w1b", status: "FT", homeScore: 2, awayScore: 0 });
+  seedFixture({ id: "fx-pst", status: "PST", homeScore: null, awayScore: null });
+  seedFixture({ id: "fx-lb", status: "FT", homeScore: 0, awayScore: 2 });
+  seedTicket({ id: "tk-d", userId: "u-d", stake: 10, totalOdds: 80 });
+  seedSelection({ id: "d-w1", ticketId: "tk-d", fixtureId: "fx-w1b", selection: "1", marketCode: "MATCH_WINNER", odds: 4 });
+  seedSelection({ id: "d-pst", ticketId: "tk-d", fixtureId: "fx-pst", selection: "1", marketCode: "MATCH_WINNER", odds: 10 });
+  seedSelection({ id: "d-l", ticketId: "tk-d", fixtureId: "fx-lb", selection: "1", marketCode: "MATCH_WINNER", odds: 2 });
+  seedWallet({ id: "w-d", userId: "u-d", balance: 0 });
+
+  const summary = await settlement.settleFixture("fx-lb");
+  assert.equal(summary.ticketsLost, 1);
+
+  const bonusTx = [...store.transaction.values()].find((t) => t.type === "BONUS");
+  assert.equal(bonusTx, undefined, "postponed leg must block cashback");
+  assert.equal(store.wallet.get("w-d").balance, 0);
+});

@@ -188,6 +188,49 @@ export async function getCashierDashboardStats(req, res) {
       totalDepositAmount +
       totalWithdrawAmount;
 
+    // --- Fixed today / yesterday WON ticket buckets (filter-independent) ---
+    const startOfToday = new Date(
+      today.getFullYear(),
+      today.getMonth(),
+      today.getDate(),
+      0,
+      0,
+      0,
+      0,
+    );
+    const endOfToday = new Date(
+      today.getFullYear(),
+      today.getMonth(),
+      today.getDate(),
+      23,
+      59,
+      59,
+      999,
+    );
+    const startOfYesterday = new Date(startOfToday.getTime() - 24 * 60 * 60 * 1000);
+    const endOfYesterday = new Date(endOfToday.getTime() - 24 * 60 * 60 * 1000);
+
+    const wonWindow = async (start, end) => {
+      const rows = await prisma.ticket.findMany({
+        where: {
+          cashier_id: cashier.id,
+          status: "WON",
+          created_at: { gte: start, lte: end },
+        },
+        select: { potential_win: true, selection_snapshot: true },
+      });
+      const nonJackpot = rows.filter((t) => !isJackpotTicket(t));
+      return {
+        tickets: nonJackpot.length,
+        payable: nonJackpot.reduce((s, t) => s + Number(t.potential_win || 0), 0),
+      };
+    };
+
+    const [wonToday, wonYesterday] = await Promise.all([
+      wonWindow(startOfToday, endOfToday),
+      wonWindow(startOfYesterday, endOfYesterday),
+    ]);
+
     return res.json({
       from: from.toISOString(),
       to: to.toISOString(),
@@ -198,6 +241,8 @@ export async function getCashierDashboardStats(req, res) {
       totalPaidTickets,
       totalPaidAmount,
       grandNet,
+      wonToday,
+      wonYesterday,
     });
   } catch (error) {
     console.error("getCashierDashboardStats error:", error);

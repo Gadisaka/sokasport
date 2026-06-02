@@ -4,6 +4,8 @@ import AdminShell from "../../components/layout/AdminShell";
 import PanelCard from "../../components/ui/PanelCard";
 import { useVerifyPasswordMutation } from "../../hook/useVerifyPasswordMutation";
 import { useCashierDashboardStatsQuery } from "../../hook/useCashierDashboardStats";
+import { encodeSalesReportAsync } from "../../components/ticket/escpos";
+import { print as printViaLocalService } from "../../services/localPrinter";
 
 function formatYmd(d) {
   const y = d.getFullYear();
@@ -38,10 +40,14 @@ function StatCard({ title, value, isCount }) {
 }
 
 function DashboardContent() {
+  const { user } = useAuth();
   const todayStr = useMemo(() => formatYmd(new Date()), []);
   const [from, setFrom] = useState(todayStr);
   const [to, setTo] = useState(todayStr);
   const [applied, setApplied] = useState({ from: todayStr, to: todayStr });
+  const [printMessage, setPrintMessage] = useState("");
+  const [printError, setPrintError] = useState("");
+  const [printing, setPrinting] = useState(false);
 
   const query = useCashierDashboardStatsQuery({
     from: applied.from,
@@ -57,9 +63,55 @@ function DashboardContent() {
     [from, to],
   );
 
-  const handlePrint = useCallback(() => {
-    window.print();
-  }, []);
+  const handlePrint = useCallback(async () => {
+    const stats = query.data;
+    if (!stats || printing) return;
+    setPrinting(true);
+    setPrintError("");
+    setPrintMessage("");
+
+    try {
+      const escposData = await encodeSalesReportAsync(
+        {
+          cashierName: user?.name || "",
+          fromLabel: applied.from,
+          toLabel: applied.to,
+          totalBets: stats.totalTicketsSold,
+          totalBetsAmount: stats.totalSoldPrice,
+          totalPayoutCount: stats.totalPaidTickets,
+          totalPayoutAmount: stats.totalPaidAmount,
+          depositAmount: stats.totalDepositAmount,
+          withdrawAmount: stats.totalWithdrawAmount,
+          onHand: stats.grandNet,
+        },
+        { width: "80mm" },
+      );
+
+      const result = await printViaLocalService(escposData);
+      if (result.success) {
+        setPrintMessage("Sales report printed.");
+        return;
+      }
+
+      if (result.code === "service_unreachable") {
+        setPrintError(
+          "Local print service unreachable. Start PrinterBridge.exe on this PC.",
+        );
+      } else if (result.code === "com_unavailable") {
+        setPrintError(
+          "Printer queue unavailable. Check POS80 is installed in Windows Print queues.",
+        );
+      } else {
+        setPrintError(
+          result.error?.message || "Failed to send report to local printer service.",
+        );
+      }
+    } catch (err) {
+      setPrintError(err?.message || "Failed to print sales report");
+    } finally {
+      setPrinting(false);
+    }
+  }, [applied.from, applied.to, printing, query.data, user?.name]);
 
   const fmtMoney = (n) =>
     Number(n ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -101,17 +153,43 @@ function DashboardContent() {
         <button
           type="button"
           onClick={handlePrint}
-          className="rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
+          disabled={printing || !query.isSuccess}
+          className="rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-60"
         >
-          Print
+          {printing ? "Printing…" : "Print"}
         </button>
       </form>
+
+      {printMessage && (
+        <p className="no-print text-sm font-medium text-green-600 dark:text-green-400">
+          {printMessage}
+        </p>
+      )}
+      {printError && (
+        <p className="no-print text-sm font-medium text-[var(--danger)]">
+          {printError}
+        </p>
+      )}
 
       {query.isLoading && <p className="text-sm text-[var(--muted)]">Loading stats…</p>}
       {query.isError && (
         <p className="text-sm font-medium text-[var(--danger)]">
           {query.error?.message || "Could not load dashboard"}
         </p>
+      )}
+
+      {query.isSuccess && s && (
+        <div className="space-y-2">
+          <p className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
+            Winning tickets (today / yesterday)
+          </p>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <StatCard title="Won tickets (today)" value={fmtCount(s.wonToday?.tickets)} isCount />
+            <StatCard title="Payable today" value={fmtMoney(s.wonToday?.payable)} />
+            <StatCard title="Won tickets (yesterday)" value={fmtCount(s.wonYesterday?.tickets)} isCount />
+            <StatCard title="Payable yesterday" value={fmtMoney(s.wonYesterday?.payable)} />
+          </div>
+        </div>
       )}
 
       {query.isSuccess && s && (

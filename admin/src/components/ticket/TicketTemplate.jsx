@@ -45,24 +45,38 @@ function formatDate(value) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-function formatKickoff(value) {
+function selectionStartMs(selection) {
+  const value = selection?.match?.startTime;
+  if (!value) return Number.POSITIVE_INFINITY;
+  const ms = new Date(value).getTime();
+  return Number.isNaN(ms) ? Number.POSITIVE_INFINITY : ms;
+}
+
+function formatKickoffFull(value) {
   if (!value) return "";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
   const pad = (n) => String(n).padStart(2, "0");
-  return `${pad(date.getDate())}/${pad(date.getMonth() + 1)} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  return `${date.getDate()}/${date.getMonth() + 1}/${date.getFullYear()} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
 function buildSelectionLines(ticket) {
-  const selections = Array.isArray(ticket?.selections) ? ticket.selections : [];
+  const selections = Array.isArray(ticket?.selections)
+    ? [...ticket.selections].sort(
+        (a, b) => selectionStartMs(a) - selectionStartMs(b),
+      )
+    : [];
   return selections.map((selection, index) => {
     const home = selection?.match?.homeTeam || "";
     const away = selection?.match?.awayTeam || "";
-    const matchName = away ? `${home} vs ${away}` : home || "Match";
+    const matchName = away ? `${home} Vs ${away}` : home || "Match";
+    const leagueType = String(selection?.match?.leagueType || "").trim();
+    const leagueName = String(selection?.match?.leagueName || "").trim();
     return {
       id: selection.id || `sel-${index}`,
-      kickoff: formatKickoff(selection?.match?.startTime),
+      kickoff: formatKickoffFull(selection?.match?.startTime),
       matchName,
+      league: [leagueType, leagueName].filter(Boolean).join(": "),
       pick: selection?.selection || selection?.pick || "-",
       market: selection?.marketLabel || "",
       odds: formatOdds(selection?.odds),
@@ -114,31 +128,19 @@ const TicketTemplate = forwardRef(function TicketTemplate(
           src={receiptLogo}
           alt=""
           style={{
-            width: "100%",
-            maxWidth: "100%",
+            width: "60%",
+            maxWidth: "60%",
             height: "auto",
             display: "block",
             margin: "0 auto",
           }}
         />
-        {barcodeDataUrl ? (
-          <img
-            src={barcodeDataUrl}
-            alt=""
-            style={{
-              width: "100%",
-              maxWidth: "100%",
-              height: "auto",
-              display: "block",
-              margin: "2mm auto 0",
-            }}
-          />
-        ) : null}
       </div>
 
       <Divider />
 
       <Row label="Coupon" value={ticket.couponNumber || "-"} mono />
+      <Row label="Receipt" value={ticket.receiptNumber || "-"} mono />
       <CashierRow value={formatCashierReceiptLine(ticket)} />
       <Row label="Date" value={printedAt} />
 
@@ -160,17 +162,16 @@ const TicketTemplate = forwardRef(function TicketTemplate(
           <div key={line.id} style={{ color: "#000000" }}>
             <div style={{ marginBottom: "1.5mm" }}>
               <div style={{ fontWeight: 800 }}>
-                {idx + 1}. {line.matchName}
+                {line.league || line.matchName}
               </div>
               {line.kickoff && (
-                <div
-                  style={{
-                    fontSize: "11px",
-                    fontWeight: 700,
-                    color: "#000000",
-                  }}
-                >
+                <div style={{ fontWeight: 700, color: "#000000" }}>
                   {line.kickoff}
+                </div>
+              )}
+              {line.league && (
+                <div style={{ fontWeight: 700, color: "#000000" }}>
+                  {line.matchName}
                 </div>
               )}
               <div
@@ -188,7 +189,15 @@ const TicketTemplate = forwardRef(function TicketTemplate(
                     color: "#000000",
                   }}
                 >
-                  {line.market ? `${line.market}: ` : ""}
+                  {line.market || "-"}
+                </span>
+                <span
+                  style={{
+                    fontWeight: 700,
+                    color: "#000000",
+                    whiteSpace: "nowrap",
+                  }}
+                >
                   {line.pick}
                 </span>
                 <span style={{ fontWeight: 800, color: "#000000" }}>
@@ -203,14 +212,14 @@ const TicketTemplate = forwardRef(function TicketTemplate(
 
       <Divider />
 
-      <Row label="Bets" value={String(lines.length)} />
-      <Row label="Stake" value={formatCurrency(ticket.stake)} />
-      <Row label="Total Odds" value={formatOdds(ticket.totalOdds)} />
+      <Row label="Bets" value={String(lines.length)} bold />
+      <Row label="Stake" value={formatCurrency(ticket.stake)} bold />
+      <Row label="Total Odds" value={formatOdds(ticket.totalOdds)} bold />
       {showTax ? (
         <>
-          <Row label="Gross win" value={formatCurrency(gross)} />
-          <Row label={taxLabel} value={formatCurrency(tax)} />
-          <Row label="Net payout" value={formatCurrency(net)} bold />
+          <Row label="Gross Win" value={formatCurrency(gross)} bold />
+          <Row label={taxLabel} value={formatCurrency(tax)} bold />
+          <Row label="Net Payout" value={formatCurrency(net)} bold />
         </>
       ) : (
         <Row
@@ -219,6 +228,22 @@ const TicketTemplate = forwardRef(function TicketTemplate(
           bold
         />
       )}
+
+      {barcodeDataUrl ? (
+        <div style={{ textAlign: "center", marginTop: "3mm" }}>
+          <img
+            src={barcodeDataUrl}
+            alt=""
+            style={{
+              width: "70%",
+              maxWidth: "70%",
+              height: "auto",
+              display: "block",
+              margin: "0 auto",
+            }}
+          />
+        </div>
+      ) : null}
     </div>
   );
 });

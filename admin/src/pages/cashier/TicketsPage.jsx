@@ -5,7 +5,10 @@ import PrimaryButton from "../../components/ui/PrimaryButton";
 import Modal from "../../components/ui/Modal";
 import TicketTemplate from "../../components/ticket/TicketTemplate";
 import { useTicketPrint } from "../../components/ticket/useTicketPrint";
-import { encodeTicketAsync } from "../../components/ticket/escpos";
+import {
+  encodeTicketAsync,
+  encodeActionReceiptAsync,
+} from "../../components/ticket/escpos";
 import { print as printViaLocalService } from "../../services/localPrinter";
 import { useAuth } from "../../context/AuthContext";
 import { API_URL } from "../../../constants.js";
@@ -128,15 +131,7 @@ function TicketDetail({ ticket, platformWinningsTax = null }) {
   return (
     <div className="mt-4 overflow-hidden rounded-sm border border-[var(--border)]">
       <div className="border-b border-[var(--border)] bg-[var(--surfaceMuted)] px-3 py-2 text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
-        <span className="block font-mono">
-          Receipt{" "}
-          {ticket.receiptNumber && ticket.receiptNumber.trim()
-            ? ticket.receiptNumber
-            : "—"}
-        </span>
-        <span className="mt-1 block text-[10px] font-normal normal-case text-[var(--muted)]">
-          Coupon {ticket.couponNumber}
-        </span>
+        <span className="block font-mono">Coupon {ticket.couponNumber}</span>
       </div>
 
       <div className="overflow-x-auto">
@@ -240,7 +235,6 @@ function SlipsTable({
           <thead>
             <tr className="border-b border-[var(--border)] text-xs uppercase tracking-wide text-[var(--muted)]">
               <th className="px-3 py-3">Time</th>
-              <th className="px-3 py-3">Receipt</th>
               <th className="px-3 py-3">Coupon</th>
               <th className="px-3 py-3">Amount</th>
               <th className="px-3 py-3">Possible Win</th>
@@ -251,7 +245,7 @@ function SlipsTable({
             {items.length === 0 ? (
               <tr>
                 <td
-                  colSpan={6}
+                  colSpan={5}
                   className="px-3 py-8 text-center text-xs text-[var(--muted)]"
                 >
                   No slips found for today.
@@ -265,19 +259,6 @@ function SlipsTable({
                 >
                   <td className="px-3 py-3 text-xs">
                     {formatTime(ticket.createdAt)}
-                  </td>
-                  <td className="px-3 py-3 text-xs font-mono">
-                    {ticket.receiptNumber ? (
-                      <button
-                        type="button"
-                        onClick={() => onUseCoupon(ticket)}
-                        className="text-[var(--accent)] underline-offset-2 hover:underline"
-                      >
-                        {ticket.receiptNumber}
-                      </button>
-                    ) : (
-                      <span className="text-[var(--muted)]">—</span>
-                    )}
                   </td>
                   <td className="px-3 py-3 text-xs font-mono">
                     <button
@@ -354,6 +335,7 @@ export default function CashierTicketsPage() {
   const [payoutTicket, setPayoutTicket] = useState(null);
   const [payoutQuote, setPayoutQuote] = useState(null);
   const [payoutAction, setPayoutAction] = useState("payout");
+  const [completedAction, setCompletedAction] = useState(null);
   const [sellError, setSellError] = useState("");
   const [payoutError, setPayoutError] = useState("");
   const [sellConfirmed, setSellConfirmed] = useState(false);
@@ -513,6 +495,7 @@ export default function CashierTicketsPage() {
     } else {
       setPayoutError("");
       setPayoutQuote(null);
+      setCompletedAction(null);
     }
 
     try {
@@ -734,11 +717,13 @@ export default function CashierTicketsPage() {
   const handleCancelTicket = async () => {
     if (!payoutTicket) return;
     setPayoutError("");
+    setCompletedAction(null);
     try {
       const response = await cancelTicket.mutateAsync(payoutTicket.id);
       setActionSuccess(response?.message || "Ticket canceled");
       const refreshed = await refreshPayoutTicket(payoutTicket);
       setPayoutTicket(refreshed);
+      setCompletedAction("cancel");
       await slipsQuery.refetch();
     } catch (error) {
       setPayoutError(error?.message || "Failed to cancel ticket");
@@ -748,6 +733,7 @@ export default function CashierTicketsPage() {
   const handlePayoutTicket = async () => {
     if (!payoutTicket) return;
     setPayoutError("");
+    setCompletedAction(null);
     try {
       const response = await payoutTicketMutation.mutateAsync({
         ticketId: payoutTicket.id,
@@ -755,9 +741,56 @@ export default function CashierTicketsPage() {
       setActionSuccess(response?.message || "Ticket payout completed");
       const refreshed = await refreshPayoutTicket(payoutTicket);
       setPayoutTicket(refreshed);
+      setCompletedAction("payout");
       await slipsQuery.refetch();
     } catch (error) {
       setPayoutError(error?.message || "Failed to payout ticket");
+    }
+  };
+
+  const handlePrintActionReceipt = async (type) => {
+    if (!payoutTicket) return;
+    setPayoutError("");
+
+    if (!printerConnected) {
+      setPayoutError(
+        "Printer offline. Ensure local print service is running and POS80 printer is connected.",
+      );
+      return;
+    }
+
+    try {
+      const escposData = await encodeActionReceiptAsync(payoutTicket, {
+        width: "80mm",
+        type,
+      });
+      const localPrintResult = await printViaLocalService(escposData);
+      if (localPrintResult.success) {
+        setActionSuccess(
+          type === "payout"
+            ? "Payout receipt printed."
+            : "Cancellation receipt printed.",
+        );
+        return;
+      }
+
+      const localError = String(
+        localPrintResult.error?.message ||
+          "Failed to send receipt to local printer service.",
+      );
+      if (localPrintResult.code === "service_unreachable") {
+        setPayoutError(
+          "Local print service unreachable. Start PrinterBridge.exe on this PC.",
+        );
+      } else if (localPrintResult.code === "com_unavailable") {
+        setPayoutError(
+          "Printer queue unavailable. Check POS80 is installed in Windows Print queues.",
+        );
+      } else {
+        setPayoutError(localError);
+      }
+    } catch (error) {
+      setPayoutError(error?.message || "Failed to print receipt");
     }
   };
 
@@ -1016,6 +1049,40 @@ export default function CashierTicketsPage() {
                   </p>
                 )}
 
+                {sellTicket && (
+                  <div className="mt-4 flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleSellConfirm}
+                      disabled={isBusy || sellConfirmed}
+                      className="rounded-sm bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                    >
+                      {updateStake.isPending ? "Saving..." : "Confirm"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSellTicket(null);
+                        setSellStakeInput("");
+                        setSellConfirmed(false);
+                        setTicketPreviewOpen(false);
+                      }}
+                      className="rounded-sm border border-[var(--border)] px-4 py-2 text-sm font-semibold text-[var(--muted)]"
+                    >
+                      Cancel
+                    </button>
+                    {sellConfirmed && (
+                      <PrimaryButton
+                        className="w-auto"
+                        onClick={handlePrint}
+                        disabled={isBusy}
+                      >
+                        Print Ticket
+                      </PrimaryButton>
+                    )}
+                  </div>
+                )}
+
                 {!sellTicket ? (
                   <div className="mt-4 rounded-sm border border-dashed border-[var(--border)] px-4 py-12 text-center text-sm text-[var(--muted)]">
                     Please provide valid ticket number.
@@ -1090,41 +1157,6 @@ export default function CashierTicketsPage() {
                         </p>
                       )}
                     </div>
-
-                    <div className="mt-4 flex flex-wrap gap-2">
-                      <button
-                        type="button"
-                        onClick={handleSellConfirm}
-                        disabled={isBusy || sellConfirmed}
-                        className="rounded-sm bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
-                      >
-                        {updateStake.isPending ? "Saving..." : "Confirm"}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setSellTicket(null);
-                          setSellStakeInput("");
-                          setSellConfirmed(false);
-                          setTicketPreviewOpen(false);
-                        }}
-                        className="rounded-sm border border-[var(--border)] px-4 py-2 text-sm font-semibold text-[var(--muted)]"
-                      >
-                        Reject
-                      </button>
-                    </div>
-
-                    {sellConfirmed && (
-                      <div className="mt-3 space-y-2">
-                        <PrimaryButton
-                          className="max-w-xs"
-                          onClick={handlePrint}
-                          disabled={isBusy}
-                        >
-                          Print Ticket
-                        </PrimaryButton>
-                      </div>
-                    )}
                   </>
                 )}
               </div>
@@ -1142,6 +1174,7 @@ export default function CashierTicketsPage() {
                     onChange={(event) => {
                       setPayoutAction(event.target.value);
                       setPayoutQuote(null);
+                      setCompletedAction(null);
                     }}
                     disabled={isBusy}
                     className="min-w-[8.5rem] rounded-sm border border-slate-700 bg-slate-900 px-3 py-2.5 text-sm font-semibold text-white outline-none focus:border-[var(--accent)] disabled:opacity-60"
@@ -1221,6 +1254,22 @@ export default function CashierTicketsPage() {
                             ? "Execute Cash Out"
                             : "Pay Winner"}
                       </button>
+
+                      {(completedAction === "payout" ||
+                        completedAction === "cancel") && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void handlePrintActionReceipt(completedAction)
+                          }
+                          disabled={isBusy}
+                          className="rounded-sm border border-[var(--accent)] px-4 py-2 text-sm font-semibold text-[var(--accent)] disabled:opacity-60"
+                        >
+                          {completedAction === "payout"
+                            ? "Print Payout Receipt"
+                            : "Print Cancel Receipt"}
+                        </button>
+                      )}
                     </div>
 
                     {payoutAction === "cashout" && payoutQuote && (

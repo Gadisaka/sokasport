@@ -3,10 +3,7 @@ import assert from "node:assert/strict";
 
 import { validatePlacementSelections } from "../services/odds-engine/validateSelections.js";
 
-function makePrisma({
-  fixtures = [],
-  oddLines = [],
-}) {
+function makePrisma({ fixtures = [], oddLines = [] }) {
   return {
     fixture: {
       findMany: async ({ where }) => {

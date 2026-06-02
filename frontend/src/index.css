@@ -8,14 +8,14 @@
     text-rendering: optimizeLegibility;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    --sb-bg-0: #06312a;
-    --sb-bg-1: #06312a;
-    --sb-bg-2: #084235;
-    --sb-bg-page: #06312a;
-    --sb-bg-card: #0a4538;
-    --sb-bg-card-elevated: #0c5042;
-    --sb-surface: #0a4538;
-    --sb-surface-soft: #0c5042;
+    --sb-bg-0: #09252b;
+    --sb-bg-1: #09252b;
+    --sb-bg-2: #0e3339;
+    --sb-bg-page: #09252b;
+    --sb-bg-card: #11383f;
+    --sb-bg-card-elevated: #144148;
+    --sb-surface: #11383f;
+    --sb-surface-soft: #144148;
     --sb-border: rgba(255, 255, 255, 0.08);
     --sb-border-strong: rgba(255, 255, 255, 0.14);
     --sb-text: #ffffff;
@@ -26,9 +26,9 @@
     --sb-accent-fill: #019052;
     --sb-accent-fill-hover: #017a45;
     --sb-accent-border: #019052;
-    --sb-accent-surface: #042820;
-    --sb-accent-surface-deep: #084235;
-    --sb-accent-surface-alt: #053528;
+    --sb-accent-surface: #061a1e;
+    --sb-accent-surface-deep: #0e3339;
+    --sb-accent-surface-alt: #0a252c;
     --sb-accent-text-on-dark: #ffffff;
     --sb-accent-text-muted: rgba(255, 255, 255, 0.72);
     --sb-accent-text-soft: #7fd4a8;
@@ -44,13 +44,7 @@
 
   body {
     @apply overflow-x-clip;
-    background:
-      radial-gradient(
-        1200px 680px at 55% -120px,
-        rgba(1, 144, 82, 0.1),
-        transparent 66%
-      ),
-      linear-gradient(180deg, var(--sb-bg-page) 0%, var(--sb-bg-0) 58%);
+    background-color: var(--sb-bg-page);
     color: var(--sb-text);
   }
 
@@ -119,4 +113,21 @@
   .animate-bet-slip-row-enter {
     animation: bet-slip-row-enter 0.56s cubic-bezier(0.33, 1, 0.68, 1) both;
   }
+}
+
+/* Public check-coupon: scalloped "torn paper" top & bottom edges on the receipt
+   card. The mask punches half-circles out of the card so the dark page shows
+   through, mimicking a perforated thermal receipt. Keep vertical padding >= 8px
+   so content is never clipped by the notches. */
+.coupon-receipt {
+  -webkit-mask:
+    radial-gradient(circle at 50% 0, transparent 7px, #000 7.5px) repeat-x 0 0 /
+      15px 51%,
+    radial-gradient(circle at 50% 100%, transparent 7px, #000 7.5px) repeat-x 0
+      100% / 15px 51%;
+  mask:
+    radial-gradient(circle at 50% 0, transparent 7px, #000 7.5px) repeat-x 0 0 /
+      15px 51%,
+    radial-gradient(circle at 50% 100%, transparent 7px, #000 7.5px) repeat-x 0
+      100% / 15px 51%;
 }

@@ -12,6 +12,7 @@
 import bcrypt from "bcrypt";
 import { prisma } from "../Config/db.js";
 import { logAuditEvent } from "../lib/auditLog.js";
+import { normalizePhoneOrNull } from "../lib/phone.js";
 
 /** Parse query param as positive integer; invalid values fall back to `fallback`. */
 function toPositiveInt(value, fallback) {
@@ -185,7 +186,7 @@ export async function createUser(req, res) {
         data: {
           name: String(name).trim(),
           email: String(email).toLowerCase().trim(),
-          phone: phone ? String(phone).trim() : null,
+          phone: normalizePhoneOrNull(phone),
           password: hashedPassword,
           role_id: roleId,
           status: Boolean(status),
@@ -328,7 +329,7 @@ export async function updateUser(req, res) {
       if (email !== undefined)
         updateData.email = String(email).toLowerCase().trim();
       if (phone !== undefined)
-        updateData.phone = phone ? String(phone).trim() : null;
+        updateData.phone = normalizePhoneOrNull(phone);
       if (status !== undefined) updateData.status = Boolean(status);
       if (roleId !== undefined) updateData.role_id = String(roleId);
       if (password) {

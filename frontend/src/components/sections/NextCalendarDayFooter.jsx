@@ -10,6 +10,8 @@ import { getNextCalendarDayTimeId } from "../../utils/sportsbookTimeOptions.js";
  *   horizonDays: number;
  *   onSelectDay: (timeId: string) => void;
  *   disabled?: boolean;
+ *   requireLastMatchPage?: boolean; // last match page only (no scroll sentinel)
+ *   isLastMatchPage?: boolean;
  * }} props
  */
 function NextCalendarDayFooter({
@@ -18,6 +20,8 @@ function NextCalendarDayFooter({
   horizonDays,
   onSelectDay,
   disabled = false,
+  requireLastMatchPage = false,
+  isLastMatchPage = true,
 }) {
   const { t } = useTranslation();
 
@@ -86,16 +90,21 @@ function NextCalendarDayFooter({
 
   const label = timeOptionDisplayLabel(nextMeta, t);
   const ariaLabel = `${t("common.goToNextDay")} ${label}`;
-  const showButton =
+  const showByScroll =
     bottomReached && (!pageScrollable || userHasScrolled);
+  const showButton = requireLastMatchPage
+    ? isLastMatchPage
+    : showByScroll;
 
   return (
     <>
-      <div
-        ref={sentinelRef}
-        className="pointer-events-none h-1 w-full shrink-0"
-        aria-hidden
-      />
+      {!requireLastMatchPage ? (
+        <div
+          ref={sentinelRef}
+          className="pointer-events-none h-1 w-full shrink-0"
+          aria-hidden
+        />
+      ) : null}
       {showButton ? (
         <div className="flex justify-center px-2 pb-3 pt-1">
           <button

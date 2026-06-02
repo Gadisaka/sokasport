@@ -1,6 +1,10 @@
 /**
  * Pure helpers for online payment verification (amount parsing, idempotency keys).
  */
+import { normalizeEthiopiaPhone } from "./phone.js";
+
+// Re-exported for callers that import the phone normalizer from this module.
+export { normalizeEthiopiaPhone };
 
 const ONLINE_PAY_METHODS = new Set(["cbe", "cbebirr", "telebirr"]);
 
@@ -16,17 +20,6 @@ export function parseEtbMoneyString(raw) {
   if (!m) return null;
   const n = Number(m[1]);
   return Number.isFinite(n) ? n : null;
-}
-
-/**
- * @param {unknown} input
- * @returns {string}
- */
-export function normalizeEthiopiaPhone(input) {
-  let d = String(input ?? "").replace(/\D/g, "");
-  if (d.startsWith("0")) d = `251${d.slice(1)}`;
-  if (d.length === 9) d = `251${d}`;
-  return d;
 }
 
 /**
