@@ -30,6 +30,7 @@ if (!process.env.DATABASE_URL) {
 const bcrypt = (await import("bcrypt")).default;
 const { PrismaClient } = await import("@prisma/client");
 const { ensureBonusPresets, PRESET_BONUSES } = await import("../lib/ensureBonusPresets.js");
+const { normalizeEthiopiaPhone } = await import("../lib/phone.js");
 const prisma = new PrismaClient({});
 
 const ROLES = [
@@ -112,12 +113,13 @@ async function main() {
 
   for (const account of STAFF_TEST_ACCOUNTS) {
     const hashedPassword = await bcrypt.hash(account.password, 10);
+    const phone = normalizeEthiopiaPhone(account.phone);
 
     await prisma.user.upsert({
       where: { email: account.email },
       update: {
         name: account.name,
-        phone: account.phone,
+        phone,
         password: hashedPassword,
         status: true,
         role: {
@@ -127,7 +129,7 @@ async function main() {
       create: {
         name: account.name,
         email: account.email,
-        phone: account.phone,
+        phone,
         password: hashedPassword,
         status: true,
         role: {
@@ -136,7 +138,7 @@ async function main() {
       },
     });
 
-    console.log(`  User ${account.role} (${account.phone}) — ok`);
+    console.log(`  User ${account.role} (${phone}) — ok`);
   }
   console.log(`Seeded ${STAFF_TEST_ACCOUNTS.length} staff test accounts.`);
 

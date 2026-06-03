@@ -2,14 +2,17 @@ import path from "path";
 import { createRequire } from "module";
 import { getEffectiveConfig } from "./config.js";
 import { log } from "./logger.js";
+import { PowerShellPrinter } from "./powershellPrinter.js";
 import {
+  getWindowsPrinterByName,
   listWindowsPrintersViaPowerShell,
-  printRawViaPowerShell,
 } from "./windowsPrinters.js";
 
 export const RECONNECT_INTERVAL_MS = 5000;
 export const WRITE_TIMEOUT_MS = Number(process.env.WRITE_TIMEOUT_MS) || 60_000;
-const PRINTER_LIST_TTL_MS = 5000;
+const PRINTER_LIST_TTL_MS = 60_000;
+/** How long a verified connection is trusted before re-resolving the queue. */
+const CONNECTION_TTL_MS = 30_000;
 const DEFAULT_PRINTER_NAME = "POS80";
 
 let printerApiPromise = null;
@@ -108,6 +111,9 @@ export class PrinterManager {
     /** @type {Array<any> | null} */
     this.cachedPrinters = null;
     this.cachedPrintersAt = 0;
+    /** Timestamp of the last successful queue resolution (for connection caching). */
+    this.lastConnectVerifiedAt = 0;
+    this.psPrinter = new PowerShellPrinter();
   }
 
   async listQueues() {
@@ -153,6 +159,16 @@ export class PrinterManager {
     const preferred = String(
       process.env.PRINTER_NAME || config.printerName || DEFAULT_PRINTER_NAME,
     ).trim();
+
+    // PowerShell path: never enumerate ALL queues (Get-Printer can block for
+    // minutes on offline/network/redirected printers). Query just the
+    // configured queue by name.
+    if (nativePrinterDisabled) {
+      if (!preferred) return "";
+      const scoped = await getWindowsPrinterByName(preferred);
+      return scoped ? scoped.name || preferred : "";
+    }
+
     const printers = await this.listQueues();
     if (printers.length === 0) return "";
 
@@ -169,8 +185,25 @@ export class PrinterManager {
   async forceDisconnect(error) {
     const message = error?.message || "Disconnected";
     this.connectionState = "disconnected";
+    this.lastConnectVerifiedAt = 0;
     this.lastError = message;
     log("warn", "disconnect", { printer: this.printerName, error: message });
+  }
+
+  /**
+   * Reuse an already-verified connection instead of re-resolving the queue on
+   * every print. Only re-resolves when disconnected or the verification is
+   * stale, which keeps the hot path free of repeated printer enumeration.
+   */
+  async ensureConnected() {
+    if (
+      this.connectionState === "connected" &&
+      this.printerName &&
+      Date.now() - this.lastConnectVerifiedAt < CONNECTION_TTL_MS
+    ) {
+      return true;
+    }
+    return this.connect();
   }
 
   async connect() {
@@ -178,20 +211,13 @@ export class PrinterManager {
     const expected = String(
       process.env.PRINTER_NAME || config.printerName || DEFAULT_PRINTER_NAME,
     ).trim();
+    // resolveQueueName already confirms the queue exists (native cached list or
+    // a scoped `Get-Printer -Name`), so there is no need to enumerate again.
     const queueName = await this.resolveQueueName();
     if (!queueName) {
       this.connectionState = "disconnected";
+      this.lastConnectVerifiedAt = 0;
       this.lastError = `Printer queue "${expected}" not found in Windows. Check Settings → Printers & scanners.`;
-      return false;
-    }
-
-    const printers = await this.listQueues();
-    const exists = printers.some((entry) =>
-      equalsIgnoreCase(printerNameOf(entry), queueName),
-    );
-    if (!exists) {
-      this.connectionState = "disconnected";
-      this.lastError = `Printer queue unavailable: ${queueName}`;
       return false;
     }
 
@@ -199,6 +225,7 @@ export class PrinterManager {
     this.connectionState = "connected";
     this.reconnectAttempts = 0;
     this.lastError = null;
+    this.lastConnectVerifiedAt = Date.now();
     log("info", "connect", { printer: queueName });
     return true;
   }
@@ -227,9 +254,12 @@ export class PrinterManager {
   }
 
   async sendRawWithPowerShell(buffer, queueName) {
-    const result = await printRawViaPowerShell(buffer, queueName);
+    const base64 = Buffer.from(buffer).toString("base64");
+    const result = await this.psPrinter.print(queueName, base64, WRITE_TIMEOUT_MS);
     if (!result.ok) {
-      throw new Error(result.error || "PowerShell raw print failed");
+      const err = new Error(result.error || "PowerShell raw print failed");
+      if (result.code) err.code = result.code;
+      throw err;
     }
   }
 
@@ -249,7 +279,7 @@ export class PrinterManager {
   }
 
   async write(buffer, timeoutMs = WRITE_TIMEOUT_MS, jobId = "") {
-    const connected = await this.connect();
+    const connected = await this.ensureConnected();
     if (!connected) {
       const err = new Error(this.lastError || "Printer not connected");
       throw err;
@@ -327,6 +357,22 @@ export class PrinterManager {
   }
 
   async probe() {
+    // Status is polled frequently; serve a recently verified connection from
+    // cache instead of re-resolving the queue (and spawning PowerShell) each
+    // time. A failed write resets lastConnectVerifiedAt, so genuine printer
+    // loss is still surfaced quickly.
+    if (
+      this.connectionState === "connected" &&
+      this.printerName &&
+      Date.now() - this.lastConnectVerifiedAt < CONNECTION_TTL_MS
+    ) {
+      return {
+        connected: true,
+        port: this.printerName,
+        message: "Printer ready",
+      };
+    }
+
     const resolvedQueue = await this.resolveQueueName();
     if (!resolvedQueue) {
       return {
@@ -365,5 +411,11 @@ export class PrinterManager {
   async listPrinters() {
     const printers = await this.listQueues();
     return printers.map(normalizePrinterInfo);
+  }
+
+  /** Release the persistent PowerShell worker and timers (process shutdown). */
+  dispose() {
+    this.stopReconnectLoop();
+    this.psPrinter?.dispose?.();
   }
 }

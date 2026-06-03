@@ -12,7 +12,7 @@ const PRINTER_API_KEY =
 
 export const EXPECTED_PROTOCOL_VERSION = "1";
 
-const STATUS_POLL_MS = 7000;
+const STATUS_POLL_MS = 15000;
 
 export { STATUS_POLL_MS };
 

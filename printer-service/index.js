@@ -246,4 +246,27 @@ async function start() {
   });
 }
 
+let shuttingDown = false;
+function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  log("info", "service_shutdown", { signal });
+  try {
+    printerManager.dispose();
+  } catch {
+    // ignore
+  }
+  process.exit(0);
+}
+
+process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("exit", () => {
+  try {
+    printerManager.dispose();
+  } catch {
+    // ignore
+  }
+});
+
 void start();

@@ -99,6 +99,22 @@ Replace `COM3` with your port from Device Manager.
 | Local print service unreachable | Ensure `PrinterBridge.exe` is running (Task Manager) |
 | Auth failed | `apiKey` in `config.json` must match cashier app build |
 | Wrong COM port | Run `GET http://localhost:3005/printers` with auth header, or check Device Manager |
+| Printing is very slow (seconds–minutes) | When the native printer driver isn't available, the bridge prints via a helper `powershell.exe` process. Antivirus / Windows Defender real-time scanning of PowerShell (AMSI) can add large delays. Add an exclusion (see below). |
+
+### Antivirus exclusions (fixes slow printing)
+
+If prints take several seconds or more, exclude the bridge and its helper from
+real-time scanning. In an **elevated** PowerShell:
+
+```powershell
+Add-MpPreference -ExclusionPath "C:\Sokasport\PrinterBridge"
+Add-MpPreference -ExclusionProcess "PrinterBridge.exe"
+Add-MpPreference -ExclusionProcess "powershell.exe"
+```
+
+The bridge already keeps a single long-lived `powershell.exe` worker (it no
+longer launches a new PowerShell per ticket), so these exclusions plus the
+worker keep printing near-instant.
 
 ---
 

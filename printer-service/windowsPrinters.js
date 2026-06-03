@@ -1,17 +1,15 @@
-import { execFile, spawn } from "child_process";
+import { execFile } from "child_process";
 import { promisify } from "util";
 import { log } from "./logger.js";
 
 const execFileAsync = promisify(execFile);
 
-const RAW_PRINT_SCRIPT = `$ErrorActionPreference = "Stop"
-$PrinterName = $env:SOKA_PRINTER_NAME
-if ([string]::IsNullOrWhiteSpace($PrinterName)) {
-    Write-Error "Missing SOKA_PRINTER_NAME"
-    exit 2
-}
-Add-Type -TypeDefinition @"
-using System;
+/**
+ * C# definition of the Win32 raw-print helper, shared by the persistent
+ * PowerShell worker (see powershellPrinter.js). Kept separate from any loop
+ * logic so the worker can `Add-Type` it exactly once per process.
+ */
+export const RAW_PRINTER_HELPER_CSHARP = `using System;
 using System.IO;
 using System.Runtime.InteropServices;
 
@@ -66,77 +64,64 @@ public class RawPrinterHelper {
         } finally { ClosePrinter(hPrinter); }
     }
 }
-"@
-
-$stdin = [System.Console]::OpenStandardInput()
-$ms = New-Object System.IO.MemoryStream
-$stdin.CopyTo($ms)
-$bytes = $ms.ToArray()
-$result = [RawPrinterHelper]::SendBytesToPrinter($PrinterName, $bytes)
-if ($result -lt 0) {
-    $stage = switch ($result) {
-        -1 { "OpenPrinter" }
-        -2 { "StartDocPrinter" }
-        -3 { "StartPagePrinter" }
-        -4 { "WritePrinter" }
-        default { "Unknown" }
-    }
-    $win = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
-    Write-Error ("$stage failed for '$PrinterName' (Win32 error $win)")
-    exit 1
-}
-Write-Output ("written=" + $result)
 `;
 
 /**
- * Send raw ESC/POS bytes to a Windows print queue via PowerShell + Win32 WritePrinter.
- * @param {Buffer} buffer
- * @param {string} printerName
- * @returns {Promise<{ ok: boolean, error?: string, bytesWritten?: number }>}
+ * Look up a single Windows print queue by exact name. Unlike enumerating all
+ * queues with `Get-Printer`, scoping by `-Name` avoids the multi-second (or
+ * multi-minute) stalls Windows incurs while querying the live status of every
+ * offline / network / RDP-redirected printer on the machine.
+ *
+ * @param {string} name
+ * @returns {Promise<{ name: string, driverName: string, portName: string, status: string, isDefault: boolean } | null>}
  */
-export function printRawViaPowerShell(buffer, printerName) {
-  if (process.platform !== "win32") {
-    return Promise.resolve({ ok: false, error: "PowerShell printing only supported on Windows" });
-  }
+export async function getWindowsPrinterByName(name) {
+  if (process.platform !== "win32") return null;
+  const target = String(name || "").trim();
+  if (!target) return null;
 
-  return new Promise((resolve) => {
-    const child = spawn(
+  try {
+    // A non-matching `-Name` makes Get-Printer raise a terminating error and
+    // exit non-zero; catch it and exit 0 so a simply-absent queue returns empty
+    // output rather than a logged failure on every reconnect attempt. Real
+    // failures (timeout, missing cmdlet) still surface via the JS catch below.
+    const script =
+      "try { " +
+      "$p = Get-Printer -Name $env:SOKA_PRINTER_NAME -ErrorAction Stop; " +
+      "$p | Select-Object Name, DriverName, PortName, PrinterStatus | " +
+      "ConvertTo-Json -Compress " +
+      "} catch { } exit 0";
+    const { stdout } = await execFileAsync(
       "powershell.exe",
-      ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", RAW_PRINT_SCRIPT],
+      ["-NoProfile", "-Command", script],
       {
+        timeout: 8000,
         windowsHide: true,
-        env: { ...process.env, SOKA_PRINTER_NAME: printerName },
+        env: { ...process.env, SOKA_PRINTER_NAME: target },
       },
     );
 
-    let stdout = "";
-    let stderr = "";
-    let settled = false;
-    const settle = (value) => {
-      if (settled) return;
-      settled = true;
-      resolve(value);
+    const trimmed = String(stdout || "").trim();
+    if (!trimmed) return null;
+
+    const parsed = JSON.parse(trimmed);
+    const row = Array.isArray(parsed) ? parsed[0] : parsed;
+    if (!row || !row.Name) return null;
+
+    return {
+      name: String(row.Name).trim(),
+      driverName: String(row.DriverName || "").trim(),
+      portName: String(row.PortName || "").trim(),
+      status: String(row.PrinterStatus ?? "").trim(),
+      isDefault: false,
     };
-
-    child.stdout.on("data", (chunk) => (stdout += chunk.toString()));
-    child.stderr.on("data", (chunk) => (stderr += chunk.toString()));
-    child.on("error", (err) =>
-      settle({ ok: false, error: err?.message || "powershell spawn failed" }),
-    );
-    child.on("close", (code) => {
-      if (code === 0) {
-        const match = /written=(\d+)/.exec(stdout);
-        settle({ ok: true, bytesWritten: match ? Number(match[1]) : buffer.length });
-      } else {
-        settle({
-          ok: false,
-          error: (stderr || stdout || `powershell exit ${code}`).trim(),
-        });
-      }
+  } catch (error) {
+    log("warn", "powershell_printer_lookup_failed", {
+      printer: target,
+      error: error?.message || "Failed to look up printer via PowerShell",
     });
-
-    child.stdin.end(buffer);
-  });
+    return null;
+  }
 }
 
 /**
