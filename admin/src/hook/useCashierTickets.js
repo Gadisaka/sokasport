@@ -83,6 +83,14 @@ export function mapTicketDetail(ticket) {
                   selection.match.leagueType ??
                   selection.match.league_type ??
                   "",
+                leagueCountry:
+                  selection.match.leagueCountry ??
+                  selection.match.league_country ??
+                  "",
+                status:
+                  selection.match.status ??
+                  selection.match.match_status ??
+                  null,
               }
             : null,
         }))
@@ -230,6 +238,44 @@ export function useUpdateTicketStakeMutation() {
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: TICKETS_KEY });
+    },
+  });
+}
+
+export function useSellBlockingQuery(ticketId, { enabled = true } = {}) {
+  const id = String(ticketId || "").trim();
+  return useQuery({
+    queryKey: [...TICKETS_KEY, "sell-blocking", id],
+    queryFn: async () => {
+      const payload = await apiRequest(`/tickets/${id}/sell-blocking`);
+      return {
+        blockingLegs: Array.isArray(payload?.blockingLegs)
+          ? payload.blockingLegs
+          : [],
+        hasBlockingLegs: Boolean(payload?.hasBlockingLegs),
+      };
+    },
+    enabled: Boolean(enabled && id),
+  });
+}
+
+export function useRemoveTicketSelectionMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ ticketId, selectionId }) => {
+      const payload = await apiRequest(
+        `/tickets/${ticketId}/selections/${encodeURIComponent(selectionId)}`,
+        { method: "DELETE" },
+      );
+      return mapTicketDetail(payload);
+    },
+    onSuccess: (_data, variables) => {
+      qc.invalidateQueries({ queryKey: TICKETS_KEY });
+      if (variables?.ticketId) {
+        qc.invalidateQueries({
+          queryKey: [...TICKETS_KEY, "sell-blocking", String(variables.ticketId)],
+        });
+      }
     },
   });
 }

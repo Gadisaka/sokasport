@@ -19,8 +19,14 @@ export function compareOddsDrift({
     }
     const submittedVersion = Number(leg.submittedMarketVersion);
     const serverVersion = Number(current.serverMarketVersion);
+    // A submitted version of 0 (or NaN) is the "client never received a server
+    // version" sentinel — e.g. compact six-cell strip selections, which carry no
+    // market version. Real versions are always >= 1 (fnv1a32 hashes /
+    // bumpMarketVersion), so only gate on version drift when the client actually
+    // sent one. Odds drift below still protects these legs.
     if (
       Number.isFinite(submittedVersion) &&
+      submittedVersion > 0 &&
       Number.isFinite(serverVersion) &&
       submittedVersion !== serverVersion
     ) {

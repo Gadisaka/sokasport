@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import AdminShell from "../../components/layout/AdminShell";
 import PanelCard from "../../components/ui/PanelCard";
 import PrimaryButton from "../../components/ui/PrimaryButton";
@@ -23,6 +23,8 @@ import {
   useExecuteCashoutMutation,
   usePayoutTicketMutation,
   useReceiptLookupMutation,
+  useRemoveTicketSelectionMutation,
+  useSellBlockingQuery,
   useTicketByIdLookupMutation,
   useTodayTicketsQuery,
   useUpdateTicketStakeMutation,
@@ -35,6 +37,11 @@ import {
   formatTaxLineLabel,
   slipGrossTaxNetForTicket,
 } from "../../utils/winningsTax";
+import { getSelectionRowClass } from "../../utils/legResultStatus";
+import {
+  collectInvalidSelectionIds,
+  invalidSelectionLabel,
+} from "../../utils/selectionExpiry";
 
 const LEFT_TABS = [
   { id: "sell", label: "Sell Ticket" },
@@ -118,7 +125,16 @@ function writePrintedCache(setValue) {
   localStorage.setItem(PRINTED_STORAGE_KEY, JSON.stringify([...setValue]));
 }
 
-function TicketDetail({ ticket, platformWinningsTax = null }) {
+function TicketDetail({
+  ticket,
+  platformWinningsTax = null,
+  highlightSelections = false,
+  highlightInvalid = false,
+  invalidSelectionIds = null,
+  blockingLegs = [],
+  onRemoveSelection,
+  removeDisabled = false,
+}) {
   if (!ticket) return null;
 
   const { tax, net, gross } = slipGrossTaxNetForTicket(
@@ -127,6 +143,9 @@ function TicketDetail({ ticket, platformWinningsTax = null }) {
   );
   const showTax = tax != null && tax > 0;
   const taxLabel = formatTaxLineLabel(ticket, platformWinningsTax);
+  const showActions = typeof onRemoveSelection === "function";
+  const invalidIds =
+    invalidSelectionIds instanceof Set ? invalidSelectionIds : new Set();
 
   return (
     <div className="mt-4 overflow-hidden rounded-sm border border-[var(--border)]">
@@ -143,6 +162,7 @@ function TicketDetail({ ticket, platformWinningsTax = null }) {
               <th className="px-3 py-2">Market</th>
               <th className="px-3 py-2">Selection</th>
               <th className="px-3 py-2">Odd</th>
+              {showActions ? <th className="px-3 py-2"> </th> : null}
             </tr>
           </thead>
           <tbody>
@@ -156,15 +176,29 @@ function TicketDetail({ ticket, platformWinningsTax = null }) {
                     ? home || "-"
                     : "-";
               const marketText = String(selection.marketLabel ?? "").trim();
+              const isInvalid =
+                highlightInvalid && invalidIds.has(String(selection.id));
+              const rowHighlightClass = isInvalid
+                ? "bg-[#fee2e2]"
+                : highlightSelections
+                  ? getSelectionRowClass(selection)
+                  : "";
               return (
                 <tr
                   key={selection.id}
-                  className="border-b border-[var(--border)] last:border-0"
+                  className={`border-b border-[var(--border)] last:border-0 ${rowHighlightClass}`.trim()}
                 >
                   <td className="px-3 py-2 text-xs text-[var(--muted)]">
-                    {selection.match?.startTime
-                      ? new Date(selection.match.startTime).toLocaleString()
-                      : "-"}
+                    <div>
+                      {selection.match?.startTime
+                        ? new Date(selection.match.startTime).toLocaleString()
+                        : "-"}
+                    </div>
+                    {isInvalid ? (
+                      <span className="mt-0.5 inline-block text-[10px] font-semibold uppercase tracking-wide text-[#b91c1c]">
+                        {invalidSelectionLabel(selection.id, blockingLegs)}
+                      </span>
+                    ) : null}
                   </td>
                   <td className="px-3 py-2 text-xs">{matchLabel}</td>
                   <td className="px-3 py-2 text-xs text-[var(--muted)]">
@@ -174,6 +208,18 @@ function TicketDetail({ ticket, platformWinningsTax = null }) {
                   <td className="px-3 py-2 text-xs font-mono">
                     {toNumber(selection.odds).toFixed(2)}
                   </td>
+                  {showActions ? (
+                    <td className="px-3 py-2 text-right">
+                      <button
+                        type="button"
+                        onClick={() => onRemoveSelection(selection.id)}
+                        disabled={removeDisabled}
+                        className="rounded-sm border border-[#b91c1c]/40 px-2 py-1 text-xs font-semibold text-[#b91c1c] hover:bg-[#fee2e2] disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        Delete
+                      </button>
+                    </td>
+                  ) : null}
                 </tr>
               );
             })}
@@ -382,7 +428,22 @@ export default function CashierTicketsPage() {
   const validatePrint = useValidatePrintTicketMutation();
   const preparePrint = usePreparePrintTicketMutation();
   const updateStake = useUpdateTicketStakeMutation();
+  const removeSelection = useRemoveTicketSelectionMutation();
+  const sellBlockingQuery = useSellBlockingQuery(sellTicket?.id, {
+    enabled: Boolean(sellTicket?.id && leftTab === "sell"),
+  });
   const printInFlightRef = useRef(false);
+
+  const invalidSelectionIds = useMemo(() => {
+    if (!sellTicket?.selections) return new Set();
+    return collectInvalidSelectionIds(
+      sellTicket.selections,
+      sellBlockingQuery.data?.blockingLegs,
+    );
+  }, [sellTicket, sellBlockingQuery.data?.blockingLegs]);
+
+  const hasInvalidLegs = invalidSelectionIds.size > 0;
+  const onlyOneLeg = (sellTicket?.selections?.length || 0) <= 1;
 
   const sellStakeNum = Number(sellStakeInput);
   const sellAccPct = toNumber(sellTicket?.accumulatorBonusPercent);
@@ -546,6 +607,11 @@ export default function CashierTicketsPage() {
     if (!sellTicket) return;
     setSellError("");
 
+    if (hasInvalidLegs) {
+      setSellError("Remove expired or invalid selections before confirming.");
+      return;
+    }
+
     const parsedStake = Number(sellStakeInput);
     if (!Number.isFinite(parsedStake) || parsedStake <= 0) {
       setSellError("Stake must be a positive number");
@@ -568,6 +634,22 @@ export default function CashierTicketsPage() {
 
     setSellConfirmed(true);
     setActionSuccess("Ticket confirmed. You can print now.");
+  };
+
+  const handleRemoveSelection = async (selectionId) => {
+    if (!sellTicket?.id) return;
+    setSellError("");
+    setSellConfirmed(false);
+    try {
+      const updated = await removeSelection.mutateAsync({
+        ticketId: sellTicket.id,
+        selectionId,
+      });
+      setSellTicket(updated);
+      setSellStakeInput(String(toNumber(updated?.stake)));
+    } catch (error) {
+      setSellError(error?.message || "Failed to remove selection");
+    }
   };
 
   const handlePrint = async () => {
@@ -1054,7 +1136,7 @@ export default function CashierTicketsPage() {
                     <button
                       type="button"
                       onClick={handleSellConfirm}
-                      disabled={isBusy || sellConfirmed}
+                      disabled={isBusy || sellConfirmed || hasInvalidLegs}
                       className="rounded-sm bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
                     >
                       {updateStake.isPending ? "Saving..." : "Confirm"}
@@ -1092,7 +1174,23 @@ export default function CashierTicketsPage() {
                     <TicketDetail
                       ticket={sellTicket}
                       platformWinningsTax={platformWinningsTax}
+                      highlightInvalid
+                      invalidSelectionIds={invalidSelectionIds}
+                      blockingLegs={sellBlockingQuery.data?.blockingLegs || []}
+                      onRemoveSelection={handleRemoveSelection}
+                      removeDisabled={
+                        sellConfirmed ||
+                        isBusy ||
+                        onlyOneLeg ||
+                        removeSelection.isPending
+                      }
                     />
+
+                    {hasInvalidLegs ? (
+                      <p className="mt-2 text-xs font-medium text-[#b91c1c]">
+                        Remove expired or invalid selections before confirming.
+                      </p>
+                    ) : null}
 
                     <div className="mt-4 rounded-sm border border-[var(--border)] bg-[var(--surfaceMuted)] px-3 py-3">
                       <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
@@ -1222,6 +1320,7 @@ export default function CashierTicketsPage() {
                     <TicketDetail
                       ticket={payoutTicket}
                       platformWinningsTax={platformWinningsTax}
+                      highlightSelections={payoutAction === "payout"}
                     />
 
                     <div className="mt-4 flex flex-wrap items-end gap-3">

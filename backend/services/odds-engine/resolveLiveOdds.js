@@ -38,46 +38,16 @@ function buildLiveFieldCandidates(selection) {
   return fields;
 }
 
-async function hgetFirst(redis, key, fields) {
-  for (const field of fields) {
-    const raw = await redis.hget(key, field);
-    if (raw !== null && raw !== undefined && raw !== "") {
-      return { value: raw, field };
+function firstNonEmpty(values, fields) {
+  if (Array.isArray(values)) {
+    for (let i = 0; i < fields.length; i += 1) {
+      const raw = values[i];
+      if (raw !== null && raw !== undefined && raw !== "") {
+        return { value: raw, field: fields[i] };
+      }
     }
   }
   return { value: null, field: null };
-}
-
-async function lookupRedisOdds(redis, sel) {
-  const oddsKey = `live-odds:${sel.apiFixtureId}`;
-  const stateKey = `live-market-state:${sel.apiFixtureId}`;
-  const versionKey = `live-market-version:${sel.apiFixtureId}`;
-  const updatedAtKey = `live-market-updated-at:${sel.apiFixtureId}`;
-  const lockUntilKey = `live-market-lock-until:${sel.apiFixtureId}`;
-  const fieldCandidates = buildLiveFieldCandidates(sel);
-  const odds = await hgetFirst(redis, oddsKey, fieldCandidates);
-  const matchedField = odds.field;
-  const lookupFields = matchedField ? [matchedField] : fieldCandidates;
-  const state = await hgetFirst(redis, stateKey, lookupFields);
-  const version = await hgetFirst(redis, versionKey, lookupFields);
-  const updatedAt = await hgetFirst(redis, updatedAtKey, lookupFields);
-  const lockUntil = await hgetFirst(redis, lockUntilKey, lookupFields);
-  const lockUntilNum = safeNumber(lockUntil.value);
-  return {
-    index: sel.index,
-    apiFixtureId: sel.apiFixtureId,
-    redisOdds: safeNumber(odds.value),
-    redisState:
-      String(state.value || "")
-        .trim()
-        .toUpperCase() || null,
-    redisVersion: safeNumber(version.value),
-    redisUpdatedAt: updatedAt.value || null,
-    lockRemainingMs: Number.isFinite(lockUntilNum)
-      ? Math.max(0, lockUntilNum - Date.now())
-      : 0,
-    fieldCandidates,
-  };
 }
 
 function parseApiResponseToSnapshot(apiResponse) {
@@ -128,12 +98,99 @@ export async function resolveLiveOdds({
 }) {
   const redis = getRedisClient();
 
-  // Step 1: Initial Redis lookup for all selections
-  const liveRows = await Promise.all(
-    selections.map((sel) => lookupRedisOdds(redis, sel)),
-  );
+  // One HMGET per key (instead of one HGET per candidate field) and all
+  // selections flushed in a single pipeline round-trip (instead of dozens of
+  // sequential awaits) — then resolve the matched field in memory.
+  const rows = selections.map((sel) => {
+    const fields = buildLiveFieldCandidates(sel);
+    return {
+      sel,
+      // hmget needs at least one field; "__none__" never exists in the hash.
+      fields: fields.length ? fields : ["__none__"],
+      fieldCandidates: fields,
+      oddsKey: `live-odds:${sel.apiFixtureId}`,
+      stateKey: `live-market-state:${sel.apiFixtureId}`,
+      versionKey: `live-market-version:${sel.apiFixtureId}`,
+      updatedAtKey: `live-market-updated-at:${sel.apiFixtureId}`,
+      lockUntilKey: `live-market-lock-until:${sel.apiFixtureId}`,
+    };
+  });
 
-  // Step 2: Identify fixtures with Redis miss that need API fetch
+  // Round 1: discover which field carries odds for each selection.
+  let oddsExec = [];
+  try {
+    if (rows.length) {
+      const p1 = redis.pipeline();
+      for (const row of rows) p1.hmget(row.oddsKey, ...row.fields);
+      oddsExec = (await p1.exec()) || [];
+    }
+  } catch {
+    oddsExec = [];
+  }
+
+  const staged = rows.map((row, i) => {
+    const values = Array.isArray(oddsExec[i]) ? oddsExec[i][1] : null;
+    const matched = firstNonEmpty(values, row.fields);
+    const lookupFields = matched.field ? [matched.field] : row.fields;
+    return { ...row, oddsValue: matched.value, lookupFields };
+  });
+
+  // Round 2: read state/version/updatedAt/lockUntil for the matched field.
+  let metaExec = [];
+  try {
+    if (staged.length) {
+      const p2 = redis.pipeline();
+      for (const row of staged) {
+        p2.hmget(row.stateKey, ...row.lookupFields);
+        p2.hmget(row.versionKey, ...row.lookupFields);
+        p2.hmget(row.updatedAtKey, ...row.lookupFields);
+        p2.hmget(row.lockUntilKey, ...row.lookupFields);
+      }
+      metaExec = (await p2.exec()) || [];
+    }
+  } catch {
+    metaExec = [];
+  }
+
+  const liveRows = staged.map((row, i) => {
+    const base = i * 4;
+    const stateVals = Array.isArray(metaExec[base]) ? metaExec[base][1] : null;
+    const versionVals = Array.isArray(metaExec[base + 1])
+      ? metaExec[base + 1][1]
+      : null;
+    const updatedVals = Array.isArray(metaExec[base + 2])
+      ? metaExec[base + 2][1]
+      : null;
+    const lockVals = Array.isArray(metaExec[base + 3])
+      ? metaExec[base + 3][1]
+      : null;
+    const state = firstNonEmpty(stateVals, row.lookupFields);
+    const version = firstNonEmpty(versionVals, row.lookupFields);
+    const updatedAt = firstNonEmpty(updatedVals, row.lookupFields);
+    const lockUntil = firstNonEmpty(lockVals, row.lookupFields);
+    const lockUntilNum = safeNumber(lockUntil.value);
+    return {
+      index: row.sel.index,
+      apiFixtureId: row.sel.apiFixtureId,
+      fieldCandidates: row.fieldCandidates,
+      redisOdds: safeNumber(row.oddsValue),
+      redisState:
+        String(state.value || "")
+          .trim()
+          .toUpperCase() || null,
+      redisVersion: safeNumber(version.value),
+      redisUpdatedAt: updatedAt.value || null,
+      lockRemainingMs: Number.isFinite(lockUntilNum)
+        ? Math.max(0, lockUntilNum - Date.now())
+        : 0,
+      source: undefined,
+    };
+  });
+
+  // API-Sports fetch fallback: for any selection that missed Redis, fetch the
+  // single-fixture live odds, persist to Redis, and extract the matched odd.
+  // Fetches run in parallel (one per missed fixture), so this adds at most one
+  // upstream round-trip regardless of leg count.
   const missedFixtureIds = new Set();
   const selectionsByFixture = new Map();
   for (let i = 0; i < liveRows.length; i++) {
@@ -151,12 +208,12 @@ export async function resolveLiveOdds({
     }
   }
 
-  // Step 3: Fetch from API-Sports for missed fixtures and write to Redis
-  const apiFetchedOdds = new Map();
   if (missedFixtureIds.size > 0) {
+    const apiFetchedOdds = new Map();
     const fetchPromises = [...missedFixtureIds].map(async (fixtureId) => {
       try {
-        const apiResponse = await api("football").getSingleFixtureLiveOdds(fixtureId);
+        const apiResponse =
+          await api("football").getSingleFixtureLiveOdds(fixtureId);
         const parsed = parseApiResponseToSnapshot(apiResponse);
         if (parsed && parsed.bookmakers[0].markets.length > 0) {
           await writeLiveOddsSnapshot(fixtureId, parsed);
@@ -170,24 +227,21 @@ export async function resolveLiveOdds({
       }
     });
     await Promise.all(fetchPromises);
-  }
 
-  // Step 4: Update liveRows with API-fetched odds
-  for (const [fixtureId, parsed] of apiFetchedOdds) {
-    const sels = selectionsByFixture.get(fixtureId) || [];
-    for (const { rowIndex, fieldCandidates } of sels) {
-      const extracted = extractOddFromSnapshot(parsed, fieldCandidates);
-      if (extracted) {
-        liveRows[rowIndex].redisOdds = extracted.odd;
-        liveRows[rowIndex].redisUpdatedAt = new Date().toISOString();
-        liveRows[rowIndex].source = "API_LIVE_FETCH";
+    for (const [fixtureId, parsed] of apiFetchedOdds) {
+      const sels = selectionsByFixture.get(fixtureId) || [];
+      for (const { rowIndex, fieldCandidates } of sels) {
+        const extracted = extractOddFromSnapshot(parsed, fieldCandidates);
+        if (extracted) {
+          liveRows[rowIndex].redisOdds = extracted.odd;
+          liveRows[rowIndex].redisUpdatedAt = new Date().toISOString();
+          liveRows[rowIndex].source = "API_LIVE_FETCH";
+        }
       }
     }
   }
 
   const redisByIndex = new Map(liveRows.map((row) => [row.index, row]));
-
-  // Step 5: Final prematch DB fallback for anything still missing
   const fallback = await resolvePrematchOdds({
     prismaClient,
     selections,
@@ -208,7 +262,6 @@ export async function resolveLiveOdds({
     const source = hasRedis
       ? redisRow.source || "REDIS_LIVE"
       : "DB_FALLBACK";
-
     return {
       ...row,
       serverOdds,

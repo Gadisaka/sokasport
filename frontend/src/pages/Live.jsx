@@ -21,6 +21,7 @@ import {
   toggleSlipSelection,
 } from "../utils/betSlipLimits";
 import { normalizeApiFixtureId } from "../utils/fixtureId";
+import { resolveCompactMarketToken } from "../utils/compactMarketToken";
 import {
   MARKET_FILTER_CHIPS,
   MARKET_FILTER_ALL_CHIP_ID,
@@ -437,8 +438,7 @@ function LiveRow({ match, isExpanded, onToggle, onOddsClick, selectedOdds }) {
                       id: selectionId,
                       apiFixtureId: match.apiFixtureId,
                       matchName: match.match,
-                      marketLabel: "1X2",
-                      label: marketId.toUpperCase(),
+                      ...resolveCompactMarketToken(marketId),
                       value,
                       kickoffAt: match.kickoffAt,
                       matchStatus: match.liveStatus ?? match.status,
@@ -474,8 +474,7 @@ function LiveRow({ match, isExpanded, onToggle, onOddsClick, selectedOdds }) {
                       id: selectionId,
                       apiFixtureId: match.apiFixtureId,
                       matchName: match.match,
-                      marketLabel: "1X2",
-                      label: marketId.toUpperCase(),
+                      ...resolveCompactMarketToken(marketId),
                       value,
                       kickoffAt: match.kickoffAt,
                       matchStatus: match.liveStatus ?? match.status,

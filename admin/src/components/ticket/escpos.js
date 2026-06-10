@@ -12,7 +12,10 @@ import {
   formatTaxLineLabel,
   slipGrossTaxNetForTicket,
 } from "../../utils/winningsTax.js";
-import { formatCashierReceiptLine } from "./receiptFormat.js";
+import {
+  formatCashierReceiptLine,
+  formatLeagueReceiptLine,
+} from "./receiptFormat.js";
 import {
   createBarcodeCanvasForPrint,
   getBarcodePayload,
@@ -381,9 +384,11 @@ function buildTicketEscPosParts(ticket, opts) {
       const away = sel?.match?.awayTeam || "";
       const matchName = away ? `${home} Vs ${away}` : home || "Match";
       const kickoff = formatKickoffFull(sel?.match?.startTime);
-      const leagueType = String(sel?.match?.leagueType || "").trim();
-      const leagueName = String(sel?.match?.leagueName || "").trim();
-      const leagueHeader = [leagueType, leagueName].filter(Boolean).join(": ");
+      const leagueHeader = formatLeagueReceiptLine({
+        leagueType: sel?.match?.leagueType,
+        leagueCountry: sel?.match?.leagueCountry,
+        leagueName: sel?.match?.leagueName,
+      });
       const pick = sel?.selection || sel?.pick || "-";
       const market = String(sel?.marketLabel || "").trim();
       const odds = formatOdds(sel?.odds);
@@ -590,6 +595,22 @@ export async function encodeSalesReportAsync(report, opts = {}) {
   parts.push(
     line(
       leftRight("Total Amount", formatCurrency(report?.totalPayoutAmount), chars),
+    ),
+  );
+
+  parts.push(new Uint8Array(CMD.BOLD_ON));
+  parts.push(line("CANCELLATIONS"));
+  parts.push(new Uint8Array(CMD.BOLD_OFF));
+  parts.push(
+    line(leftRight("Cancelled", n(report?.totalCancelledTickets), chars)),
+  );
+  parts.push(
+    line(
+      leftRight(
+        "Cancelled Amount",
+        formatCurrency(report?.totalCancelledStake),
+        chars,
+      ),
     ),
   );
 

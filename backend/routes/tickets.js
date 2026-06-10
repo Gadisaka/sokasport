@@ -7,8 +7,10 @@ import {
   createTicket,
   getTicketById,
   getTicketByReceipt,
+  getTicketSellBlocking,
   listTickets,
   payoutTicket,
+  removeTicketSelection,
   updateTicketStake,
   voidTicket,
 } from "../controllers/ticketsController.js";
@@ -28,12 +30,22 @@ router.get(
   getTicketByReceipt,
 );
 router.get("/:id", authorizePermission("tickets:read"), getTicketById);
+router.get(
+  "/:id/sell-blocking",
+  authorizePermission("tickets:read"),
+  getTicketSellBlocking,
+);
 
 router.post("/", authorizePermission("tickets:create"), createTicket);
 router.patch(
   "/:id/stake",
   authorizePermission("tickets:create"),
   updateTicketStake,
+);
+router.delete(
+  "/:id/selections/:selectionId",
+  authorizePermission("tickets:create"),
+  removeTicketSelection,
 );
 router.post(
   "/:id/prepare-print",

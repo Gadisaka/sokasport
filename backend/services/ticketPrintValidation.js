@@ -1,4 +1,8 @@
-import { validatePlacementSelections } from "./odds-engine/validateSelections.js";
+import {
+  validatePlacementSelections,
+  collectBlockingPlacementLegs,
+} from "./odds-engine/validateSelections.js";
+import { selectionIdForTicketLeg } from "../lib/ticketSelectionHelpers.js";
 
 /**
  * Build normalized selection rows from ticket snapshot for print validation.
@@ -159,4 +163,44 @@ export async function validateOpenTicketForPrint({
   }
 
   return { ok: true, validated, normalized };
+}
+
+/**
+ * All sell/print-blocking legs for cashier sell UI (ignores odds drift).
+ *
+ * @returns {Promise<{ blockingLegs: Array<{ index: number, selectionId: string, code: string, kickoffAt?: string|null }> }>}
+ */
+export async function collectSellBlockingLegs({ prismaClient, ticket }) {
+  const snapshotSelections = Array.isArray(ticket?.selection_snapshot)
+    ? ticket.selection_snapshot
+    : [];
+
+  if (snapshotSelections.length === 0) {
+    return { blockingLegs: [] };
+  }
+
+  const { normalized, fullyStructured } = normalizeSnapshotForPrintValidation(
+    snapshotSelections,
+    {},
+  );
+
+  if (!fullyStructured) {
+    return { blockingLegs: [] };
+  }
+
+  const rawBlocking = await collectBlockingPlacementLegs({
+    prismaClient,
+    rawSelections: normalized,
+    live: false,
+    now: new Date(),
+  });
+
+  const blockingLegs = rawBlocking.map((leg) => ({
+    index: leg.index,
+    selectionId: selectionIdForTicketLeg(ticket, leg.index),
+    code: leg.code,
+    kickoffAt: leg.kickoffAt ?? null,
+  }));
+
+  return { blockingLegs };
 }

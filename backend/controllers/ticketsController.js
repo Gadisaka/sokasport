@@ -18,6 +18,10 @@ import {
   capGrossPotentialWin,
 } from "../lib/bettingLimits.js";
 import { validateTicketLegCount } from "../lib/betSlipLegLimits.js";
+import {
+  productOddsFromSnapshotEntries,
+  resolveSelectionIndex,
+} from "../lib/ticketSelectionHelpers.js";
 import { resolveCancelWindowMinutes } from "../lib/ticketCancelWindow.js";
 import {
   snapshotWinningsTaxForNewTicket,
@@ -27,6 +31,7 @@ import { logAuditEvent } from "../lib/auditLog.js";
 import { notifyUserSafe } from "../lib/createNotification.js";
 import { betPlacedNotification } from "../lib/notificationMessages.js";
 import { resolveAccumulatorForNewTicket } from "../lib/bonusEngine.js";
+import { refundTicketStakeInTx } from "../services/ticketCancelRefund.js";
 import { inferMarketCode } from "../services/marketEvaluator.js";
 import { MARKET_REGISTRY } from "../services/markets/registry.js";
 import { tryResolveMarketCodeBetId } from "../services/markets/apiSportsBetIdMap.js";
@@ -35,7 +40,10 @@ import {
   MarketUnknownError,
 } from "../services/markets/errors.js";
 import { validatePlacementSelections } from "../services/odds-engine/validateSelections.js";
-import { validateOpenTicketForPrint } from "../services/ticketPrintValidation.js";
+import {
+  validateOpenTicketForPrint,
+  collectSellBlockingLegs,
+} from "../services/ticketPrintValidation.js";
 import { getCache, setCache } from "../services/cacheService.js";
 import { withWalletLock } from "../lib/walletLock.js";
 import { logPlacementValidation } from "../lib/placementValidationLogger.js";
@@ -399,6 +407,7 @@ function buildMatchPayloadForTicketSelection(selection, snapshotEntry) {
       status: selection.match.status,
       leagueName: selection.match.league?.name ?? null,
       leagueType: selection.match.league?.sport?.name ?? null,
+      leagueCountry: selection.match.league?.country ?? null,
     };
   }
   if (selection.fixture) {
@@ -411,6 +420,7 @@ function buildMatchPayloadForTicketSelection(selection, snapshotEntry) {
       status: f.status,
       leagueName: f.league?.name ?? null,
       leagueType: f.league?.sport?.name ?? null,
+      leagueCountry: f.league?.country ?? null,
     };
   }
   if (snapshotEntry?.matchName) {
@@ -423,6 +433,7 @@ function buildMatchPayloadForTicketSelection(selection, snapshotEntry) {
       status: "NOT_STARTED",
       leagueName: snapshotEntry?.leagueName ?? null,
       leagueType: snapshotEntry?.leagueType ?? null,
+      leagueCountry: snapshotEntry?.leagueCountry ?? null,
     };
   }
   return null;
@@ -792,14 +803,12 @@ export async function createTicket(req, res) {
     }
 
     const legCount = selections.length;
-    const accResolved = await resolveAccumulatorForNewTicket(
-      prisma,
-      legCount,
-      numericStake,
-      totalOdds,
-    );
-
-    const limits = await resolveBettingLimits(prisma);
+    // Independent config lookups — resolve concurrently rather than serially.
+    const [accResolved, limits, winningsTaxSnapshot] = await Promise.all([
+      resolveAccumulatorForNewTicket(prisma, legCount, numericStake, totalOdds),
+      resolveBettingLimits(prisma),
+      snapshotWinningsTaxForNewTicket(prisma),
+    ]);
     const potentialWin = capGrossPotentialWin(
       limits,
       accResolved.potential_win,
@@ -897,8 +906,6 @@ export async function createTicket(req, res) {
       }
       throw e;
     }
-
-    const winningsTaxSnapshot = await snapshotWinningsTaxForNewTicket(prisma);
 
     const created = await prisma.ticket.create({
       data: {
@@ -1430,14 +1437,12 @@ export async function createPrebookTicket(req, res) {
     });
     const totalOdds = Number(validated.totalOdds || 0);
     const legCount = normalizedSelections.length;
-    const accResolved = await resolveAccumulatorForNewTicket(
-      prisma,
-      legCount,
-      numericStake,
-      totalOdds,
-    );
-
-    const limits = await resolveBettingLimits(prisma);
+    // Independent config lookups — resolve concurrently rather than serially.
+    const [accResolved, limits, winningsTaxSnapshot] = await Promise.all([
+      resolveAccumulatorForNewTicket(prisma, legCount, numericStake, totalOdds),
+      resolveBettingLimits(prisma),
+      snapshotWinningsTaxForNewTicket(prisma),
+    ]);
     const potentialWin = capGrossPotentialWin(
       limits,
       accResolved.potential_win,
@@ -1475,8 +1480,6 @@ export async function createPrebookTicket(req, res) {
       live_at_placement: Boolean(item.fromLive),
       result: "PENDING",
     }));
-
-    const winningsTaxSnapshot = await snapshotWinningsTaxForNewTicket(prisma);
 
     const ticketDataBase = {
       user_id: authenticatedUserId,
@@ -1975,15 +1978,29 @@ export async function cancelTicket(req, res) {
       });
     }
 
-    const { count } = await prisma.ticket.updateMany({
-      where: { id: ticket.id, status: { in: ["OPEN", "PRINTED"] } },
-      data: { status: "CANCELED" },
-    });
-    if (count === 0) {
-      return res.status(409).json({
-        message: "Ticket status changed concurrently; cancel rejected",
-        code: "status_conflict",
+    let refunds = [];
+    try {
+      refunds = await prisma.$transaction(async (tx) => {
+        const refundRows = await refundTicketStakeInTx(tx, ticket);
+        const { count } = await tx.ticket.updateMany({
+          where: { id: ticket.id, status: { in: ["OPEN", "PRINTED"] } },
+          data: { status: "CANCELED" },
+        });
+        if (count === 0) {
+          throw Object.assign(new Error("STATUS_CONFLICT"), {
+            statusCode: 409,
+          });
+        }
+        return refundRows;
       });
+    } catch (txErr) {
+      if (txErr?.statusCode === 409) {
+        return res.status(409).json({
+          message: "Ticket status changed concurrently; cancel rejected",
+          code: "status_conflict",
+        });
+      }
+      throw txErr;
     }
 
     await logAuditEvent({
@@ -1994,11 +2011,13 @@ export async function cancelTicket(req, res) {
       entityId: ticket.id,
       before: { status: ticket.status },
       after: { status: "CANCELED" },
+      meta: refunds.length > 0 ? { refunds } : undefined,
     });
 
     return res.json({
       message: "Ticket canceled successfully",
       ticket: { ...ticket, status: "CANCELED" },
+      refunds,
     });
   } catch (error) {
     console.error("cancelTicket error:", error);
@@ -2278,6 +2297,182 @@ export async function payoutTicket(req, res) {
   } catch (error) {
     console.error("payoutTicket error:", error);
     return res.status(500).json({ message: "Failed to payout ticket" });
+  }
+}
+
+/**
+ * OPEN tickets that are not print-confirmed yet — editable by cashier sell flow.
+ */
+async function assertOpenTicketEditable(req, ticketId, { includeSelections = false } = {}) {
+  const ticket = await prisma.ticket.findUnique({
+    where: { id: ticketId },
+    include: includeSelections ? ticketDetailInclude : undefined,
+  });
+  if (!ticket) {
+    return { error: { status: 404, message: "Ticket not found" } };
+  }
+  if (ticket.status !== "OPEN") {
+    return {
+      error: {
+        status: 400,
+        message: "Only OPEN tickets can be edited before print",
+      },
+    };
+  }
+
+  if (req.user.role === "CASHIER") {
+    const cashier = await resolveCashierByUserId(req.user.sub);
+    if (!cashier) {
+      return {
+        error: { status: 404, message: CASHIER_PROFILE_MISSING_MESSAGE },
+      };
+    }
+    if (ticket.cashier_id && ticket.cashier_id !== cashier.id) {
+      return { error: { status: 403, message: "Access denied" } };
+    }
+  }
+
+  const printReference = `ticket-print:${ticket.id}`;
+  const existingPrint = await prisma.transaction.findFirst({
+    where: { type: "BET", reference: printReference },
+    select: { id: true },
+  });
+  if (existingPrint) {
+    return {
+      error: {
+        status: 400,
+        message: "Ticket cannot be changed after it has been printed",
+      },
+    };
+  }
+
+  return { ticket };
+}
+
+/**
+ * GET /api/tickets/:id/sell-blocking
+ * Lists all legs that block sell/print (started fixture, locked market, etc.).
+ */
+export async function getTicketSellBlocking(req, res) {
+  try {
+    const check = await assertOpenTicketEditable(req, req.params.id, {
+      includeSelections: true,
+    });
+    if (check.error) {
+      return res.status(check.error.status).json({ message: check.error.message });
+    }
+
+    const { blockingLegs } = await collectSellBlockingLegs({
+      prismaClient: prisma,
+      ticket: check.ticket,
+    });
+
+    return res.json({
+      blockingLegs,
+      hasBlockingLegs: blockingLegs.length > 0,
+    });
+  } catch (error) {
+    console.error("getTicketSellBlocking error:", error);
+    return res.status(500).json({ message: "Failed to load sell blocking state" });
+  }
+}
+
+/**
+ * DELETE /api/tickets/:id/selections/:selectionId
+ * Removes one leg from an OPEN ticket and recomputes odds/potential win.
+ */
+export async function removeTicketSelection(req, res) {
+  try {
+    const check = await assertOpenTicketEditable(req, req.params.id, {
+      includeSelections: true,
+    });
+    if (check.error) {
+      return res.status(check.error.status).json({ message: check.error.message });
+    }
+
+    const ticket = check.ticket;
+    const selectionId = req.params.selectionId;
+    const index = resolveSelectionIndex(ticket, selectionId);
+    if (index < 0) {
+      return res.status(404).json({ message: "Selection not found on ticket" });
+    }
+
+    const snapshot = Array.isArray(ticket.selection_snapshot)
+      ? [...ticket.selection_snapshot]
+      : [];
+    const legCountAfter = Math.max(snapshot.length, ticket.selections?.length || 0) - 1;
+    const legCountMsg = validateTicketLegCount(legCountAfter);
+    if (legCountMsg) {
+      return res.status(400).json({ message: legCountMsg });
+    }
+
+    const newSnapshot =
+      snapshot.length > 0
+        ? snapshot.filter((_, i) => i !== index)
+        : snapshot;
+    const dbSelection = ticket.selections?.[index];
+
+    const totalOdds = productOddsFromSnapshotEntries(
+      newSnapshot.length > 0
+        ? newSnapshot
+        : (ticket.selections || [])
+            .filter((_, i) => i !== index)
+            .map((row) => ({ odds: row.odds })),
+    );
+    if (!Number.isFinite(totalOdds) || totalOdds <= 1) {
+      return res.status(400).json({ message: "Remaining selections odds are invalid" });
+    }
+
+    const [accResolved, limits] = await Promise.all([
+      resolveAccumulatorForNewTicket(
+        prisma,
+        legCountAfter,
+        Number(ticket.stake),
+        totalOdds,
+      ),
+      resolveBettingLimits(prisma),
+    ]);
+    const potentialWin = capGrossPotentialWin(
+      limits,
+      accResolved.potential_win,
+    );
+
+    const updated = await prisma.$transaction(async (tx) => {
+      if (dbSelection?.id) {
+        await tx.ticketSelection.deleteMany({
+          where: { id: dbSelection.id, ticket_id: ticket.id },
+        });
+      }
+      return tx.ticket.update({
+        where: { id: ticket.id },
+        data: {
+          selection_snapshot: newSnapshot,
+          total_odds: totalOdds,
+          accumulator_bonus_percent: accResolved.accumulator_bonus_percent,
+          potential_win: potentialWin,
+        },
+        include: ticketDetailInclude,
+      });
+    });
+
+    await logAuditEvent({
+      req,
+      action: "TICKET_SELECTION_REMOVED",
+      module: "TICKETS",
+      entityType: "TICKET",
+      entityId: ticket.id,
+      before: { selectionId, index },
+      after: {
+        remainingLegs: legCountAfter,
+        totalOdds,
+        potentialWin,
+      },
+    });
+
+    return res.json(mapTicket(updated));
+  } catch (error) {
+    console.error("removeTicketSelection error:", error);
+    return res.status(500).json({ message: "Failed to remove selection" });
   }
 }
 

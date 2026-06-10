@@ -231,6 +231,44 @@ export async function getCashierDashboardStats(req, res) {
       wonWindow(startOfYesterday, endOfYesterday),
     ]);
 
+    // --- Cancelled tickets (by cancel audit timestamp in selected range) ---
+    const cancelLogs = await prisma.auditLog.findMany({
+      where: {
+        action: { in: ["TICKET_CANCELED", "TICKET_CANCELED_PLAYER"] },
+        entity_type: "TICKET",
+        created_at: { gte: from, lte: to },
+      },
+      select: { entity_id: true },
+    });
+
+    const cancelledTicketIds = [
+      ...new Set(
+        cancelLogs
+          .map((log) => String(log.entity_id || "").trim())
+          .filter(Boolean),
+      ),
+    ];
+
+    const cancelledTickets =
+      cancelledTicketIds.length > 0
+        ? await prisma.ticket.findMany({
+            where: {
+              id: { in: cancelledTicketIds },
+              cashier_id: cashier.id,
+            },
+            select: { id: true, stake: true, selection_snapshot: true },
+          })
+        : [];
+
+    const cancelledNonJackpot = cancelledTickets.filter(
+      (t) => !isJackpotTicket(t),
+    );
+    const totalCancelledTickets = cancelledNonJackpot.length;
+    const totalCancelledStake = cancelledNonJackpot.reduce(
+      (s, t) => s + Number(t.stake || 0),
+      0,
+    );
+
     return res.json({
       from: from.toISOString(),
       to: to.toISOString(),
@@ -240,6 +278,8 @@ export async function getCashierDashboardStats(req, res) {
       totalWithdrawAmount,
       totalPaidTickets,
       totalPaidAmount,
+      totalCancelledTickets,
+      totalCancelledStake,
       grandNet,
       wonToday,
       wonYesterday,

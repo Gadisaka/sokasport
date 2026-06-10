@@ -16,6 +16,7 @@ import {
   getWithdrawAmountViolation,
 } from "../lib/bettingLimits.js";
 import { resolveCancelWindowMinutes } from "../lib/ticketCancelWindow.js";
+import { refundTicketStakeInTx } from "../services/ticketCancelRefund.js";
 import { ticketWinningsTaxBreakdown } from "../lib/winningsTax.js";
 import { logAuditEvent } from "../lib/auditLog.js";
 import { notifyUserSafe } from "../lib/createNotification.js";
@@ -454,82 +455,7 @@ export async function cancelOwnPlayerTicket(req, res) {
           return "not_cancelable";
         }
 
-        const refundRef = `bet-cancel:${locked.id}`;
-        const existingRefund = await tx.transaction.findFirst({
-          where: { reference: refundRef },
-          select: { id: true },
-        });
-
-        const walletRow = await tx.wallet.findFirst({
-          where: { user_id: req.user.sub, wallet_type: "PLAYER" },
-          select: { id: true },
-        });
-
-        const refCandidates = [
-          locked.receipt_number
-            ? `ticket:${locked.receipt_number}`
-            : null,
-          `ticket:${locked.coupon_number}`,
-          locked.idempotency_key
-            ? `idem:${locked.user_id}:${locked.idempotency_key}`
-            : null,
-        ].filter(Boolean);
-
-        const betTx =
-          locked.user_id && !existingRefund && walletRow
-            ? await tx.transaction.findFirst({
-                where: {
-                  type: "BET",
-                  wallet_id: walletRow.id,
-                  reference: { in: refCandidates },
-                },
-                select: { id: true, wallet_id: true, amount: true },
-              })
-            : null;
-
-        if (betTx?.wallet_id && !existingRefund) {
-          const wallet = await tx.wallet.findUnique({
-            where: { id: betTx.wallet_id },
-          });
-          const amount =
-            Number(locked.stake) ||
-            Number(betTx.amount) ||
-            0;
-          if (
-            wallet &&
-            wallet.wallet_type === "PLAYER" &&
-            wallet.user_id === req.user.sub &&
-            amount > 0
-          ) {
-            const balanceBefore = Number(wallet.balance) || 0;
-            const balanceAfter = balanceBefore + amount;
-            await tx.wallet.update({
-              where: { id: wallet.id },
-              data: { balance: balanceAfter },
-            });
-            try {
-              await tx.transaction.create({
-                data: {
-                  wallet_id: wallet.id,
-                  type: "DEPOSIT",
-                  amount,
-                  balance_before: balanceBefore,
-                  balance_after: balanceAfter,
-                  reference: refundRef,
-                },
-              });
-            } catch (insertErr) {
-              if (insertErr?.code === "P2002") {
-                await tx.wallet.update({
-                  where: { id: wallet.id },
-                  data: { balance: balanceBefore },
-                });
-              } else {
-                throw insertErr;
-              }
-            }
-          }
-        }
+        await refundTicketStakeInTx(tx, locked);
 
         const setCanceled = await tx.ticket.updateMany({
           where: {

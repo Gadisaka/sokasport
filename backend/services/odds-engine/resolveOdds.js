@@ -16,6 +16,8 @@ const MATCH_WINNER_MARKET_NAMES = [
   "Match Result",
 ];
 
+const DOUBLE_CHANCE_MARKET_NAMES = ["Double Chance"];
+
 export function buildSelectionCandidates({
   selectionLabel,
   marketCode,
@@ -48,6 +50,30 @@ export function buildSelectionCandidates({
   if (upper === "DRAW") candidates.add("X");
   if (upper === "AWAY") candidates.add("2");
 
+  // Double Chance: the UI/frontend submits the compact tokens 1X / 12 / X2,
+  // but ingestion stores API-Sports value strings ("Home/Draw", "Home/Away",
+  // "Draw/Away"). Bridge both directions so the resolver can match the stored
+  // odd line. Without this, every Double Chance leg resolves to no odd line
+  // and is wrongly reported as market_suspended.
+  const DOUBLE_CHANCE_ALIASES = {
+    "1X": ["Home/Draw", "HOME/DRAW", "Home or Draw"],
+    "X1": ["Home/Draw", "HOME/DRAW", "Home or Draw"],
+    "12": ["Home/Away", "HOME/AWAY", "Home or Away"],
+    "21": ["Home/Away", "HOME/AWAY", "Home or Away"],
+    "X2": ["Draw/Away", "DRAW/AWAY", "Draw or Away"],
+    "2X": ["Draw/Away", "DRAW/AWAY", "Draw or Away"],
+    "HOME/DRAW": ["1X"],
+    "HOME/AWAY": ["12"],
+    "DRAW/AWAY": ["X2"],
+    "HOME OR DRAW": ["1X"],
+    "HOME OR AWAY": ["12"],
+    "DRAW OR AWAY": ["X2"],
+  };
+  const dcAliases = DOUBLE_CHANCE_ALIASES[upper];
+  if (dcAliases) {
+    for (const alias of dcAliases) candidates.add(alias);
+  }
+
   const code = String(marketCode || "").toUpperCase().trim();
   const side = String(marketParams?.side || "").toUpperCase().trim();
   if (code === "MATCH_WINNER" && side) {
@@ -62,6 +88,20 @@ export function buildSelectionCandidates({
     if (side === "AWAY") {
       candidates.add("Away");
       candidates.add("2");
+    }
+  }
+
+  // Double Chance carried via market params (combination) — settlement stores
+  // the canonical "1X" | "12" | "X2", so expand those to the stored API-Sports
+  // value strings as well.
+  const combination = String(marketParams?.combination || "")
+    .toUpperCase()
+    .trim();
+  if (code === "DOUBLE_CHANCE" && combination) {
+    const comboAliases = DOUBLE_CHANCE_ALIASES[combination];
+    if (comboAliases) {
+      candidates.add(combination);
+      for (const alias of comboAliases) candidates.add(alias);
     }
   }
 
@@ -81,73 +121,43 @@ export function buildMarketNameCandidates({ marketLabel, marketCode }) {
   ) {
     for (const n of MATCH_WINNER_MARKET_NAMES) names.add(n);
   }
+  if (code === "DOUBLE_CHANCE" || label.toLowerCase().includes("double chance")) {
+    for (const n of DOUBLE_CHANCE_MARKET_NAMES) names.add(n);
+  }
   return [...names].filter(Boolean);
 }
 
-async function findOddLine({
-  prismaClient,
-  fixtureId,
-  marketLabel,
-  selectionLabel,
-  marketCode,
-  marketParams,
-}) {
-  if (!selectionLabel) return null;
-  const valuesIn = buildSelectionCandidates({
-    selectionLabel,
-    marketCode,
-    marketParams,
-  });
-  const marketNames = buildMarketNameCandidates({ marketLabel, marketCode });
+/**
+ * Pick the best matching odd line for one selection from an in-memory set of
+ * lines already scoped to that selection's fixture. Mirrors the previous
+ * per-selection DB lookup exactly: prefer an exact market-name match (highest
+ * odd), else fall back to any market exposing a matching value (highest odd).
+ */
+function pickOddLineForSelection(fixtureLines, { valuesIn, marketNames }) {
+  if (!fixtureLines || fixtureLines.length === 0) return null;
+  const valueSet = new Set(valuesIn);
+  const valueMatches = fixtureLines.filter((line) => valueSet.has(line.value));
+  if (valueMatches.length === 0) return null;
+
+  // Equivalent to Prisma `orderBy: { odd: "desc" }` + `findFirst`.
+  const highestOdd = (rows) =>
+    rows.reduce(
+      (best, row) =>
+        best === null || Number(row.odd) > Number(best.odd) ? row : best,
+      null,
+    );
 
   if (marketNames.length > 0) {
-    const exactByLabel = await prismaClient.fixtureOddLine.findFirst({
-      where: {
-        value: { in: valuesIn },
-        market: {
-          fixture_id: fixtureId,
-          name: { in: marketNames },
-        },
-      },
-      orderBy: { odd: "desc" },
-      select: {
-        odd: true,
-        market: { select: { name: true } },
-        bookmaker: { select: { api_bookmaker_id: true } },
-      },
-    });
-    if (exactByLabel) return exactByLabel;
+    const nameSet = new Set(marketNames);
+    const exact = highestOdd(
+      valueMatches.filter((line) => nameSet.has(line.market?.name)),
+    );
+    if (exact) return exact;
   }
 
-  // Fallback: resolve odd line against the fixture by selection candidates
-  // only. This intentionally accepts any market in DB that happens to
-  // expose a matching value (rare, but safe — we still capture the real
-  // server-side odd to compare against the client-submitted odd).
-  const fallback = await prismaClient.fixtureOddLine.findFirst({
-    where: {
-      value: { in: valuesIn },
-      market: { fixture_id: fixtureId },
-    },
-    orderBy: { odd: "desc" },
-    select: {
-      odd: true,
-      market: { select: { name: true } },
-      bookmaker: { select: { api_bookmaker_id: true } },
-    },
-  });
-  if (fallback) return fallback;
-
-  if (process.env.ODDS_ENGINE_DEBUG === "true") {
-    console.warn("[oddsEngine] no odd line found", {
-      fixtureId,
-      marketLabel,
-      marketCode,
-      selectionLabel,
-      candidates: valuesIn,
-      marketNames,
-    });
-  }
-  return null;
+  // Fallback: any market in DB that happens to expose a matching value
+  // (rare, but safe — we still capture the real server-side odd).
+  return highestOdd(valueMatches);
 }
 
 export async function resolvePrematchOdds({
@@ -168,8 +178,54 @@ export async function resolvePrematchOdds({
     },
   });
   const fixtureByApiId = new Map(fixtures.map((f) => [f.api_fixture_id, f]));
+
+  // Pre-compute each leg's candidate values/market names once, then resolve
+  // every odd line for the whole slip in a SINGLE batched query instead of
+  // 1-2 queries per leg (the old N+1). Lines are matched in memory per leg.
+  const selectionMeta = selections.map((sel) => ({
+    sel,
+    valuesIn: buildSelectionCandidates({
+      selectionLabel: sel.label,
+      marketCode: sel.marketCode,
+      marketParams: sel.marketParams,
+    }),
+    marketNames: buildMarketNameCandidates({
+      marketLabel: sel.marketLabel,
+      marketCode: sel.marketCode,
+    }),
+  }));
+
+  const dbFixtureIds = [...new Set(fixtures.map((f) => f.id))];
+  const allValues = [...new Set(selectionMeta.flatMap((m) => m.valuesIn))];
+
+  let oddLines = [];
+  if (dbFixtureIds.length > 0 && allValues.length > 0) {
+    oddLines = await prismaClient.fixtureOddLine.findMany({
+      where: {
+        value: { in: allValues },
+        market: { fixture_id: { in: dbFixtureIds } },
+      },
+      select: {
+        odd: true,
+        value: true,
+        market: { select: { name: true, fixture_id: true } },
+        bookmaker: { select: { api_bookmaker_id: true } },
+      },
+    });
+  }
+
+  const linesByFixtureId = new Map();
+  for (const line of oddLines) {
+    const fid = line.market?.fixture_id;
+    if (!fid) continue;
+    const bucket = linesByFixtureId.get(fid);
+    if (bucket) bucket.push(line);
+    else linesByFixtureId.set(fid, [line]);
+  }
+
   const resolved = [];
-  for (const sel of selections) {
+  for (const meta of selectionMeta) {
+    const sel = meta.sel;
     const fixture = fixtureByApiId.get(sel.apiFixtureId);
     if (!fixture) {
       resolved.push({
@@ -178,14 +234,20 @@ export async function resolvePrematchOdds({
       });
       continue;
     }
-    const oddLine = await findOddLine({
-      prismaClient,
-      fixtureId: fixture.id,
-      marketLabel: sel.marketLabel,
-      selectionLabel: sel.label,
-      marketCode: sel.marketCode,
-      marketParams: sel.marketParams,
+    const oddLine = pickOddLineForSelection(linesByFixtureId.get(fixture.id), {
+      valuesIn: meta.valuesIn,
+      marketNames: meta.marketNames,
     });
+    if (!oddLine && process.env.ODDS_ENGINE_DEBUG === "true") {
+      console.warn("[oddsEngine] no odd line found", {
+        fixtureId: fixture.id,
+        marketLabel: sel.marketLabel,
+        marketCode: sel.marketCode,
+        selectionLabel: sel.label,
+        candidates: meta.valuesIn,
+        marketNames: meta.marketNames,
+      });
+    }
     const rawOdd = Number(oddLine?.odd);
     const hasValidOdd = Number.isFinite(rawOdd) && rawOdd > 1;
     const marketState = resolveMarketState({

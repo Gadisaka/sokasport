@@ -1,4 +1,22 @@
 /**
+ * League header for thermal receipts: "Football: England - Premier League".
+ * Falls back gracefully when country or league parts are missing.
+ */
+export function formatLeagueReceiptLine({
+  leagueType,
+  leagueCountry,
+  leagueName,
+} = {}) {
+  const sport = String(leagueType || "").trim();
+  const country = String(leagueCountry || "").trim();
+  const league = String(leagueName || "").trim();
+  const geo = [country, league].filter(Boolean).join(" - ");
+  if (sport && geo) return `${sport}: ${geo}`;
+  if (sport && league) return `${sport}: ${league}`;
+  return sport || geo;
+}
+
+/**
  * Human-readable cashier + branch line for thermal receipts (HTML + ESC/POS).
  */
 export function formatCashierReceiptLine(ticket) {

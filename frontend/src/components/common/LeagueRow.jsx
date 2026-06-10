@@ -1,6 +1,7 @@
 import Badge from './Badge'
 import OddsCell from './OddsCell'
 import AppIcon from './AppIcon'
+import { resolveCompactMarketToken } from '../../utils/compactMarketToken'
 
 function LeagueRow({ league, match, date, markets, sideBets, onClick, onOddsClick, selectedOdds }) {
   return (
@@ -34,8 +35,7 @@ function LeagueRow({ league, match, date, markets, sideBets, onClick, onOddsClic
                   onOddsClick?.({
                     id: selId,
                     matchName: match,
-                    marketLabel: "Match Result",
-                    label: market.id.toUpperCase(),
+                    ...resolveCompactMarketToken(market.id),
                     value: market.value,
                   });
                 }}

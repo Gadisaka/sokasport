@@ -4,7 +4,10 @@ import {
   slipGrossTaxNetForTicket,
 } from "../../utils/winningsTax";
 import receiptLogo from "../../assets/image.png";
-import { formatCashierReceiptLine } from "./receiptFormat";
+import {
+  formatCashierReceiptLine,
+  formatLeagueReceiptLine,
+} from "./receiptFormat";
 
 /**
  * Thermal POS receipt for cashier tickets.
@@ -70,13 +73,15 @@ function buildSelectionLines(ticket) {
     const home = selection?.match?.homeTeam || "";
     const away = selection?.match?.awayTeam || "";
     const matchName = away ? `${home} Vs ${away}` : home || "Match";
-    const leagueType = String(selection?.match?.leagueType || "").trim();
-    const leagueName = String(selection?.match?.leagueName || "").trim();
     return {
       id: selection.id || `sel-${index}`,
       kickoff: formatKickoffFull(selection?.match?.startTime),
       matchName,
-      league: [leagueType, leagueName].filter(Boolean).join(": "),
+      league: formatLeagueReceiptLine({
+        leagueType: selection?.match?.leagueType,
+        leagueCountry: selection?.match?.leagueCountry,
+        leagueName: selection?.match?.leagueName,
+      }),
       pick: selection?.selection || selection?.pick || "-",
       market: selection?.marketLabel || "",
       odds: formatOdds(selection?.odds),

@@ -131,3 +131,45 @@ export async function validatePlacementSelections({
     freezeToken,
   };
 }
+
+/**
+ * Collect every prematch leg that would block print/sell (not odds drift).
+ *
+ * @returns {Promise<Array<{ index: number, code: string, kickoffAt?: string|null }>>}
+ */
+export async function collectBlockingPlacementLegs({
+  prismaClient,
+  rawSelections = [],
+  live = false,
+  now = new Date(),
+}) {
+  const selections = normalizePlacementSelections(rawSelections, {
+    allowAnyOdds: live,
+  });
+  if (!selections.length) return [];
+
+  const resolved = live
+    ? await resolveLiveOdds({ prismaClient, selections, now })
+    : await resolvePrematchOdds({ prismaClient, selections, now });
+
+  const blocking = [];
+  for (const row of resolved) {
+    if (row.code === "unknown_fixture") {
+      blocking.push({ index: row.index, code: "unknown_fixture" });
+      continue;
+    }
+    if (!live && row.started) {
+      blocking.push({
+        index: row.index,
+        code: "fixture_started",
+        kickoffAt: row.kickoffAt ?? null,
+      });
+      continue;
+    }
+    const blockedCode = hasBlockingState(row);
+    if (blockedCode) {
+      blocking.push({ index: row.index, code: blockedCode });
+    }
+  }
+  return blocking;
+}
