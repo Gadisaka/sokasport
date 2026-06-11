@@ -25,6 +25,13 @@ import { MarketUnknownError } from "./errors.js";
 
 import { tryResolveMarketCodeBetId } from "./apiSportsBetIdMap.js";
 import { API_SPORTS_CATALOG_MODULES } from "./apiSportsCatalogModules.js";
+import {
+  catalogHandlerCodes,
+  catalogValidate,
+  catalogCanEvaluate,
+  catalogEvaluate,
+  defaultSettlePolicy,
+} from "./apiSportsCatalogHandlers.js";
 
 import matchWinner from "./matchWinner.js";
 import doubleChance from "./doubleChance.js";
@@ -123,6 +130,27 @@ for (const mod of ALL_MODULES) {
     }
     ALIAS_INDEX[alias] = code;
   }
+}
+
+// Auto-register a module for any reg() handler code that the generated module
+// list (API_SPORTS_CATALOG_MODULES) does not already cover. Without this, a
+// catalog handler with no matching generated module is silently unsupported
+// (the registry can't route it → VOID). This closes that gap permanently: any
+// code with a reg() handler is settleable.
+for (const raw of catalogHandlerCodes()) {
+  const code = normalize(raw);
+  if (MODULES[code]) continue;
+  MODULES[code] = Object.freeze({
+    code,
+    version: 1,
+    aliases: [],
+    description: "API-Sports catalogue market (auto-registered handler)",
+    settlePolicy: defaultSettlePolicy,
+    validate: (params, ctx) => catalogValidate(code, params, ctx),
+    canEvaluate: (mr) => catalogCanEvaluate(code, mr),
+    evaluate: (sel, mr) => catalogEvaluate(code, sel, mr),
+  });
+  ALIAS_INDEX[code] = code;
 }
 
 Object.freeze(MODULES);

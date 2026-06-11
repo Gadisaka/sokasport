@@ -1,10 +1,17 @@
 import { ValidationError } from "./errors.js";
+import { resolveParamsViaValidate } from "./_resolveParams.js";
 
 function normalizePick(raw) {
   const key = String(raw || "").trim().toUpperCase();
   if (key === "YES" || key === "Y") return "YES";
   if (key === "NO" || key === "N") return "NO";
   return null;
+}
+
+function validate(params, ctx) {
+  const pick = normalizePick(params?.pick ?? params?.side ?? ctx?.label);
+  if (!pick) throw new ValidationError("invalid_pick", { field: "pick" });
+  return { pick };
 }
 
 export default Object.freeze({
@@ -19,11 +26,7 @@ export default Object.freeze({
     pushPolicy: "NONE",
   },
 
-  validate(params, ctx) {
-    const pick = normalizePick(params?.pick ?? params?.side ?? ctx?.label);
-    if (!pick) throw new ValidationError("invalid_pick", { field: "pick" });
-    return { pick };
-  },
+  validate,
 
   canEvaluate(mr) {
     return (
@@ -33,7 +36,8 @@ export default Object.freeze({
   },
 
   evaluate(selection, mr) {
-    const pick = normalizePick(selection?.market_params?.pick);
+    const params = resolveParamsViaValidate(selection, validate);
+    const pick = params?.pick;
     if (!pick) return { result: "VOID", reason: "invalid_selection_pick" };
     const { home, away } = mr.scores.fullTime;
     const both = home > 0 && away > 0;

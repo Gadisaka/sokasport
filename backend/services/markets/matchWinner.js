@@ -1,4 +1,5 @@
 import { ValidationError } from "./errors.js";
+import { resolveParamsViaValidate } from "./_resolveParams.js";
 
 const SIDES = new Set(["HOME", "DRAW", "AWAY"]);
 const SIDE_ALIASES = new Map([
@@ -19,6 +20,15 @@ function pickWinner(ft) {
   return "DRAW";
 }
 
+function validate(params, ctx) {
+  const raw = params?.side ?? ctx?.label;
+  const side = normalizeSide(raw);
+  if (!side || !SIDES.has(side)) {
+    throw new ValidationError("invalid_side", { field: "side", details: { raw } });
+  }
+  return { side };
+}
+
 export default Object.freeze({
   code: "MATCH_WINNER",
   version: 1,
@@ -31,14 +41,7 @@ export default Object.freeze({
     pushPolicy: "NONE",
   },
 
-  validate(params, ctx) {
-    const raw = params?.side ?? ctx?.label;
-    const side = normalizeSide(raw);
-    if (!side || !SIDES.has(side)) {
-      throw new ValidationError("invalid_side", { field: "side", details: { raw } });
-    }
-    return { side };
-  },
+  validate,
 
   canEvaluate(mr) {
     return (
@@ -48,7 +51,10 @@ export default Object.freeze({
   },
 
   evaluate(selection, mr) {
-    const expected = normalizeSide(selection?.market_params?.side);
+    // Resolve params via validate() (sole parser): stored params used as-is when
+    // valid; otherwise re-parsed from the label (selection.selection).
+    const params = resolveParamsViaValidate(selection, validate);
+    const expected = params?.side;
     if (!expected) return { result: "VOID", reason: "invalid_selection_side" };
 
     // Admin-managed Match path: when scores are absent but a resultLabel

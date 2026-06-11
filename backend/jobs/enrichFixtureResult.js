@@ -88,35 +88,81 @@ function extractStatValue(entry, keyRegex) {
   for (const stat of entry?.statistics || []) {
     if (keyRegex.test(String(stat?.type || ""))) {
       const raw = stat?.value;
-      if (raw == null) return 0;
+      // FAIL-CLOSED: a null/absent provider value means "this league did not
+      // report this stat" — return null, NOT 0. Coercing to 0 fabricates a real
+      // statistic and would mis-settle (e.g. "Over 9.5 corners" → LOST against a
+      // fake 0). A genuine 0 comes through as value:0 and is preserved.
+      if (raw == null) return null;
       const n = Number(String(raw).replace(/%$/, ""));
-      return Number.isFinite(n) ? n : 0;
+      return Number.isFinite(n) ? n : null;
     }
   }
-  return 0;
+  return null;
 }
 
 function normalizeApiStats(statsResponse, apiHomeTeamId, apiAwayTeamId) {
-  const home = { yellow: 0, red: 0, corners: 0, shotsOnTarget: 0 };
-  const away = { yellow: 0, red: 0, corners: 0, shotsOnTarget: 0 };
-  for (const entry of statsResponse || []) {
+  // FAIL-CLOSED: a non-array / empty response means the provider returned NO
+  // statistics (quota wall, rate-limit, API error → the client swallows all of
+  // these into `[]`, or genuinely no stats yet). We must NOT fabricate an
+  // all-zeros object — that is indistinguishable from a real 0-corner match and
+  // would mis-settle "Over N corners" as LOST. Return null so the data-presence
+  // gate (stats_payload === null → canEvaluate false → VOID/PENDING) holds.
+  if (!Array.isArray(statsResponse) || statsResponse.length === 0) {
+    return null;
+  }
+  const blank = () => ({
+    yellow: null, red: null, corners: null, shotsOnTarget: null,
+    offsides: null, fouls: null, saves: null, totalShots: null,
+  });
+  const home = blank();
+  const away = blank();
+  let matchedTeam = false;
+  for (const entry of statsResponse) {
     const teamId = Number(entry?.team?.id);
     const target =
       teamId === apiHomeTeamId ? home : teamId === apiAwayTeamId ? away : null;
     if (!target) continue;
+    matchedTeam = true;
     target.yellow = extractStatValue(entry, /yellow\s*card/i);
     target.red = extractStatValue(entry, /red\s*card/i);
     target.corners = extractStatValue(entry, /corner/i);
     target.shotsOnTarget = extractStatValue(entry, /shots\s*on\s*goal/i);
+    target.offsides = extractStatValue(entry, /offside/i);
+    target.fouls = extractStatValue(entry, /foul/i);
+    target.saves = extractStatValue(entry, /goalkeeper\s*saves|^saves$/i);
+    target.totalShots = extractStatValue(entry, /total\s*shots/i);
   }
-  return {
-    cards: {
-      home: { yellow: home.yellow, red: home.red },
-      away: { yellow: away.yellow, red: away.red },
-    },
-    corners: { home: home.corners, away: away.corners },
-    shotsOnTarget: { home: home.shotsOnTarget, away: away.shotsOnTarget },
-  };
+  // Response present but neither team matched (id mismatch / malformed) → treat
+  // as absent rather than as a real 0-0 stat line.
+  if (!matchedTeam) return null;
+
+  // Per-GROUP presence: a stat group is kept ONLY when both teams reported it
+  // (non-null). A null value = "league didn't report this stat" → the group is
+  // null → the data-presence gate VOIDs that market instead of grading it
+  // against fabricated zeros. A genuine 0 (value:0) is preserved and grades.
+  const both = (h, a) => h != null && a != null;
+  const cards =
+    both(home.yellow, away.yellow) && both(home.red, away.red)
+      ? {
+          home: { yellow: home.yellow, red: home.red },
+          away: { yellow: away.yellow, red: away.red },
+        }
+      : null;
+  // Simple per-team integer stat group → present only when both teams reported.
+  const pair = (k) =>
+    both(home[k], away[k]) ? { home: home[k], away: away[k] } : null;
+  const corners = pair("corners");
+  const shotsOnTarget = pair("shotsOnTarget");
+  const offsides = pair("offsides");
+  const fouls = pair("fouls");
+  const saves = pair("saves");
+  const totalShots = pair("totalShots");
+
+  // No usable stat group at all → treat the whole response as absent so
+  // enrichment does not mark the fixture "stats-enriched" on an empty feed.
+  const out = { cards, corners, shotsOnTarget, offsides, fouls, saves, totalShots };
+  if (Object.values(out).every((g) => g == null)) return null;
+  return out;
 }
 
 function enrichmentEnabled() {
@@ -184,6 +230,17 @@ export async function enrichFixtureResult(fixtureId, options = {}) {
     );
   }
 
+  // FAIL-CLOSED: only mark the fixture "enriched" (bump result_version, the
+  // signal matchResult/v2 trusts as "events were really fetched") when the
+  // provider actually returned data. If BOTH came back empty — an outage/quota
+  // `[]` or stats not finalized yet (~5-15 min post-FT) — write nothing and
+  // leave result_version unchanged so settlementRetry re-enriches later. This
+  // prevents settling corner/card/goalscorer legs against fabricated emptiness.
+  const gotData = events.length > 0 || stats != null;
+  if (!gotData) {
+    return { enriched: false, reason: "no_data" };
+  }
+
   await prisma.fixture.update({
     where: { id: fixtureId },
     data: {
@@ -199,3 +256,6 @@ export async function enrichFixtureResult(fixtureId, options = {}) {
     haveStats: Boolean(stats),
   };
 }
+
+// Test-only surface for the fail-closed normalizer (empty/absent ⇒ null).
+export const _internals = Object.freeze({ normalizeApiStats });

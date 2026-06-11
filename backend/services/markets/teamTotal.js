@@ -1,4 +1,5 @@
 import { ValidationError } from "./errors.js";
+import { resolveParamsViaValidate } from "./_resolveParams.js";
 
 function normalizeTeam(raw) {
   const key = String(raw || "").trim().toUpperCase();
@@ -23,6 +24,32 @@ function normalizeLine(raw) {
   return line >= 0 ? line : null;
 }
 
+// Label like "Over 1.5" / "Under 2" → { side, line }. The TEAM is NOT in the
+// label (the TEAM_TOTAL_HOME/AWAY catalog wrappers inject it into params), so
+// only side+line are parsed here.
+function parseLabel(label) {
+  const s = String(label || "").trim();
+  const m = /(over|under|o|u)\b/i.exec(s);
+  if (!m) return { side: null, line: null };
+  const numMatch = s.match(/-?\d+(?:\.\d+)?/);
+  return {
+    side: normalizeSide(m[1]),
+    line: numMatch ? normalizeLine(numMatch[0]) : null,
+  };
+}
+
+function validate(params, ctx) {
+  const fromLabel = parseLabel(ctx?.label);
+  const team = normalizeTeam(params?.team);
+  if (!team) throw new ValidationError("invalid_team", { field: "team" });
+  const side = normalizeSide(params?.side) ?? fromLabel.side;
+  if (!side) throw new ValidationError("invalid_side", { field: "side" });
+  const explicitLine = normalizeLine(params?.line ?? params?.value);
+  const line = explicitLine ?? fromLabel.line;
+  if (line === null) throw new ValidationError("invalid_line", { field: "line" });
+  return { team, side, line };
+}
+
 export default Object.freeze({
   code: "TEAM_TOTAL",
   version: 1,
@@ -35,15 +62,7 @@ export default Object.freeze({
     pushPolicy: "VOID",
   },
 
-  validate(params) {
-    const team = normalizeTeam(params?.team);
-    if (!team) throw new ValidationError("invalid_team", { field: "team" });
-    const side = normalizeSide(params?.side);
-    if (!side) throw new ValidationError("invalid_side", { field: "side" });
-    const line = normalizeLine(params?.line ?? params?.value);
-    if (line === null) throw new ValidationError("invalid_line", { field: "line" });
-    return { team, side, line };
-  },
+  validate,
 
   canEvaluate(mr) {
     return (
@@ -53,10 +72,11 @@ export default Object.freeze({
   },
 
   evaluate(selection, mr) {
-    const team = normalizeTeam(selection?.market_params?.team);
-    const side = normalizeSide(selection?.market_params?.side);
-    const line = normalizeLine(selection?.market_params?.line);
-    if (!team || !side || line === null) {
+    const params = resolveParamsViaValidate(selection, validate);
+    const team = params?.team;
+    const side = params?.side;
+    const line = params == null ? null : params.line;
+    if (!team || !side || line === null || line === undefined) {
       return { result: "VOID", reason: "invalid_selection_params" };
     }
     const total = team === "HOME"

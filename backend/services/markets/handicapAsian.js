@@ -1,4 +1,5 @@
 import { ValidationError } from "./errors.js";
+import { resolveParamsViaValidate } from "./_resolveParams.js";
 
 function normalizeSide(raw) {
   const key = String(raw || "").trim().toUpperCase();
@@ -15,6 +16,18 @@ function normalizeHandicap(raw) {
   const scaled = Math.round(n * 4);
   if (Math.abs(n * 4 - scaled) > 1e-9) return null;
   return scaled / 4;
+}
+
+// Parse a handicap label like "Home -0.5", "Away +1", "1 (-0.5)" →
+// { side, handicap }. The signed number is the handicap applied to `side`.
+function parseLabel(label) {
+  const s = String(label || "").trim();
+  const sideMatch = /\b(home|away|h|a|1|2)\b/i.exec(s);
+  const numMatch = s.match(/[-+]?\d+(?:\.\d+)?/);
+  return {
+    side: sideMatch ? normalizeSide(sideMatch[1]) : null,
+    handicap: numMatch ? normalizeHandicap(numMatch[0]) : null,
+  };
 }
 
 function settleHalf(side, handicap, home, away) {
@@ -40,6 +53,18 @@ function settleHalf(side, handicap, home, away) {
  *   - one LOST + one VOID → LOST
  *   - impossible combination (e.g. WON+LOST) → VOID
  */
+function validate(params, ctx) {
+  const fromLabel = parseLabel(ctx?.label);
+  const side = normalizeSide(params?.side) ?? fromLabel.side;
+  if (!side) throw new ValidationError("invalid_side", { field: "side" });
+  const explicit = normalizeHandicap(
+    params?.handicap ?? params?.line ?? params?.value,
+  );
+  const handicap = explicit ?? fromLabel.handicap;
+  if (handicap === null) throw new ValidationError("invalid_handicap", { field: "handicap" });
+  return { side, handicap };
+}
+
 export default Object.freeze({
   code: "HANDICAP_ASIAN",
   version: 1,
@@ -52,13 +77,7 @@ export default Object.freeze({
     pushPolicy: "VOID",
   },
 
-  validate(params) {
-    const side = normalizeSide(params?.side);
-    if (!side) throw new ValidationError("invalid_side", { field: "side" });
-    const handicap = normalizeHandicap(params?.handicap ?? params?.line ?? params?.value);
-    if (handicap === null) throw new ValidationError("invalid_handicap", { field: "handicap" });
-    return { side, handicap };
-  },
+  validate,
 
   canEvaluate(mr) {
     return (
@@ -68,9 +87,10 @@ export default Object.freeze({
   },
 
   evaluate(selection, mr) {
-    const side = normalizeSide(selection?.market_params?.side);
-    const handicap = normalizeHandicap(selection?.market_params?.handicap);
-    if (!side || handicap === null) {
+    const params = resolveParamsViaValidate(selection, validate);
+    const side = params?.side;
+    const handicap = params == null ? null : params.handicap;
+    if (!side || handicap === null || handicap === undefined) {
       return { result: "VOID", reason: "invalid_selection_params" };
     }
     const { home, away } = mr.scores.fullTime;

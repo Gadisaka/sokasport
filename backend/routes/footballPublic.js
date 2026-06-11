@@ -9,6 +9,7 @@ import {
 } from "../services/cacheService.js";
 import { api } from "../services/apiSportsService.js";
 import { parseMarkets } from "../utils/oddsParser.js";
+import { isProviderMarketNameAllowed } from "../services/markets/marketSupport.js";
 import { getDailyCallCount } from "../services/apiSportsService.js";
 import { getPreferredBookmakerRecord } from "../services/settingsService.js";
 import { getAllQueues } from "../queues/queues.js";
@@ -140,6 +141,10 @@ function transformLiveOddsForClient(rawLiveOdds) {
 
     const markets = odds
       .filter((o) => o.name && Array.isArray(o.values) && o.values.length > 0)
+      // Settlement gate: only serve live markets whose name is allowlisted.
+      // Today none are (live id->code map not yet shipped) → live markets are
+      // hidden until Phase 4, which is the correct, safe behavior.
+      .filter((o) => isProviderMarketNameAllowed(o.name))
       .map((o) => ({
         name: o.name,
         odd_lines: o.values
@@ -230,6 +235,18 @@ function stripEmptyMarkets(fixture) {
     (m) => Array.isArray(m.odd_lines) && m.odd_lines.length > 0,
   );
   return fixture;
+}
+
+/**
+ * Drop markets whose provider name is not in the allowed phase.
+ * Returns a shallow copy so cached objects are not mutated.
+ */
+function dropUnsupportedMarkets(fixture) {
+  if (!fixture || !Array.isArray(fixture.markets)) return fixture;
+  const markets = fixture.markets.filter((m) =>
+    isProviderMarketNameAllowed(m?.name),
+  );
+  return { ...fixture, markets };
 }
 
 /** Public list responses: omit fixtures with no priced lines after merge. */
@@ -903,7 +920,9 @@ router.get("/odds/:apiFixtureId", async (req, res) => {
         await setCache(cacheKey, data, TTL.ODDS);
       }
     }
-    res.json(data);
+    // Settlement gate: never serve an unsupported/mis-mapped market to a client.
+    // Applied AFTER cache read/write so both fresh and cached responses are gated.
+    res.json(dropUnsupportedMarkets(data));
   } catch (e) {
     console.error(e);
     res.status(500).json({ message: "Failed to load odds" });

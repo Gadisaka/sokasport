@@ -191,6 +191,11 @@ async function upsertFixtureRow(entry, leagueId, homeTeamId, awayTeamId) {
   const startTime = new Date(f.date);
   const homeScore = goals?.home ?? null;
   const awayScore = goals?.away ?? null;
+  // Half-time scores live under `score.halftime` in the API-Sports /fixtures
+  // payload (separate from `goals`, which is the current/full-time score).
+  // Required by HT markets (HALF_TIME_RESULT, HT_OVER_UNDER, HT_FT).
+  const htHomeScore = entry?.score?.halftime?.home ?? null;
+  const htAwayScore = entry?.score?.halftime?.away ?? null;
 
   // Inline upsert with shallow-equality guard. The previous helper
   // (`upsertNoTx`) always issued an `update` after the `findUnique`, even
@@ -217,6 +222,8 @@ async function upsertFixtureRow(entry, leagueId, homeTeamId, awayTeamId) {
       status,
       home_score: homeScore,
       away_score: awayScore,
+      ht_home_score: htHomeScore,
+      ht_away_score: htAwayScore,
       league_id: leagueId,
       home_team_id: homeTeamId,
       away_team_id: awayTeamId,
@@ -248,6 +255,8 @@ async function upsertFixtureRow(entry, leagueId, homeTeamId, awayTeamId) {
         status,
         home_score: homeScore,
         away_score: awayScore,
+        ht_home_score: htHomeScore,
+        ht_away_score: htAwayScore,
         league_id: leagueId,
         home_team_id: homeTeamId,
         away_team_id: awayTeamId,
@@ -272,6 +281,8 @@ async function upsertFixtureRow(entry, leagueId, homeTeamId, awayTeamId) {
       status,
       home_score: homeScore,
       away_score: awayScore,
+      ht_home_score: htHomeScore,
+      ht_away_score: htAwayScore,
       league_id: leagueId,
       home_team_id: homeTeamId,
       away_team_id: awayTeamId,

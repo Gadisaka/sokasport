@@ -98,8 +98,6 @@ function normalizeEvents(rawEvents) {
     const type = String(e?.type || "").toUpperCase();
     if (type === "GOAL") out.push(normalizeGoalEvent(e, i));
     else if (type === "CARD") out.push(normalizeCardEvent(e, i));
-    // Unknown types dropped — this is a normalization layer, not a
-    // pass-through. Reporting tooling reads the raw payload.
   }
   out.sort((a, b) => {
     if (a.minute !== b.minute) return a.minute - b.minute;
@@ -109,28 +107,37 @@ function normalizeEvents(rawEvents) {
 }
 
 function normalizeStats(rawStats) {
-  const s = rawStats && typeof rawStats === "object" ? rawStats : {};
+  // Presence-aware: a missing stats payload means the fixture was NOT stat-
+  // enriched, so each stat group is left `undefined` and its market's
+  // canEvaluate() returns false → VOID/missing_required_data, NOT a grade
+  // against a fabricated 0. A PRESENT group with 0 corners/cards is a valid
+  // graded state (enriched-zero) and is kept. Mirrors the `shotsOnTarget`
+  // idiom that already worked this way.
+  const s = rawStats && typeof rawStats === "object" ? rawStats : null;
+  // Simple per-team integer group → present object or undefined (presence-aware).
+  const pair = (g) =>
+    g && g.home != null && g.away != null
+      ? { home: toNonNegInt(g.home), away: toNonNegInt(g.away) }
+      : undefined;
   return {
-    cards: {
-      home: {
-        yellow: toNonNegInt(s?.cards?.home?.yellow),
-        red: toNonNegInt(s?.cards?.home?.red),
-      },
-      away: {
-        yellow: toNonNegInt(s?.cards?.away?.yellow),
-        red: toNonNegInt(s?.cards?.away?.red),
-      },
-    },
-    corners: {
-      home: toNonNegInt(s?.corners?.home),
-      away: toNonNegInt(s?.corners?.away),
-    },
-    shotsOnTarget: s?.shotsOnTarget
+    cards: s?.cards
       ? {
-          home: toNonNegInt(s.shotsOnTarget.home),
-          away: toNonNegInt(s.shotsOnTarget.away),
+          home: {
+            yellow: toNonNegInt(s.cards.home?.yellow),
+            red: toNonNegInt(s.cards.home?.red),
+          },
+          away: {
+            yellow: toNonNegInt(s.cards.away?.yellow),
+            red: toNonNegInt(s.cards.away?.red),
+          },
         }
       : undefined,
+    corners: pair(s?.corners),
+    shotsOnTarget: pair(s?.shotsOnTarget),
+    offsides: pair(s?.offsides),
+    fouls: pair(s?.fouls),
+    saves: pair(s?.saves),
+    totalShots: pair(s?.totalShots),
   };
 }
 
@@ -174,8 +181,20 @@ function detectInconsistency(payload) {
     (e) => e.type === "GOAL" && !e.flags?.varOverturned,
   );
   if (liveGoals.length === 0) return null; // no events provided — trust scores
-  const homeGoals = liveGoals.filter((e) => e.team === "HOME").length;
-  const awayGoals = liveGoals.filter((e) => e.team === "AWAY").length;
+  // Count by CREDITED team: an own goal's event carries the scoring player's
+  // team, but the goal counts for the opponent (which is how the score is
+  // tallied). Counting raw event.team here would falsely flag every own-goal
+  // match as inconsistent and downgrade ALL its markets to PENDING.
+  const credited = (e) =>
+    e.flags?.ownGoal
+      ? e.team === "HOME"
+        ? "AWAY"
+        : e.team === "AWAY"
+          ? "HOME"
+          : null
+      : e.team;
+  const homeGoals = liveGoals.filter((e) => credited(e) === "HOME").length;
+  const awayGoals = liveGoals.filter((e) => credited(e) === "AWAY").length;
   if (homeGoals !== home || awayGoals !== away) {
     return `score_event_mismatch:${homeGoals}-${awayGoals}_vs_${home}-${away}`;
   }
@@ -230,15 +249,24 @@ export function buildMatchResultV2FromFixture(fixture, extras = {}) {
     };
   }
 
-  const events = normalizeEvents(extras.events ?? fixture.events_payload);
-  const stats = normalizeStats(extras.stats ?? fixture.stats_payload);
-
   const resultVersion =
     Number.isFinite(Number(extras.resultVersionOverride))
       ? Number(extras.resultVersionOverride)
       : Number.isFinite(Number(fixture.result_version))
         ? Number(fixture.result_version)
         : 0;
+
+  // Events presence gate. `events_payload === null` is ambiguous: it can mean
+  // "not enriched" OR "enriched, genuinely no goal/card events" (the enrichment
+  // job stores null for empty events). `result_version > 0` means the fixture
+  // WAS enriched, so a null payload then = a real empty set ([]). When NOT
+  // enriched and no explicit events array, leave `events = null` so event
+  // markets (goalscorer / player cards) VOID instead of grading against [].
+  const rawEvents = extras.events ?? fixture.events_payload;
+  const wasEnriched = resultVersion > 0;
+  const events =
+    Array.isArray(rawEvents) || wasEnriched ? normalizeEvents(rawEvents) : null;
+  const stats = normalizeStats(extras.stats ?? fixture.stats_payload);
 
   const payload = {
     schemaVersion: MATCH_RESULT_SCHEMA_VERSION,

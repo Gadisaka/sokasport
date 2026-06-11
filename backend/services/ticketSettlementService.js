@@ -57,6 +57,7 @@ import {
   resolveBettingLimits,
 } from "../lib/bettingLimits.js";
 import { logAuditEvent } from "../lib/auditLog.js";
+import { recordUngradedLeg } from "../lib/settlementMetrics.js";
 
 const FINAL_FIXTURE_STATUSES = new Set(["FT", "AET", "PEN", "AWD", "WO"]);
 const VOID_FIXTURE_STATUSES = new Set(["CANC", "ABD", "PST"]);
@@ -90,6 +91,22 @@ function useV2Engine() {
 
 function useShadow() {
   return String(process.env.SETTLEMENT_ENGINE_SHADOW || "").toLowerCase() === "v2";
+}
+
+// Boot-time footgun guard. V2 grades event/stat markets (corners, cards,
+// goalscorers) from enrichment payloads. With V2 selected but enrichment off,
+// those markets settle VOID for lack of data (and refund stakes) instead of
+// grading. Surface it loudly so the cutover runbook turns on enrichment in
+// lockstep with the engine flip.
+if (
+  String(process.env.SETTLEMENT_ENGINE || "").toLowerCase() === "v2" &&
+  String(process.env.ENABLE_FIXTURE_ENRICHMENT || "").trim() !== "1"
+) {
+  console.warn(
+    "[settlement] CONFIG WARNING: SETTLEMENT_ENGINE=v2 but ENABLE_FIXTURE_ENRICHMENT!=1 — " +
+      "event/stat markets (corners, cards, goalscorers) will settle VOID for lack of data. " +
+      "Enable enrichment as part of the V2 cutover.",
+  );
 }
 
 /**
@@ -424,8 +441,9 @@ function mergeLegResult(selection, v1Outcome, v2Outcome) {
   };
 }
 
-async function gradeSelectionsInTx(tx, selections, matchResults, marketResultOverrides) {
+async function gradeSelectionsInTx(tx, selections, matchResults, marketResultOverrides, context = {}) {
   const ticketIds = new Set();
+  const ungraded = [];
   let updated = 0;
   let pendingAfter = 0;
   for (const sel of selections) {
@@ -455,6 +473,33 @@ async function gradeSelectionsInTx(tx, selections, matchResults, marketResultOve
 
     const merged = mergeLegResult(sel, v1Outcome, v2Outcome);
 
+    // FAIL-CLOSED on absent provider data: a leg that VOIDs for
+    // `missing_required_data` (stats/events not present) on a fixture that was
+    // never successfully enriched (resultVersion === 0) is NOT a real void — the
+    // data simply hasn't arrived yet (delayed stats ~5-15 min post-FT, or an
+    // outage/quota `[]`). Demote it to PENDING so settlementRetry re-enriches and
+    // re-grades, instead of permanently refunding a market we CAN settle once
+    // data lands. Once enriched (resultVersion > 0) a genuine missing-data void
+    // stands (e.g. a league that truly never reports corners).
+    const v2Ver = Number(matchResults?.v2?.resultVersion) || 0;
+    if (
+      merged.result === SELECTION_RESULT.VOID &&
+      merged.reason === "missing_required_data" &&
+      v2Ver === 0
+    ) {
+      ticketIds.add(sel.ticket_id);
+      pendingAfter++;
+      ungraded.push({
+        selectionId: sel.id,
+        ticketId: sel.ticket_id,
+        marketCode: sel.market_code || null,
+        selection: sel.selection || null,
+        reason: "awaiting_enrichment",
+      });
+      recordUngradedLeg({ marketCode: sel.market_code || "unknown" });
+      continue;
+    }
+
     // Shadow mismatch detection (never mutates ticket outcomes).
     if (useShadow() && v1Outcome && v2Outcome && v1Outcome.result !== v2Outcome.result) {
       await recordShadowMismatch({
@@ -467,8 +512,20 @@ async function gradeSelectionsInTx(tx, selections, matchResults, marketResultOve
     }
 
     if (!merged.result || merged.result === SELECTION_RESULT.PENDING) {
+      // The fixture/match is already terminal by the time we grade, so a leg
+      // left PENDING means the active engine can't decide this market (V1 only
+      // grades 5 markets → `unknown_market`). Record it so the silent
+      // stuck-pending bug becomes a metric + audit row, not an invisible hang.
       ticketIds.add(sel.ticket_id);
       pendingAfter++;
+      ungraded.push({
+        selectionId: sel.id,
+        ticketId: sel.ticket_id,
+        marketCode: sel.market_code || null,
+        selection: sel.selection || null,
+        reason: merged.reason || "pending",
+      });
+      recordUngradedLeg({ marketCode: sel.market_code || "unknown" });
       continue;
     }
 
@@ -486,6 +543,35 @@ async function gradeSelectionsInTx(tx, selections, matchResults, marketResultOve
     ticketIds.add(sel.ticket_id);
     updated++;
   }
+
+  if (ungraded.length) {
+    const byMarket = {};
+    for (const leg of ungraded) {
+      const code = leg.marketCode || "unknown";
+      byMarket[code] = (byMarket[code] || 0) + 1;
+    }
+    console.warn(
+      `[settlement] ungraded_legs engine=${useV2Engine() ? "v2" : "v1"} ` +
+        `context=${context.kind || "?"}:${context.id || "?"} ` +
+        `count=${ungraded.length} byMarket=${JSON.stringify(byMarket)}`,
+    );
+    // Fire-and-forget (prisma-rooted inside logAuditEvent) so an audit-write
+    // failure never aborts the settlement transaction.
+    logAuditEvent({
+      action: "SETTLEMENT_UNGRADED_LEGS",
+      module: "SETTLEMENT",
+      entityType: context.kind === "MATCH" ? "MATCH" : "FIXTURE",
+      entityId: context.id || null,
+      before: null,
+      after: {
+        engine: useV2Engine() ? "v2" : "v1",
+        count: ungraded.length,
+        byMarket,
+        legs: ungraded.slice(0, 50),
+      },
+    }).catch(() => {});
+  }
+
   return { ticketIds, updated, pendingAfter };
 }
 
@@ -505,6 +591,12 @@ async function recomputeAndCreditTickets(tx, ticketIds) {
       if (ticket?.status === "VOID") {
         const refund = await refundOnlineTicketInTx(tx, ticketId);
         if (refund.refunded) refundsIssued++;
+      }
+      if (ticket?.status === "LOST") {
+        // Already LOST on an earlier leg; a now-graded leg may have been
+        // the last pending one. Cashback defers until all legs resolve
+        // (see creditCashbackOnLostTicketInTx) and is idempotent.
+        await creditCashbackOnLostTicketInTx(tx, ticketId);
       }
       continue;
     }
@@ -607,6 +699,7 @@ export async function settleFixture(fixtureId, options = {}) {
         selections,
         matchResults,
         fixture.market_result_overrides,
+        { kind: "FIXTURE", id: fixtureId },
       );
       const {
         ticketsWon,
@@ -717,6 +810,8 @@ export async function settleMatch(matchId, resultString, options = {}) {
       tx,
       selections,
       matchResults,
+      undefined,
+      { kind: "MATCH", id: matchId },
     );
     const {
       ticketsWon,

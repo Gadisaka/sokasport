@@ -3,6 +3,7 @@
  * API-Sports bet id 2 ("Home/Away").
  */
 import { ValidationError } from "./errors.js";
+import { resolveParamsViaValidate } from "./_resolveParams.js";
 
 const SIDE_ALIASES = new Map([
   ["1", "HOME"], ["H", "HOME"], ["HOME", "HOME"],
@@ -12,6 +13,12 @@ const SIDE_ALIASES = new Map([
 function normalizeSide(raw) {
   const key = String(raw || "").trim().toUpperCase();
   return SIDE_ALIASES.get(key) || null;
+}
+
+function validate(params, ctx) {
+  const side = normalizeSide(params?.side ?? ctx?.label);
+  if (!side) throw new ValidationError("invalid_side", { field: "side" });
+  return { side };
 }
 
 export default Object.freeze({
@@ -26,11 +33,7 @@ export default Object.freeze({
     pushPolicy: "VOID",
   },
 
-  validate(params, ctx) {
-    const side = normalizeSide(params?.side ?? ctx?.label);
-    if (!side) throw new ValidationError("invalid_side", { field: "side" });
-    return { side };
-  },
+  validate,
 
   canEvaluate(mr) {
     return (
@@ -40,7 +43,8 @@ export default Object.freeze({
   },
 
   evaluate(selection, mr) {
-    const expected = normalizeSide(selection?.market_params?.side);
+    const params = resolveParamsViaValidate(selection, validate);
+    const expected = params?.side;
     if (!expected) return { result: "VOID", reason: "invalid_selection_side" };
     const { home, away } = mr.scores.fullTime;
     if (home === away) return { result: "VOID", reason: "draw_refund" };

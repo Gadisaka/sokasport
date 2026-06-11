@@ -1,4 +1,5 @@
 import { ValidationError } from "./errors.js";
+import { resolveParamsViaValidate } from "./_resolveParams.js";
 
 const SIDE_ALIASES = new Map([
   ["1", "HOME"], ["H", "HOME"], ["HOME", "HOME"],
@@ -15,6 +16,22 @@ function winnerFor(home, away) {
   if (home > away) return "HOME";
   if (home < away) return "AWAY";
   return "DRAW";
+}
+
+// Parse a compound HT/FT label like "1/1", "X/2", "Home/Away" → { ht, ft }.
+function parseLabel(label) {
+  const parts = String(label || "").split("/");
+  if (parts.length !== 2) return { ht: null, ft: null };
+  return { ht: normalizeSide(parts[0]), ft: normalizeSide(parts[1]) };
+}
+
+function validate(params, ctx) {
+  const fromLabel = parseLabel(ctx?.label);
+  const ht = normalizeSide(params?.ht) ?? fromLabel.ht;
+  const ft = normalizeSide(params?.ft) ?? fromLabel.ft;
+  if (!ht) throw new ValidationError("invalid_ht", { field: "ht" });
+  if (!ft) throw new ValidationError("invalid_ft", { field: "ft" });
+  return { ht, ft };
 }
 
 export default Object.freeze({
@@ -34,13 +51,7 @@ export default Object.freeze({
     pushPolicy: "NONE",
   },
 
-  validate(params) {
-    const ht = normalizeSide(params?.ht);
-    const ft = normalizeSide(params?.ft);
-    if (!ht) throw new ValidationError("invalid_ht", { field: "ht" });
-    if (!ft) throw new ValidationError("invalid_ft", { field: "ft" });
-    return { ht, ft };
-  },
+  validate,
 
   canEvaluate(mr) {
     return (
@@ -52,12 +63,11 @@ export default Object.freeze({
   },
 
   evaluate(selection, mr) {
-    const ht = normalizeSide(selection?.market_params?.ht);
-    const ft = normalizeSide(selection?.market_params?.ft);
-    if (!ht || !ft) return { result: "VOID", reason: "invalid_selection" };
+    const params = resolveParamsViaValidate(selection, validate);
+    if (!params?.ht || !params?.ft) return { result: "VOID", reason: "invalid_selection" };
     const htWinner = winnerFor(mr.scores.halfTime.home, mr.scores.halfTime.away);
     const ftWinner = winnerFor(mr.scores.fullTime.home, mr.scores.fullTime.away);
-    const won = ht === htWinner && ft === ftWinner;
+    const won = params.ht === htWinner && params.ft === ftWinner;
     return { result: won ? "WON" : "LOST" };
   },
 });

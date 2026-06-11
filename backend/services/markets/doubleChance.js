@@ -1,4 +1,5 @@
 import { ValidationError } from "./errors.js";
+import { resolveParamsViaValidate } from "./_resolveParams.js";
 
 const COMBINATIONS = new Map([
   ["1X", new Set(["HOME", "DRAW"])],
@@ -22,6 +23,26 @@ function pickWinner(ft) {
   return "DRAW";
 }
 
+function validate(params, ctx) {
+  const raw = params?.combination ?? params?.side ?? ctx?.label;
+  const key = normalize(raw);
+  if (!COMBINATIONS.has(key)) {
+    throw new ValidationError("invalid_combination", {
+      field: "combination",
+      details: { raw },
+    });
+  }
+  // Canonical form: one of "1X" | "12" | "X2" for easy storage.
+  const canonical = key === "HOME/DRAW" || key === "HOME_OR_DRAW"
+    ? "1X"
+    : key === "HOME/AWAY" || key === "HOME_OR_AWAY"
+      ? "12"
+      : key === "DRAW/AWAY" || key === "DRAW_OR_AWAY"
+        ? "X2"
+        : key;
+  return { combination: canonical };
+}
+
 export default Object.freeze({
   code: "DOUBLE_CHANCE",
   version: 1,
@@ -34,25 +55,7 @@ export default Object.freeze({
     pushPolicy: "NONE",
   },
 
-  validate(params, ctx) {
-    const raw = params?.combination ?? params?.side ?? ctx?.label;
-    const key = normalize(raw);
-    if (!COMBINATIONS.has(key)) {
-      throw new ValidationError("invalid_combination", {
-        field: "combination",
-        details: { raw },
-      });
-    }
-    // Canonical form: one of "1X" | "12" | "X2" for easy storage.
-    const canonical = key === "HOME/DRAW" || key === "HOME_OR_DRAW"
-      ? "1X"
-      : key === "HOME/AWAY" || key === "HOME_OR_AWAY"
-        ? "12"
-        : key === "DRAW/AWAY" || key === "DRAW_OR_AWAY"
-          ? "X2"
-          : key;
-    return { combination: canonical };
-  },
+  validate,
 
   canEvaluate(mr) {
     return (
@@ -62,8 +65,8 @@ export default Object.freeze({
   },
 
   evaluate(selection, mr) {
-    const key = normalize(selection?.market_params?.combination);
-    const accepted = COMBINATIONS.get(key);
+    const params = resolveParamsViaValidate(selection, validate);
+    const accepted = params ? COMBINATIONS.get(params.combination) : null;
     if (!accepted) {
       return { result: "VOID", reason: "invalid_selection_combination" };
     }
