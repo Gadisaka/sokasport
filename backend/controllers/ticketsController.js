@@ -28,7 +28,7 @@ import { betPlacedNotification } from "../lib/notificationMessages.js";
 import { resolveAccumulatorForNewTicket } from "../lib/bonusEngine.js";
 import { classifySelectionSupport } from "../services/markets/marketSupport.js";
 import { validatePlacementSelections } from "../services/odds-engine/validateSelections.js";
-import { validateOpenTicketForPrint, normalizeSnapshotForPrintValidation } from "../services/ticketPrintValidation.js";
+import { validateOpenTicketForPrint, normalizeSnapshotForPrintValidation, collectSellBlockingLegs } from "../services/ticketPrintValidation.js";
 import { getCache, setCache } from "../services/cacheService.js";
 import { withWalletLock } from "../lib/walletLock.js";
 import { logPlacementValidation } from "../lib/placementValidationLogger.js";
@@ -253,6 +253,52 @@ async function resolveCashierByUserId(userId) {
   return prisma.cashier.findUnique({
     where: { user_id: userId },
   });
+}
+
+async function assertOpenTicketEditable(req, ticketId, { includeSelections = false } = {}) {
+  const ticket = await prisma.ticket.findUnique({
+    where: { id: ticketId },
+    include: includeSelections ? ticketDetailInclude : undefined,
+  });
+  if (!ticket) {
+    return { error: { status: 404, message: "Ticket not found" } };
+  }
+  if (ticket.status !== "OPEN") {
+    return {
+      error: {
+        status: 400,
+        message: "Only OPEN tickets can be edited before print",
+      },
+    };
+  }
+
+  if (req.user.role === "CASHIER") {
+    const cashier = await resolveCashierByUserId(req.user.sub);
+    if (!cashier) {
+      return {
+        error: { status: 404, message: CASHIER_PROFILE_MISSING_MESSAGE },
+      };
+    }
+    if (ticket.cashier_id && ticket.cashier_id !== cashier.id) {
+      return { error: { status: 403, message: "Access denied" } };
+    }
+  }
+
+  const printReference = `ticket-print:${ticket.id}`;
+  const existingPrint = await prisma.transaction.findFirst({
+    where: { type: "BET", reference: printReference },
+    select: { id: true },
+  });
+  if (existingPrint) {
+    return {
+      error: {
+        status: 400,
+        message: "Ticket cannot be changed after it has been printed",
+      },
+    };
+  }
+
+  return { ticket };
 }
 
 async function getPrintedTicketIdSet({ cashierId, ticketIds }) {
@@ -1828,6 +1874,34 @@ export async function getTicketByReceipt(req, res) {
   } catch (error) {
     console.error("getTicketByReceipt error:", error);
     return res.status(500).json({ message: "Failed to get ticket" });
+  }
+}
+
+/**
+ * GET /api/tickets/:id/sell-blocking
+ * Lists all legs that block sell/print (started fixture, locked market, etc.).
+ */
+export async function getTicketSellBlocking(req, res) {
+  try {
+    const check = await assertOpenTicketEditable(req, req.params.id, {
+      includeSelections: true,
+    });
+    if (check.error) {
+      return res.status(check.error.status).json({ message: check.error.message });
+    }
+
+    const { blockingLegs } = await collectSellBlockingLegs({
+      prismaClient: prisma,
+      ticket: check.ticket,
+    });
+
+    return res.json({
+      blockingLegs,
+      hasBlockingLegs: blockingLegs.length > 0,
+    });
+  } catch (error) {
+    console.error("getTicketSellBlocking error:", error);
+    return res.status(500).json({ message: "Failed to load sell blocking state" });
   }
 }
 
