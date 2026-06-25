@@ -1,16 +1,17 @@
 /**
- * League header for thermal receipts: "Football: England - Premier League".
+ * League header for thermal receipts: "Football: England Premier League".
  * Falls back gracefully when country or league parts are missing.
  */
 export function formatLeagueReceiptLine({
   leagueType,
   leagueCountry,
+  country: countryAlias,
   leagueName,
 } = {}) {
   const sport = String(leagueType || "").trim();
-  const country = String(leagueCountry || "").trim();
+  const country = String(leagueCountry || countryAlias || "").trim();
   const league = String(leagueName || "").trim();
-  const geo = [country, league].filter(Boolean).join(" - ");
+  const geo = [country, league].filter(Boolean).join(" ");
   if (sport && geo) return `${sport}: ${geo}`;
   if (sport && league) return `${sport}: ${league}`;
   return sport || geo;

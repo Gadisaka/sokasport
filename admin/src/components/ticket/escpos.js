@@ -110,6 +110,31 @@ function leftRight(left, right, width) {
   return trimmedLeft + " ".repeat(Math.max(1, gap)) + right;
 }
 
+/** Market left, selection centered, odds right — keeps pick away from the odds column. */
+function marketPickOddsLine(market, pick, odds, width) {
+  const oddsText = String(odds ?? "").trim();
+  const pickText = String(pick ?? "-").trim();
+  const marketText = String(market ?? "-").trim();
+
+  const oddsLen = oddsText.length;
+  const pickLen = pickText.length;
+  const pickStart = Math.max(
+    marketText.length + 1,
+    Math.min(
+      Math.floor((width - pickLen) / 2),
+      width - oddsLen - pickLen - 1,
+    ),
+  );
+  const trimmedMarket = marketText.slice(0, Math.max(1, pickStart - 1));
+
+  return (
+    trimmedMarket.padEnd(pickStart, " ") +
+    pickText +
+    " ".repeat(Math.max(1, width - oddsLen - pickStart - pickLen)) +
+    oddsText
+  ).slice(0, width);
+}
+
 function divider(width, char = "-") {
   return char.repeat(width);
 }
@@ -387,6 +412,7 @@ function buildTicketEscPosParts(ticket, opts) {
       const leagueHeader = formatLeagueReceiptLine({
         leagueType: sel?.match?.leagueType,
         leagueCountry: sel?.match?.leagueCountry,
+        country: sel?.match?.country,
         leagueName: sel?.match?.leagueName,
       });
       const pick = sel?.selection || sel?.pick || "-";
@@ -413,17 +439,20 @@ function buildTicketEscPosParts(ticket, opts) {
       }
 
       // 4) Market type + selection + odds
-      const right = `${pick} ${odds}`.trim();
-      const leftWidth = Math.max(1, chars - right.length - 1);
       const marketText = market || "-";
-      if (marketText.length <= leftWidth) {
-        parts.push(line(leftRight(marketText, right, chars)));
+      const pickLen = String(pick).trim().length;
+      const pickStart = Math.max(1, Math.floor((chars - pickLen) / 2));
+      const marketWrapWidth = Math.max(1, pickStart - 1);
+      if (marketText.length <= marketWrapWidth) {
+        parts.push(line(marketPickOddsLine(marketText, pick, odds, chars)));
       } else {
-        const mLines = wrapText(marketText, leftWidth);
+        const mLines = wrapText(marketText, marketWrapWidth);
         for (let k = 0; k < mLines.length - 1; k++) {
           parts.push(line(mLines[k]));
         }
-        parts.push(line(leftRight(mLines[mLines.length - 1], right, chars)));
+        parts.push(
+          line(marketPickOddsLine(mLines[mLines.length - 1], pick, odds, chars)),
+        );
       }
 
       if (i < selections.length - 1) {

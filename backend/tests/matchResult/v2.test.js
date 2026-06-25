@@ -66,20 +66,22 @@ test("cancelled fixture → VOID finality", () => {
   assert.equal(mr.finality, "VOID");
 });
 
-test("inconsistent events (score does not match goal events) → downgraded to PENDING", () => {
+test("inconsistent events (score does not match goal events) → stays FINAL, events nulled", () => {
   const mr = buildMatchResultV2FromFixture(
     {
       id: "fx-4",
       status: "FT",
-      home_score: 2,
+      home_score: 3,
       away_score: 1,
     },
     {
-      // Only one goal event — doesn't match 2-1.
+      // Only one goal event on a 3-1 final (sparse feed, as seen on USL fixture
+      // 1524947). The SCORE is authoritative: score-derived markets must still
+      // settle. We distrust only the events.
       events: [
         {
           type: "GOAL",
-          minute: 23,
+          minute: 12,
           team: "HOME",
           scorer: { id: "p1", name: "Player" },
           flags: {},
@@ -87,6 +89,23 @@ test("inconsistent events (score does not match goal events) → downgraded to P
       ],
     },
   );
+  // Score is trusted → fixture stays FINAL so match-winner / double-chance etc.
+  // settle from the score.
+  assert.equal(mr.finality, "FINAL");
+  assert.equal(mr.scores.fullTime.home, 3);
+  assert.equal(mr.scores.fullTime.away, 1);
+  // Events distrusted → nulled so goalscorer / correct-score-by-events VOID
+  // (canEvaluate false) instead of grading against a broken feed.
+  assert.equal(mr.events, null);
+});
+
+test("terminal fixture WITHOUT a usable score → downgraded to PENDING", () => {
+  const mr = buildMatchResultV2FromFixture({
+    id: "fx-4b",
+    status: "FT",
+    home_score: null,
+    away_score: null,
+  });
   assert.equal(mr.finality, "PENDING");
 });
 

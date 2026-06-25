@@ -80,6 +80,7 @@ function buildSelectionLines(ticket) {
       league: formatLeagueReceiptLine({
         leagueType: selection?.match?.leagueType,
         leagueCountry: selection?.match?.leagueCountry,
+        country: selection?.match?.country,
         leagueName: selection?.match?.leagueName,
       }),
       pick: selection?.selection || selection?.pick || "-",
@@ -181,14 +182,14 @@ const TicketTemplate = forwardRef(function TicketTemplate(
               )}
               <div
                 style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  gap: "2mm",
+                  display: "grid",
+                  gridTemplateColumns: "1fr auto 1fr",
+                  alignItems: "center",
+                  columnGap: "2mm",
                 }}
               >
                 <span
                   style={{
-                    flex: 1,
                     wordBreak: "break-word",
                     fontWeight: 700,
                     color: "#000000",
@@ -201,11 +202,19 @@ const TicketTemplate = forwardRef(function TicketTemplate(
                     fontWeight: 700,
                     color: "#000000",
                     whiteSpace: "nowrap",
+                    textAlign: "center",
                   }}
                 >
                   {line.pick}
                 </span>
-                <span style={{ fontWeight: 800, color: "#000000" }}>
+                <span
+                  style={{
+                    fontWeight: 800,
+                    color: "#000000",
+                    whiteSpace: "nowrap",
+                    textAlign: "right",
+                  }}
+                >
                   {line.odds}
                 </span>
               </div>

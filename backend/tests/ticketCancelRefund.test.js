@@ -210,3 +210,37 @@ test("refundTicketStakeInTx returns empty when no BET transactions found", async
   assert.deepEqual(refunds, []);
   assert.equal(tx.wallets.get("cw1").balance, 100);
 });
+
+/**
+ * Documents cancelTicket wiring (PATCH /api/tickets/:id/cancel): the controller
+ * must call refundTicketStakeInTx inside the cancel transaction before setting
+ * status to CANCELED — same order simulated here.
+ */
+test("cancel transaction sequence refunds stake before marking canceled", async () => {
+  const tx = createMockTx({
+    wallets: [{ id: "cw1", user_id: "cashier-user", wallet_type: "CASHIER", balance: 70 }],
+    transactions: [
+      {
+        id: "bet1",
+        type: "BET",
+        wallet_id: "cw1",
+        amount: 30,
+        reference: "ticket-print:tk-6",
+      },
+    ],
+  });
+  const ticket = { id: "tk-6", stake: 30, coupon_number: "11111-22222" };
+  let status = "PRINTED";
+  const order = [];
+
+  const refunds = await refundTicketStakeInTx(tx, ticket);
+  order.push("refunded");
+  status = "CANCELED";
+  order.push("canceled");
+
+  assert.deepEqual(order, ["refunded", "canceled"]);
+  assert.equal(status, "CANCELED");
+  assert.equal(refunds.length, 1);
+  assert.equal(refunds[0].kind, "cashier");
+  assert.equal(tx.wallets.get("cw1").balance, 100);
+});

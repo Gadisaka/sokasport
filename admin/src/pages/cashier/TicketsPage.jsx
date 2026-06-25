@@ -266,14 +266,7 @@ function TicketDetail({
   );
 }
 
-function SlipsTable({
-  items,
-  page,
-  totalPages,
-  onPageChange,
-  onReprint,
-  onUseCoupon,
-}) {
+function SlipsTable({ items, page, totalPages, onPageChange }) {
   return (
     <PanelCard className="p-0">
       <div className="overflow-x-auto">
@@ -307,13 +300,7 @@ function SlipsTable({
                     {formatTime(ticket.createdAt)}
                   </td>
                   <td className="px-3 py-3 text-xs font-mono">
-                    <button
-                      type="button"
-                      onClick={() => onUseCoupon(ticket)}
-                      className="text-[var(--accent)] underline-offset-2 hover:underline"
-                    >
-                      {ticket.couponNumber}
-                    </button>
+                    {ticket.couponNumber}
                   </td>
                   <td className="px-3 py-3 text-xs">
                     {toNumber(ticket.stake).toLocaleString()}
@@ -323,13 +310,7 @@ function SlipsTable({
                   </td>
                   <td className="px-3 py-3 text-xs">
                     {ticket.printed ? (
-                      <button
-                        type="button"
-                        className="rounded-sm border border-[var(--border)] bg-[var(--surfaceMuted)] px-2 py-1 text-[11px] font-semibold"
-                        onClick={() => onReprint(ticket)}
-                      >
-                        Reprint
-                      </button>
+                      <span className="text-[var(--muted)]">Reprint</span>
                     ) : (
                       <span className="text-[var(--muted)]">No</span>
                     )}
@@ -806,7 +787,7 @@ export default function CashierTicketsPage() {
       const refreshed = await refreshPayoutTicket(payoutTicket);
       setPayoutTicket(refreshed);
       setCompletedAction("cancel");
-      await slipsQuery.refetch();
+      await Promise.all([slipsQuery.refetch(), walletQuery.refetch()]);
     } catch (error) {
       setPayoutError(error?.message || "Failed to cancel ticket");
     }
@@ -890,83 +871,6 @@ export default function CashierTicketsPage() {
       await slipsQuery.refetch();
     } catch (error) {
       setPayoutError(error?.message || "Failed to cash out ticket");
-    }
-  };
-
-  const handleUseCouponFromTable = (ticket) => {
-    if (!ticket?.id) return;
-    setSellCouponInput(ticket.couponNumber || "");
-    setPayoutReceiptInput(ticket.receiptNumber || "");
-    if (leftTab === "sell") {
-      void (async () => {
-        setSellError("");
-        try {
-          const detail = await loadTicketById.mutateAsync(ticket.id);
-          setSellTicket(detail);
-          setSellStakeInput(String(toNumber(detail?.stake)));
-        } catch (e) {
-          setSellError(e?.message || "Failed to load ticket");
-        }
-      })();
-    } else {
-      if (!String(ticket.receiptNumber || "").trim()) {
-        setPayoutError(
-          "This slip has no receipt yet. Print or complete payment first.",
-        );
-        return;
-      }
-      void loadCouponTicket({
-        type: "payout",
-        receiptNumber: ticket.receiptNumber,
-        payoutMode: payoutAction,
-      });
-    }
-  };
-
-  const handleReprint = async (ticket) => {
-    if (!ticket?.id) return;
-    setSellError("");
-    try {
-      const detail = await loadTicketById.mutateAsync(ticket.id);
-
-      if (!printerConnected) {
-        setSellError(
-          "Printer offline. Ensure local print service is running and POS80 printer is connected.",
-        );
-        setActionSuccess("");
-        return;
-      }
-
-      const escposData = await encodeTicketAsync(detail, {
-        width: "80mm",
-        platformWinningsTax,
-      });
-      const localPrintResult = await printViaLocalService(escposData);
-      if (localPrintResult.success) {
-        setActionSuccess("Ticket reprinted.");
-        window.setTimeout(() => setActionSuccess(""), 2500);
-        return;
-      }
-
-      const localError = String(
-        localPrintResult.error?.message ||
-          "Failed to send ticket to local printer service.",
-      );
-      if (localPrintResult.code === "service_unreachable") {
-        setSellError(
-          "Local print service unreachable. Start PrinterBridge.exe on this PC.",
-        );
-      } else if (localPrintResult.code === "com_unavailable") {
-        setSellError(
-          "Printer queue unavailable. Check POS80 is installed in Windows Print queues.",
-        );
-      } else {
-        setSellError(localError);
-      }
-      setTicketPreviewOpen(false);
-      setActionSuccess("");
-    } catch (e) {
-      setSellError(e?.message || "Failed to reprint");
     }
   };
 
@@ -1132,7 +1036,23 @@ export default function CashierTicketsPage() {
                 )}
 
                 {sellTicket && (
-                  <div className="mt-4 flex flex-wrap items-center gap-2">
+                  <div className="mt-4 flex flex-wrap items-end gap-2">
+                    <div>
+                      <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
+                        Edit Stake (ETB)
+                      </label>
+                      <input
+                        type="number"
+                        min="1"
+                        step="1"
+                        value={sellStakeInput}
+                        onChange={(event) =>
+                          setSellStakeInput(event.target.value)
+                        }
+                        disabled={sellConfirmed || isBusy}
+                        className="w-40 rounded-sm border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm outline-none focus:border-[var(--accent)] disabled:opacity-60"
+                      />
+                    </div>
                     <button
                       type="button"
                       onClick={handleSellConfirm}
@@ -1193,62 +1113,44 @@ export default function CashierTicketsPage() {
                     ) : null}
 
                     <div className="mt-4 rounded-sm border border-[var(--border)] bg-[var(--surfaceMuted)] px-3 py-3">
-                      <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
-                        Edit Stake (ETB)
-                      </label>
-                      <div className="flex flex-wrap items-center gap-3">
-                        <input
-                          type="number"
-                          min="1"
-                          step="1"
-                          value={sellStakeInput}
-                          onChange={(event) =>
-                            setSellStakeInput(event.target.value)
-                          }
-                          disabled={sellConfirmed || isBusy}
-                          className="w-40 rounded-sm border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm outline-none focus:border-[var(--accent)] disabled:opacity-60"
-                        />
-                        {sellShowTax ? (
-                          <div className="min-w-0 flex-1 space-y-1 text-xs">
-                            <div className="flex justify-between gap-4">
-                              <span className="text-[var(--muted)]">
-                                Gross win
-                              </span>
-                              <span className="font-semibold text-[var(--foreground)]">
-                                {formatCurrency(sellTaxBreakdown.gross)}
-                              </span>
-                            </div>
-                            <div className="flex justify-between gap-4">
-                              <span className="text-[var(--muted)]">
-                                {sellTicket
-                                  ? formatTaxLineLabel(
-                                      sellTicket,
-                                      platformWinningsTax,
-                                    )
-                                  : "Tax"}
-                              </span>
-                              <span className="font-semibold text-[var(--foreground)]">
-                                {formatCurrency(sellTaxBreakdown.tax)}
-                              </span>
-                            </div>
-                            <div className="flex justify-between gap-4 border-t border-[var(--border)] pt-1">
-                              <span className="font-semibold text-[var(--muted)]">
-                                Net payout
-                              </span>
-                              <span className="font-semibold text-[var(--foreground)]">
-                                {formatCurrency(sellTaxBreakdown.net)}
-                              </span>
-                            </div>
-                          </div>
-                        ) : (
-                          <span className="text-xs text-[var(--muted)]">
-                            Possible Win:{" "}
+                      {sellShowTax ? (
+                        <div className="min-w-0 space-y-1 text-xs">
+                          <div className="flex justify-between gap-4">
+                            <span className="text-[var(--muted)]">Gross win</span>
                             <span className="font-semibold text-[var(--foreground)]">
-                              {formatCurrency(sellCappedPossibleWin)}
+                              {formatCurrency(sellTaxBreakdown.gross)}
                             </span>
+                          </div>
+                          <div className="flex justify-between gap-4">
+                            <span className="text-[var(--muted)]">
+                              {sellTicket
+                                ? formatTaxLineLabel(
+                                    sellTicket,
+                                    platformWinningsTax,
+                                  )
+                                : "Tax"}
+                            </span>
+                            <span className="font-semibold text-[var(--foreground)]">
+                              {formatCurrency(sellTaxBreakdown.tax)}
+                            </span>
+                          </div>
+                          <div className="flex justify-between gap-4 border-t border-[var(--border)] pt-1">
+                            <span className="font-semibold text-[var(--muted)]">
+                              Net payout
+                            </span>
+                            <span className="font-semibold text-[var(--foreground)]">
+                              {formatCurrency(sellTaxBreakdown.net)}
+                            </span>
+                          </div>
+                        </div>
+                      ) : (
+                        <span className="text-xs text-[var(--muted)]">
+                          Possible Win:{" "}
+                          <span className="font-semibold text-[var(--foreground)]">
+                            {formatCurrency(sellCappedPossibleWin)}
                           </span>
-                        )}
-                      </div>
+                        </span>
+                      )}
                       {sellConfirmed && (
                         <p className="mt-2 text-[11px] text-[var(--muted)]">
                           Stake is locked once the ticket is confirmed.
@@ -1486,8 +1388,6 @@ export default function CashierTicketsPage() {
                     page={slipsPage}
                     totalPages={totalPages}
                     onPageChange={setSlipsPage}
-                    onReprint={handleReprint}
-                    onUseCoupon={handleUseCouponFromTable}
                   />
                 </div>
               )}

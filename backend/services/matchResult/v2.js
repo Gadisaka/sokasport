@@ -177,10 +177,19 @@ function detectInconsistency(payload) {
     return "final_without_scores";
   }
   if (!Array.isArray(payload.events)) return null;
+  // Count only goals that contribute to the fulltime/ET score. Exclude:
+  //  - VAR-overturned goals (chalked off), and
+  //  - penalty-SHOOTOUT goals (post-ET tie-breaker; NOT part of `score.fulltime`
+  //    — a 1-1 game won 4-3 on pens still has a 1-1 score). Counting shootout
+  //    goals would always mismatch the score and strand every PEN fixture.
   const liveGoals = payload.events.filter(
-    (e) => e.type === "GOAL" && !e.flags?.varOverturned,
+    (e) =>
+      e.type === "GOAL" &&
+      !e.flags?.varOverturned &&
+      !e.flags?.shootout &&
+      e.period !== "PEN",
   );
-  if (liveGoals.length === 0) return null; // no events provided — trust scores
+  if (liveGoals.length === 0) return null; // no usable events — trust scores
   // Count by CREDITED team: an own goal's event carries the scoring player's
   // team, but the goal counts for the opponent (which is how the score is
   // tallied). Counting raw event.team here would falsely flag every own-goal
@@ -201,10 +210,12 @@ function detectInconsistency(payload) {
   return null;
 }
 
-function logInconsistency(source, id, reason) {
-  // Structured, single-line; scraped by ops dashboards.
+function logInconsistency(source, id, reason, action) {
+  // Structured, single-line; scraped by ops dashboards. `action` states what
+  // we actually did: PENDING downgrade (no score) vs events-distrusted (score
+  // kept, score-only markets still settle).
   console.warn(
-    `[matchResult/v2] inconsistent_payload source=${source} id=${id} reason=${reason} — downgraded finality to PENDING`,
+    `[matchResult/v2] inconsistent_payload source=${source} id=${id} reason=${reason} — ${action}`,
   );
 }
 
@@ -289,9 +300,31 @@ export function buildMatchResultV2FromFixture(fixture, extras = {}) {
   };
 
   const inconsistency = detectInconsistency(payload);
-  if (inconsistency) {
+  if (inconsistency === "final_without_scores") {
+    // No usable final score on a terminal fixture — nothing can be graded yet.
+    // Downgrade to PENDING so a retry settles it once the score lands.
     payload.finality = "PENDING";
-    logInconsistency("FIXTURE", fixture.id ?? fixture.api_fixture_id, inconsistency);
+    logInconsistency(
+      "FIXTURE",
+      fixture.id ?? fixture.api_fixture_id,
+      inconsistency,
+      "downgraded finality to PENDING (no usable score)",
+    );
+  } else if (inconsistency) {
+    // Score is present and trusted, but the goal EVENTS don't reconcile to it
+    // (sparse/incomplete feed, own-goal mis-attribution, late VAR edit). On a
+    // terminal fixture the SCORE is authoritative, so we keep finality FINAL —
+    // score-derived markets (match winner, double chance, O/U, BTTS, handicaps,
+    // totals) settle normally. We distrust only the events: null them so
+    // event-derived markets (goalscorer, correct-score-by-events) fail
+    // canEvaluate() and VOID/refund instead of grading against a broken feed.
+    payload.events = null;
+    logInconsistency(
+      "FIXTURE",
+      fixture.id ?? fixture.api_fixture_id,
+      inconsistency,
+      "events distrusted (nulled); score kept, finality stays FINAL",
+    );
   }
 
   payload.hash = hashPayload(payload);

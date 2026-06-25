@@ -86,6 +86,7 @@ export function mapTicketDetail(ticket) {
                 leagueCountry:
                   selection.match.leagueCountry ??
                   selection.match.league_country ??
+                  selection.match.country ??
                   "",
                 status:
                   selection.match.status ??

@@ -119,9 +119,6 @@ export async function getCashierDashboardStats(req, res) {
       return tid && !jackpotSoldIds.has(tid);
     });
 
-    const totalTicketsSold = soldBets.length;
-    const totalSoldPrice = soldBets.reduce((s, tx) => s + Number(tx.amount), 0);
-
     // --- Paid winning tickets: PAYOUT ticket:* ---
     const payoutTxs = await prisma.transaction.findMany({
       where: {
@@ -181,12 +178,6 @@ export async function getCashierDashboardStats(req, res) {
       },
     });
     const totalWithdrawAmount = withdrawTxs.reduce((s, tx) => s + Number(tx.amount), 0);
-
-    const grandNet =
-      totalSoldPrice -
-      totalPaidAmount -
-      totalDepositAmount +
-      totalWithdrawAmount;
 
     // --- Fixed today / yesterday WON ticket buckets (filter-independent) ---
     const startOfToday = new Date(
@@ -255,6 +246,7 @@ export async function getCashierDashboardStats(req, res) {
             where: {
               id: { in: cancelledTicketIds },
               cashier_id: cashier.id,
+              status: "CANCELED",
             },
             select: { id: true, stake: true, selection_snapshot: true },
           })
@@ -268,6 +260,26 @@ export async function getCashierDashboardStats(req, res) {
       (s, t) => s + Number(t.stake || 0),
       0,
     );
+
+    const cancelledIdSet = new Set(cancelledNonJackpot.map((t) => t.id));
+    const activeSoldBets = soldBets.filter((tx) => {
+      const ref = String(tx.reference || "");
+      const tid = ref.startsWith("ticket-print:")
+        ? ref.slice("ticket-print:".length)
+        : "";
+      return tid && !cancelledIdSet.has(tid);
+    });
+    const totalTicketsSold = activeSoldBets.length;
+    const totalSoldPrice = activeSoldBets.reduce(
+      (s, tx) => s + Number(tx.amount),
+      0,
+    );
+
+    const grandNet =
+      totalSoldPrice -
+      totalPaidAmount -
+      totalDepositAmount +
+      totalWithdrawAmount;
 
     return res.json({
       from: from.toISOString(),

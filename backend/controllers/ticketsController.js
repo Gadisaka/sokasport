@@ -26,6 +26,7 @@ import { logAuditEvent } from "../lib/auditLog.js";
 import { notifyUserSafe } from "../lib/createNotification.js";
 import { betPlacedNotification } from "../lib/notificationMessages.js";
 import { resolveAccumulatorForNewTicket } from "../lib/bonusEngine.js";
+import { refundTicketStakeInTx } from "../services/ticketCancelRefund.js";
 import { classifySelectionSupport } from "../services/markets/marketSupport.js";
 import { validatePlacementSelections } from "../services/odds-engine/validateSelections.js";
 import { validateOpenTicketForPrint, normalizeSnapshotForPrintValidation, collectSellBlockingLegs } from "../services/ticketPrintValidation.js";
@@ -420,6 +421,7 @@ function buildMatchPayloadForTicketSelection(selection, snapshotEntry) {
       startTime: selection.match.start_time,
       status: selection.match.status,
       country: leagueMeta.country,
+      leagueCountry: leagueMeta.country,
       leagueName: leagueMeta.leagueName,
     };
   }
@@ -432,6 +434,7 @@ function buildMatchPayloadForTicketSelection(selection, snapshotEntry) {
       startTime: f.start_time,
       status: f.status,
       country: leagueMeta.country,
+      leagueCountry: leagueMeta.country,
       leagueName: leagueMeta.leagueName,
     };
   }
@@ -444,6 +447,7 @@ function buildMatchPayloadForTicketSelection(selection, snapshotEntry) {
       startTime: null,
       status: "NOT_STARTED",
       country: leagueMeta.country,
+      leagueCountry: leagueMeta.country,
       leagueName: leagueMeta.leagueName,
     };
   }
@@ -470,6 +474,7 @@ function mapSnapshotSelections(ticket) {
         startTime: null,
         status: "NOT_STARTED",
         country: leagueMeta.country,
+        leagueCountry: leagueMeta.country,
         leagueName: leagueMeta.leagueName,
       },
       marketLabel: String(entry?.marketLabel || ""),
@@ -1966,15 +1971,29 @@ export async function cancelTicket(req, res) {
       });
     }
 
-    const { count } = await prisma.ticket.updateMany({
-      where: { id: ticket.id, status: { in: ["OPEN", "PRINTED"] } },
-      data: { status: "CANCELED" },
-    });
-    if (count === 0) {
-      return res.status(409).json({
-        message: "Ticket status changed concurrently; cancel rejected",
-        code: "status_conflict",
+    let refunds = [];
+    try {
+      refunds = await prisma.$transaction(async (tx) => {
+        const refundRows = await refundTicketStakeInTx(tx, ticket);
+        const { count } = await tx.ticket.updateMany({
+          where: { id: ticket.id, status: { in: ["OPEN", "PRINTED"] } },
+          data: { status: "CANCELED" },
+        });
+        if (count === 0) {
+          throw Object.assign(new Error("STATUS_CONFLICT"), {
+            statusCode: 409,
+          });
+        }
+        return refundRows;
       });
+    } catch (txErr) {
+      if (txErr?.statusCode === 409) {
+        return res.status(409).json({
+          message: "Ticket status changed concurrently; cancel rejected",
+          code: "status_conflict",
+        });
+      }
+      throw txErr;
     }
 
     await logAuditEvent({
@@ -1985,11 +2004,13 @@ export async function cancelTicket(req, res) {
       entityId: ticket.id,
       before: { status: ticket.status },
       after: { status: "CANCELED" },
+      meta: refunds.length > 0 ? { refunds } : undefined,
     });
 
     return res.json({
       message: "Ticket canceled successfully",
       ticket: { ...ticket, status: "CANCELED" },
+      ...(refunds.length > 0 ? { refunds } : {}),
     });
   } catch (error) {
     console.error("cancelTicket error:", error);
