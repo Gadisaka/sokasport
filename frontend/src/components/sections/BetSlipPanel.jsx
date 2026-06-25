@@ -23,6 +23,7 @@ import {
   stakeLimitsHintParts,
 } from "../../utils/stakeLimits";
 import { mapCouponSelectionsToSlipRows } from "../../utils/couponTicketToSlip";
+import { formatCouponInput } from "../../utils/formatCouponInput";
 import {
   accumulatorBonusExtraGrossFormatted,
   accumulatorPercentFromBonusesList,
@@ -570,7 +571,9 @@ function BetSlipPanel({
             <input
               type="text"
               value={loadCouponInput}
-              onChange={(e) => setLoadCouponInput(e.target.value)}
+              onChange={(e) =>
+                setLoadCouponInput(formatCouponInput(e.target.value))
+              }
               onKeyDown={(e) => {
                 if (e.key === "Enter") handleLoadCouponSubmit();
               }}
@@ -597,7 +600,9 @@ function BetSlipPanel({
             <input
               type="text"
               value={checkCouponInput}
-              onChange={(e) => setCheckCouponInput(e.target.value)}
+              onChange={(e) =>
+                setCheckCouponInput(formatCouponInput(e.target.value))
+              }
               onKeyDown={(e) => {
                 if (e.key === "Enter") handleCheckCouponSubmit();
               }}

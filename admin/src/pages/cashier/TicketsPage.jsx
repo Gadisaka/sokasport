@@ -12,6 +12,7 @@ import {
 import { print as printViaLocalService } from "../../services/localPrinter";
 import { useAuth } from "../../context/AuthContext";
 import { API_URL } from "../../../constants.js";
+import { formatCouponInput } from "../../utils/formatCouponInput";
 import {
   useCashoutQuoteMutation,
   mapTicketDetail,
@@ -1016,7 +1017,9 @@ export default function CashierTicketsPage() {
                   <input
                     type="text"
                     value={sellCouponInput}
-                    onChange={(event) => setSellCouponInput(event.target.value)}
+                    onChange={(event) =>
+                      setSellCouponInput(formatCouponInput(event.target.value))
+                    }
                     placeholder="Enter Coupon ID"
                     className="w-full rounded-sm border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 text-sm outline-none focus:border-[var(--accent)]"
                   />
@@ -1193,7 +1196,9 @@ export default function CashierTicketsPage() {
                     type="text"
                     value={payoutReceiptInput}
                     onChange={(event) =>
-                      setPayoutReceiptInput(event.target.value)
+                      setPayoutReceiptInput(
+                        formatCouponInput(event.target.value),
+                      )
                     }
                     placeholder="Receipt #####-#####"
                     className="w-full rounded-sm border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 text-sm outline-none focus:border-[var(--accent)]"
