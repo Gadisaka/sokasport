@@ -22,8 +22,8 @@ function computeDashboardTotals({
   const totalSoldPrice = activeSoldBets.reduce((s, row) => s + row.amount, 0);
   const grandNet =
     totalSoldPrice -
-    totalPaidAmount -
-    totalDepositAmount +
+    totalPaidAmount +
+    totalDepositAmount -
     totalWithdrawAmount;
   return { totalTicketsSold, totalSoldPrice, grandNet };
 }
@@ -46,7 +46,7 @@ test("excludes cancelled tickets from sold totals and grand net", () => {
   assert.equal(result.grandNet, 60);
 });
 
-test("grand net subtracts payouts and wallet movements from active sold", () => {
+test("grand net adds deposits and subtracts payouts/withdrawals from active sold", () => {
   const result = computeDashboardTotals({
     soldBets: [
       { ticketId: "t1", amount: 60 },
@@ -59,5 +59,5 @@ test("grand net subtracts payouts and wallet movements from active sold", () => 
   });
 
   assert.equal(result.totalSoldPrice, 120);
-  assert.equal(result.grandNet, 95);
+  assert.equal(result.grandNet, 105);
 });

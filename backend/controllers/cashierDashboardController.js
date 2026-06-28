@@ -157,7 +157,9 @@ export async function getCashierDashboardStats(req, res) {
     const totalPaidTickets = payoutsNonJackpot.length;
     const totalPaidAmount = payoutsNonJackpot.reduce((s, tx) => s + Number(tx.amount), 0);
 
-    // --- Player wallet: cashier deposited (WITHDRAW on cashier) ---
+    // --- Player deposits into wallet via cashier (physical cash IN to cashier) ---
+    // Wallet tx type is WITHDRAW (system moves money from cashier to player wallet),
+    // but physically the player hands cash to the cashier.
     const depositTxs = await prisma.transaction.findMany({
       where: {
         wallet_id: walletId,
@@ -168,7 +170,9 @@ export async function getCashierDashboardStats(req, res) {
     });
     const totalDepositAmount = depositTxs.reduce((s, tx) => s + Number(tx.amount), 0);
 
-    // --- Player withdraw approved into cashier float (DEPOSIT on cashier) ---
+    // --- Player withdraws from wallet via cashier (physical cash OUT from cashier) ---
+    // Wallet tx type is DEPOSIT (system moves money into cashier wallet from player),
+    // but physically the cashier pays out cash to the player.
     const withdrawTxs = await prisma.transaction.findMany({
       where: {
         wallet_id: walletId,
@@ -275,10 +279,15 @@ export async function getCashierDashboardStats(req, res) {
       0,
     );
 
+    // Grand Net = physical cash on hand for this cashier
+    // + Sales (cash in)
+    // - Payouts (cash out for winning tickets)
+    // + Deposits (player gives cash to deposit into their wallet)
+    // - Withdrawals (cashier pays cash for player withdrawal)
     const grandNet =
       totalSoldPrice -
-      totalPaidAmount -
-      totalDepositAmount +
+      totalPaidAmount +
+      totalDepositAmount -
       totalWithdrawAmount;
 
     return res.json({
