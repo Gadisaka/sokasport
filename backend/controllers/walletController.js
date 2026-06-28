@@ -13,6 +13,7 @@
  *
  * @module controllers/walletController
  */
+import { randomUUID } from "node:crypto";
 import { prisma } from "../Config/db.js";
 import { logAuditEvent } from "../lib/auditLog.js";
 
@@ -137,7 +138,7 @@ export async function fillWallet(req, res) {
           amount: numericAmount,
           balance_before: balanceBefore,
           balance_after: balanceAfter,
-          reference: reference || `admin:fill:${req.user.sub}`,
+          reference: reference || `admin:fill:${walletId}:${randomUUID()}`,
         },
       });
 
@@ -207,7 +208,7 @@ export async function deductWallet(req, res) {
           amount: numericAmount,
           balance_before: balanceBefore,
           balance_after: balanceAfter,
-          reference: reference || `admin:deduct:${req.user.sub}`,
+          reference: reference || `admin:deduct:${walletId}:${randomUUID()}`,
         },
       });
 
