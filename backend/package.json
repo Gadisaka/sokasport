@@ -19,6 +19,7 @@
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:push": "prisma db push",
+    "db:verify-transaction-reference-index": "node scripts/verifyTransactionReferenceIndex.mjs",
     "db:seed": "node prisma/seed.js",
     "db:backfill-server-odds": "node scripts/backfillTicketSelectionServerOdds.mjs",
     "db:backfill-market-versions": "node scripts/backfillTicketSelectionMarketVersions.mjs",

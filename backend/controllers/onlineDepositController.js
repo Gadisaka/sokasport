@@ -256,6 +256,17 @@ export async function verifyOnlineDeposit(req, res) {
 
     const creditAmount = verifiedAmount;
 
+    // Check if this payment reference was already used (defense-in-depth)
+    const existingTx = await prisma.transaction.findFirst({
+      where: { reference: ledgerRef },
+      select: { id: true },
+    });
+    if (existingTx) {
+      return res.status(409).json({
+        message: "This payment was already used for a deposit.",
+      });
+    }
+
     try {
       const result = await prisma.$transaction(async (tx) => {
         const w = await tx.wallet.findUnique({ where: { id: wallet.id } });
