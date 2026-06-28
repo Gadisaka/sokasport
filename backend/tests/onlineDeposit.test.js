@@ -72,7 +72,14 @@ test("isSuccessfulVerification per provider shape", () => {
   );
 });
 
-test("parseVerifiedAmountEtb reads nested telebirr data", () => {
+test("parseVerifiedAmountEtb reads nested telebirr data (settledAmount preferred)", () => {
+  assert.equal(
+    parseVerifiedAmountEtb("telebirr", {
+      success: true,
+      data: { settledAmount: "10 Birr", totalPaidAmount: "11 Birr" },
+    }),
+    10,
+  );
   assert.equal(
     parseVerifiedAmountEtb("telebirr", {
       success: true,

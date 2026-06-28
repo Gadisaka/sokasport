@@ -82,7 +82,10 @@ export function parseVerifiedAmountEtb(method, body) {
   }
   if (m === "telebirr") {
     const data = body?.data && typeof body.data === "object" ? body.data : {};
-    return parseEtbMoneyString(data.totalPaidAmount);
+    return (
+      parseEtbMoneyString(data.settledAmount) ??
+      parseEtbMoneyString(data.totalPaidAmount)
+    );
   }
   return null;
 }
