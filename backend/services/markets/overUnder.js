@@ -45,7 +45,7 @@ function validate(params, ctx) {
 
 export default Object.freeze({
   code: "OVER_UNDER",
-  version: 1,
+  version: 2,
   aliases: ["GOALS_OVER_UNDER", "TOTALS", "MATCH_TOTAL"],
   description: "Full-time match total goals",
   requiredResultFields: ["scores.fullTime.home", "scores.fullTime.away"],
@@ -73,19 +73,36 @@ export default Object.freeze({
     }
     const total = mr.scores.fullTime.home + mr.scores.fullTime.away;
 
-    // Quarter lines: split into two halves mathematically.
-    // 0.25 step that is not a halfway point → half-win / half-loss,
-    // which the engine models as VOID (push) on half and WON/LOST on
-    // the other. Because we settle money at leg granularity in this
-    // system, we approximate quarter lines by evaluating them as the
-    // nearer half line. For full fidelity, use HANDICAP_ASIAN which
-    // returns refund amounts.
-    const quarter = Math.abs((line * 4) % 2) !== 0;
-    const effective = quarter ? Math.round(line * 2) / 2 : line;
+    // Helper: evaluate a single half-line (x.0 or x.5).
+    const settleHalf = (halfLine) => {
+      if (total === halfLine) return "VOID";
+      const isOver = total > halfLine;
+      return (side === "OVER") === isOver ? "WON" : "LOST";
+    };
 
-    if (total === effective) return { result: "VOID", reason: "push" };
-    const isOver = total > effective;
-    const won = (side === "OVER") === isOver;
-    return { result: won ? "WON" : "LOST" };
+    // Quarter lines (x.25 or x.75) split stake 50/50 across two adjacent
+    // half-lines. E.g. UNDER 2.75 = half on U2.5 + half on U3.0.
+    const isQuarter = Math.abs((line * 4) % 2) !== 0;
+    if (!isQuarter) {
+      // Full or half line: single settlement.
+      const r = settleHalf(line);
+      if (r === "VOID") return { result: "VOID", reason: "push" };
+      return { result: r };
+    }
+
+    // Quarter line: evaluate both adjacent half-lines and combine.
+    const lower = Math.floor(line * 2) / 2;
+    const upper = Math.ceil(line * 2) / 2;
+    const r1 = settleHalf(lower);
+    const r2 = settleHalf(upper);
+    if (r1 === "WON" && r2 === "WON") return { result: "WON", reason: "quarter_full_win" };
+    if (r1 === "LOST" && r2 === "LOST") return { result: "LOST", reason: "quarter_full_loss" };
+    if ((r1 === "WON" && r2 === "VOID") || (r1 === "VOID" && r2 === "WON")) {
+      return { result: "WON", reason: "quarter_half_win" };
+    }
+    if ((r1 === "LOST" && r2 === "VOID") || (r1 === "VOID" && r2 === "LOST")) {
+      return { result: "LOST", reason: "quarter_half_loss" };
+    }
+    return { result: "VOID", reason: "quarter_conflicting_halves" };
   },
 });

@@ -13,6 +13,11 @@ import {
   writeLiveOddsSnapshot,
   LIVE_ODDS_SNAPSHOT_TTL_SECONDS,
 } from "../services/liveOddsCache.js";
+import {
+  isTerminalFixtureStatus,
+  settleFixture,
+} from "../services/ticketSettlementService.js";
+import { enrichFixtureResult } from "./enrichFixtureResult.js";
 
 /**
  * Live fixtures poller.
@@ -156,6 +161,29 @@ export default async function syncLiveFixtures() {
                 away_score: awayScore,
               },
             });
+          }
+        }
+
+        // Trigger settlement when fixture transitions to terminal status (PEN).
+        // The live API returns status "P" during penalty shootout, which maps
+        // to "PEN" (a terminal status). Without this, the scheduled sync sees
+        // the fixture already terminal and skips settlement.
+        const wasTerminal = isTerminalFixtureStatus(existing.status);
+        const isTerminalNow = isTerminalFixtureStatus(status);
+        if (!wasTerminal && isTerminalNow && existing.id) {
+          try {
+            await enrichFixtureResult(existing.id, { sport: sportSlug }).catch(() => {});
+            const settled = await settleFixture(existing.id);
+            if (settled && !settled.skipped) {
+              console.log(
+                `[syncLive] settled fixture=${existing.id} status=${status} graded=${settled.selectionsUpdated}`,
+              );
+            }
+          } catch (err) {
+            console.error(
+              `[syncLive] settlement failed fixture=${existing.id}:`,
+              err?.message || err,
+            );
           }
         }
 
