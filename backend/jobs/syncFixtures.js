@@ -26,7 +26,9 @@ import {
  * Redis-based in-process lock has been removed; the queue is the lock now.
  */
 
-const STATUS_MAP = {
+// Exported for the settlement retry job's zombie-rescue path, which maps
+// single-fixture API responses with the exact same rules as the bulk sync.
+export const STATUS_MAP = {
   TBD: "NS",
   NS: "NS",
   "1H": "LIVE",

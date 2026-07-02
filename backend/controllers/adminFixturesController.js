@@ -118,7 +118,12 @@ function buildListWhere({ q, status, filter, editableOnly, editableOptions }) {
     }
   } else if (filter === "stuck") {
     where.status = { in: TERMINAL_STATUSES };
-    where.grading_completed_at = null;
+    // Mongo: `null` only matches explicit null; sync-created rows have the
+    // field ABSENT, so also match `isSet: false` or stuck rows stay hidden.
+    where.OR = [
+      { grading_completed_at: null },
+      { grading_completed_at: { isSet: false } },
+    ];
   }
 
   if (Object.keys(where).length) clauses.push(where);
@@ -192,10 +197,19 @@ export async function getAdminFixturesSummary(req, res) {
     const [total, stuck, live] = await Promise.all([
       prisma.fixture.count({ where: baseWhere }),
       prisma.fixture.count({
+        // AND-wrap so an OR inside baseWhere can't be clobbered, and match
+        // both explicit-null and absent grading_completed_at (Mongo quirk).
         where: {
-          ...baseWhere,
-          status: { in: TERMINAL_STATUSES },
-          grading_completed_at: null,
+          AND: [
+            baseWhere,
+            { status: { in: TERMINAL_STATUSES } },
+            {
+              OR: [
+                { grading_completed_at: null },
+                { grading_completed_at: { isSet: false } },
+              ],
+            },
+          ],
         },
       }),
       prisma.fixture.count({

@@ -211,6 +211,18 @@ export function api(sport) {
      */
     getFixturesByDate: (date, opts) =>
       request(sport, fixturesEndpoint, { date }, 0, opts),
+    /**
+     * Fetch a single fixture (status, scores, teams, league) by its
+     * API-Sports id. Used by the settlement zombie-rescue path to pull
+     * results for fixtures the bulk date sync no longer covers (e.g.
+     * leagues outside the ingest rank-gate). Never cached — a stuck
+     * fixture needs the freshest status available.
+     */
+    getFixtureById: (fixtureId, opts) =>
+      request(sport, fixturesEndpoint, { id: fixtureId }, 0, {
+        skipCache: true,
+        ...opts,
+      }),
     getOdds: (fixtureId, opts) =>
       request(sport, "/odds", { fixture: fixtureId }, 0, opts),
     /**

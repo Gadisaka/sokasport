@@ -1,56 +1,96 @@
 /**
- * Settlement retry job.
+ * Settlement retry job — the self-healing safety net.
  *
- * Scans for Fixtures that are terminal AND have been settled at least
- * once BUT still carry pending legs (`grading_completed_at IS NULL`),
- * and re-runs `settleFixture` on each. This is the safety net that
- * prevents stuck tickets when:
+ * Two scans per tick:
  *
- *   - upstream data for events/stats was missing on the first pass,
- *   - the V2 engine returned `VOID / missing_required_data` for some
- *     legs because enrichment hadn't caught up yet,
- *   - a module threw and was swallowed as `VOID / module_error:*`
- *     (a follow-up module fix + a retry clears the affected legs).
+ * 1. TERMINAL SCAN — every terminal fixture (FT/AET/PEN/AWD/WO/CANC/ABD/PST)
+ *    whose `grading_completed_at` is UNSET (explicitly null OR the field is
+ *    missing from the Mongo document) gets `settleFixture` re-run. On
+ *    MongoDB, rows created by the sync jobs never write the settlement
+ *    bookkeeping fields, so they are ABSENT — and Prisma's `{ field: null }`
+ *    does NOT match absent fields. The previous query used plain null
+ *    filters and therefore matched nothing, which is why PEN/PST fixtures
+ *    stayed stuck forever. `isSet: false` is the Mongo-aware filter.
  *
- * Runs on the `settlement-retry` repeatable queue at a cadence set by
- * `SETTLEMENT_RETRY_INTERVAL_MS` (default 5 minutes).
+ * 2. ZOMBIE SCAN — fixtures past kickoff that are still NON-terminal
+ *    (NS/LIVE/HT/…) but carry at least one PENDING ticket leg. These fall
+ *    through the bulk date sync (e.g. leagues the daily sync no longer
+ *    covers), so their result never arrives on its own. We fetch the result
+ *    directly by fixture id from API-Sports, update status/scores, and
+ *    settle. Scoped to fixtures with real money on them, so upstream volume
+ *    stays tiny.
  *
- * Bounded to `SETTLEMENT_RETRY_BATCH` fixtures per tick to keep the
- * worker healthy and Mongo happy.
+ * Runs on the `settlement-retry` repeatable queue (default every 5 min).
+ * Bounded per tick: SETTLEMENT_RETRY_BATCH terminal fixtures and
+ * SETTLEMENT_ZOMBIE_BATCH zombie fixtures.
  *
  * @module jobs/settlementRetry
  */
 import prisma from "../Config/db.js";
+import { api, sleep } from "../services/apiSportsService.js";
 import { settleFixture } from "../services/ticketSettlementService.js";
 import { enrichFixtureResult } from "./enrichFixtureResult.js";
+import { STATUS_MAP } from "./syncFixtures.js";
+import {
+  buildFixtureSyncData,
+  isFixtureResultLocked,
+} from "../lib/fixtureResultLock.js";
+import { logAuditEvent } from "../lib/auditLog.js";
+import { recordUnresolvableFixture } from "../lib/settlementMetrics.js";
 
 const DEFAULT_BATCH = Number(process.env.SETTLEMENT_RETRY_BATCH || 50);
 // Only retry fixtures whose start_time is within the last N days so we
 // don't thrash the DB scanning ancient rows that will never resolve.
 const MAX_AGE_DAYS = Number(process.env.SETTLEMENT_RETRY_MAX_AGE_DAYS || 14);
+// A terminal fixture still carrying pending legs this many hours after kickoff
+// is treated as effectively unresolvable under the active engine. Surface it
+// as a CRITICAL alert + metric instead of retrying it silently forever.
+const STUCK_CRITICAL_HOURS = Number(
+  process.env.SETTLEMENT_STUCK_CRITICAL_HOURS || 6,
+);
+// Zombie rescue: a fixture is a candidate once kickoff is this many hours
+// in the past and its status is still non-terminal.
+const ZOMBIE_STALE_HOURS = Number(
+  process.env.SETTLEMENT_ZOMBIE_STALE_HOURS || 3,
+);
+// Upstream calls per tick are capped: one /fixtures?id= call per zombie.
+const ZOMBIE_BATCH = Number(process.env.SETTLEMENT_ZOMBIE_BATCH || 25);
+// Pause between by-id upstream calls so a big backlog doesn't burst.
+const ZOMBIE_FETCH_DELAY_MS = Number(
+  process.env.SETTLEMENT_ZOMBIE_FETCH_DELAY_MS || 300,
+);
+
+const TERMINAL_STATUSES = ["FT", "AET", "PEN", "AWD", "WO", "CANC", "ABD", "PST"];
 
 /**
- * @returns {Promise<{ scanned: number, retried: number, completed: number, stillPending: number }>}
+ * Mongo-aware "field is not set" filter: matches explicit null AND
+ * missing-from-document. Plain `{ field: null }` only matches explicit null
+ * on MongoDB, which silently skips every row the sync jobs created.
  */
-export async function runSettlementRetry() {
-  const minStart = new Date(
-    Date.now() - MAX_AGE_DAYS * 24 * 60 * 60 * 1000,
-  );
+function unsetFilter(field) {
+  return { OR: [{ [field]: null }, { [field]: { isSet: false } }] };
+}
+
+/**
+ * Re-settle terminal fixtures whose grading never completed.
+ */
+async function retryTerminalFixtures(now, minStart) {
+  const criticalAgeMs = STUCK_CRITICAL_HOURS * 60 * 60 * 1000;
 
   const stuck = await prisma.fixture.findMany({
     where: {
-      start_time: { gte: minStart },
-      status: {
-        in: ["FT", "AET", "PEN", "AWD", "WO", "CANC", "ABD", "PST"],
-      },
-      OR: [
-        // Partial settlement: settled once but legs still pending.
-        { settled_at: { not: null }, grading_completed_at: null },
-        // Never settled: first attempt crashed before settled_at was written.
-        { settled_at: null },
+      AND: [
+        { start_time: { gte: minStart } },
+        { status: { in: TERMINAL_STATUSES } },
+        unsetFilter("grading_completed_at"),
       ],
     },
-    select: { id: true, api_fixture_id: true, status: true },
+    select: {
+      id: true,
+      api_fixture_id: true,
+      status: true,
+      start_time: true,
+    },
     take: DEFAULT_BATCH,
     orderBy: { start_time: "asc" },
   });
@@ -58,6 +98,8 @@ export async function runSettlementRetry() {
   let retried = 0;
   let completed = 0;
   let stillPending = 0;
+  let unresolvable = 0;
+
   for (const fx of stuck) {
     try {
       // Try to enrich first — if the only reason the leg was pending
@@ -67,8 +109,43 @@ export async function runSettlementRetry() {
       await enrichFixtureResult(fx.id).catch(() => {});
       const result = await settleFixture(fx.id, { force: true });
       retried++;
-      if (result?.gradingCompleted) completed++;
-      else stillPending++;
+      if (result?.gradingCompleted) {
+        completed++;
+        continue;
+      }
+      stillPending++;
+
+      // Retry-loop / unresolvable detection: a terminal fixture that is STILL
+      // pending well past kickoff will keep failing every 5 minutes under the
+      // active engine. Raise it once per tick as CRITICAL so it can't hide in
+      // the retry loop.
+      const ageMs = fx.start_time
+        ? now - new Date(fx.start_time).getTime()
+        : Infinity;
+      if (ageMs >= criticalAgeMs) {
+        unresolvable++;
+        recordUnresolvableFixture();
+        console.error(
+          `[settlementRetry] SETTLEMENT_STUCK_CRITICAL fixture=${fx.id} ` +
+            `api_fixture_id=${fx.api_fixture_id} status=${fx.status} ` +
+            `ageHours=${(ageMs / 3_600_000).toFixed(1)} pending=${result?.pendingLegsRemaining ?? "?"} ` +
+            `— terminal fixture still has pending legs; likely unresolvable under the active engine`,
+        );
+        logAuditEvent({
+          action: "SETTLEMENT_STUCK_CRITICAL",
+          module: "SETTLEMENT",
+          entityType: "FIXTURE",
+          entityId: fx.id,
+          before: null,
+          after: {
+            apiFixtureId: fx.api_fixture_id,
+            status: fx.status,
+            ageHours: Number((ageMs / 3_600_000).toFixed(1)),
+            pendingLegsRemaining: result?.pendingLegsRemaining ?? null,
+            engine: result?.engine ?? null,
+          },
+        }).catch(() => {});
+      }
     } catch (err) {
       stillPending++;
       console.error(
@@ -78,15 +155,132 @@ export async function runSettlementRetry() {
     }
   }
 
-  console.log(
-    `[settlementRetry] scanned=${stuck.length} retried=${retried} completed=${completed} stillPending=${stillPending}`,
-  );
   return {
     scanned: stuck.length,
     retried,
     completed,
     stillPending,
+    unresolvable,
   };
+}
+
+/**
+ * Rescue "zombie" fixtures: past kickoff, still non-terminal, with at least
+ * one PENDING ticket leg. The bulk date sync will never update these when
+ * the league drops out of the daily slate, so we pull each one's result
+ * directly by fixture id and settle.
+ */
+async function rescueZombieFixtures(now, minStart) {
+  const staleCutoff = new Date(now - ZOMBIE_STALE_HOURS * 60 * 60 * 1000);
+
+  // Only fixtures with actual money on them qualify — this is what keeps
+  // the by-id upstream volume negligible.
+  const pendingLegs = await prisma.ticketSelection.findMany({
+    where: { result: "PENDING", fixture_id: { not: null } },
+    select: { fixture_id: true },
+    distinct: ["fixture_id"],
+  });
+  const ids = pendingLegs.map((l) => l.fixture_id).filter(Boolean);
+  if (!ids.length) {
+    return { candidates: 0, refreshed: 0, settled: 0, failed: 0 };
+  }
+
+  const zombies = await prisma.fixture.findMany({
+    where: {
+      id: { in: ids },
+      status: { notIn: TERMINAL_STATUSES },
+      start_time: { gte: minStart, lte: staleCutoff },
+    },
+    include: { league: { include: { sport: true } } },
+    take: ZOMBIE_BATCH,
+    orderBy: { start_time: "asc" },
+  });
+
+  let refreshed = 0;
+  let settled = 0;
+  let failed = 0;
+
+  for (const fx of zombies) {
+    try {
+      // Admin has pinned this result — never overwrite from upstream.
+      if (isFixtureResultLocked(fx)) continue;
+
+      const sportSlug = fx.league?.sport?.slug || "football";
+      const rows = await api(sportSlug).getFixtureById(fx.api_fixture_id);
+      const entry = Array.isArray(rows) ? rows[0] : null;
+      if (!entry) {
+        failed++;
+        console.warn(
+          `[settlementRetry] zombie fetch returned nothing fixture=${fx.id} api_fixture_id=${fx.api_fixture_id}`,
+        );
+        continue;
+      }
+
+      const f = entry.fixture ?? entry;
+      const goals = entry.goals ?? entry.scores ?? {};
+      const status = STATUS_MAP[f?.status?.short] ?? fx.status;
+
+      const incoming = {
+        start_time: f?.date ? new Date(f.date) : fx.start_time,
+        status,
+        home_score: goals?.home ?? null,
+        away_score: goals?.away ?? null,
+        ht_home_score: entry?.score?.halftime?.home ?? null,
+        ht_away_score: entry?.score?.halftime?.away ?? null,
+        league_id: fx.league_id,
+        home_team_id: fx.home_team_id,
+        away_team_id: fx.away_team_id,
+      };
+      await prisma.fixture.update({
+        where: { id: fx.id },
+        data: buildFixtureSyncData(fx, incoming),
+      });
+      refreshed++;
+      console.log(
+        `[settlementRetry] zombie refreshed fixture=${fx.id} api_fixture_id=${fx.api_fixture_id} ` +
+          `${fx.status}→${status} score=${incoming.home_score}-${incoming.away_score}`,
+      );
+
+      if (TERMINAL_STATUSES.includes(status)) {
+        await enrichFixtureResult(fx.id, { sport: sportSlug }).catch(() => {});
+        const result = await settleFixture(fx.id, { force: true });
+        if (result && !result.skipped) settled++;
+      }
+    } catch (err) {
+      failed++;
+      console.error(
+        `[settlementRetry] zombie rescue failed fixture=${fx.id} api_fixture_id=${fx.api_fixture_id}:`,
+        err?.message || err,
+      );
+    }
+    await sleep(ZOMBIE_FETCH_DELAY_MS);
+  }
+
+  return { candidates: zombies.length, refreshed, settled, failed };
+}
+
+/**
+ * @returns {Promise<{
+ *   scanned: number, retried: number, completed: number,
+ *   stillPending: number, unresolvable: number,
+ *   zombies: { candidates: number, refreshed: number, settled: number, failed: number },
+ * }>}
+ */
+export async function runSettlementRetry() {
+  const now = Date.now();
+  const minStart = new Date(now - MAX_AGE_DAYS * 24 * 60 * 60 * 1000);
+
+  const terminal = await retryTerminalFixtures(now, minStart);
+  const zombies = await rescueZombieFixtures(now, minStart);
+
+  console.log(
+    `[settlementRetry] scanned=${terminal.scanned} retried=${terminal.retried} ` +
+      `completed=${terminal.completed} stillPending=${terminal.stillPending} ` +
+      `unresolvable=${terminal.unresolvable} ` +
+      `zombies: candidates=${zombies.candidates} refreshed=${zombies.refreshed} ` +
+      `settled=${zombies.settled} failed=${zombies.failed}`,
+  );
+  return { ...terminal, zombies };
 }
 
 export default runSettlementRetry;
