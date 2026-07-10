@@ -95,14 +95,25 @@ function isCacheableRequest(endpoint, params) {
   return true;
 }
 
+function emptyResult(opts) {
+  if (opts?.includePaging) {
+    return { response: [], paging: { current: 1, total: 1 } };
+  }
+  return [];
+}
+
 async function request(sport, endpoint, params = {}, attempt = 0, opts = {}, rateLimitAttempt = 0) {
   resetDailyCountersIfNeeded();
 
   if (!isSportEnabled(sport)) {
-    return [];
+    return emptyResult(opts);
   }
 
-  const cacheable = isCacheableRequest(endpoint, params) && !opts.skipCache;
+  // Paging envelopes are never cached — callers need fresh paging.current/total.
+  const cacheable =
+    !opts.includePaging &&
+    isCacheableRequest(endpoint, params) &&
+    !opts.skipCache;
   const cacheKey = cacheable ? buildCacheKey(sport, endpoint, params) : null;
   const ttl = opts.cacheTtl ?? TTL.API_UPSTREAM;
 
@@ -115,7 +126,7 @@ async function request(sport, endpoint, params = {}, attempt = 0, opts = {}, rat
     console.warn(
       `[API-Sports/${sport}] daily limit reached (${DAILY_CALL_LIMIT}), skipping ${endpoint}`,
     );
-    return [];
+    return emptyResult(opts);
   }
 
   let client;
@@ -123,7 +134,7 @@ async function request(sport, endpoint, params = {}, attempt = 0, opts = {}, rat
     client = getClient(sport);
   } catch (err) {
     console.error(err.message);
-    return [];
+    return emptyResult(opts);
   }
 
   try {
@@ -142,7 +153,7 @@ async function request(sport, endpoint, params = {}, attempt = 0, opts = {}, rat
           console.error(
             `[API-Sports/${sport}] ${endpoint} rate-limit retries exhausted (${MAX_RATE_LIMIT_RETRIES}), giving up`,
           );
-          return [];
+          return emptyResult(opts);
         }
         console.warn(
           `[API-Sports/${sport}] rate limited, retry ${rateLimitAttempt + 1}/${MAX_RATE_LIMIT_RETRIES} in ${RATE_LIMIT_DELAY_MS}ms…`,
@@ -154,10 +165,21 @@ async function request(sport, endpoint, params = {}, attempt = 0, opts = {}, rat
         `[API-Sports/${sport}] ${endpoint} errors:`,
         data.errors,
       );
-      return [];
+      return emptyResult(opts);
     }
 
     const response = data.response ?? [];
+    if (opts.includePaging) {
+      const paging = data.paging ?? { current: 1, total: 1 };
+      return {
+        response,
+        paging: {
+          current: Number(paging.current) || 1,
+          total: Number(paging.total) || 1,
+        },
+      };
+    }
+
     if (cacheKey && Array.isArray(response) && response.length > 0) {
       await setCache(cacheKey, response, ttl);
     }
@@ -176,7 +198,7 @@ async function request(sport, endpoint, params = {}, attempt = 0, opts = {}, rat
       `[API-Sports/${sport}] ${endpoint} failed (params=${JSON.stringify(params)}):`,
       err.response?.status ?? err.code ?? err.message,
     );
-    return [];
+    return emptyResult(opts);
   }
 }
 
@@ -225,6 +247,19 @@ export function api(sport) {
       }),
     getOdds: (fixtureId, opts) =>
       request(sport, "/odds", { fixture: fixtureId }, 0, opts),
+    /**
+     * Bulk pre-match odds for one UTC calendar date (paginated, 10/page).
+     * Returns `{ response, paging }` so callers can walk every page.
+     * Never Redis-cached — paging must stay fresh across the loop.
+     */
+    getOddsByDate: (date, page = 1, opts = {}) =>
+      request(
+        sport,
+        "/odds",
+        { date, page },
+        0,
+        { skipCache: true, includePaging: true, ...opts },
+      ),
     /**
      * Fetch the event timeline (goals, cards, substitutions…) for a
      * finalized fixture. Required by `GOALSCORER_*`, `PLAYER_CARDS`,

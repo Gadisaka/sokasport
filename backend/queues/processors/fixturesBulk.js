@@ -3,8 +3,9 @@ import {
   getOddsHorizonDays,
   syncedUtcDaysSpan,
   getFixturesDaysAhead,
+  isOddsBulkByDateEnabled,
 } from "../../Config/ingestionConfig.js";
-import { getQueue, QUEUE_NAMES } from "../queues.js";
+import { getQueue, QUEUE_NAMES, REPEATABLE_JOB_NAMES } from "../queues.js";
 
 const BACKFILL_MAX_FIXTURES = Number(
   process.env.ODDS_HORIZON_BACKFILL_MAX || 500,
@@ -22,12 +23,10 @@ const BACKFILL_PASSES = Math.max(
  *   - fixtures:near — UTC offsets [0 .. NEAR_WINDOW-1] at near cadence
  *   - fixtures:future — full FIXTURES_DAYS_AHEAD span at deep cadence
  *
- * Post-ingest odds backfill: enqueues ODDS_BACKFILL_PASSES sequential jobs
- * (default 3) so the full 14-day horizon can be covered even when the number
- * of fixtures without markets exceeds a single job's cap. Each pass uses
- * `missing_first` mode so it naturally picks up whatever the previous pass
- * didn't reach. The `skipNearPriority` flag disables near-window sorting so
- * distant days get equal treatment during backfills.
+ * Post-ingest odds:
+ *   - When ODDS_BULK_BY_DATE_ENABLED (default): enqueue one odds:bulk-by-date
+ *     sweep covering the horizon via `/odds?date=`.
+ *   - When disabled: legacy ODDS_BACKFILL_PASSES × per-fixture backfill jobs.
  */
 export async function processFixturesBulk(job) {
   const label = job.data?.label ?? "bulk";
@@ -73,28 +72,46 @@ export async function processFixturesBulk(job) {
       const oddsQueue = getQueue(QUEUE_NAMES.ODDS);
       const ts = Date.now();
 
-      for (let pass = 1; pass <= BACKFILL_PASSES; pass++) {
-        const backfillJobId = `odds-backfill-${label}-p${pass}-${ts}`;
+      if (isOddsBulkByDateEnabled()) {
         await oddsQueue.add(
-          "odds:horizon-backfill",
+          REPEATABLE_JOB_NAMES.ODDS_BULK_BY_DATE,
           {
             horizonDays: oddsHorizonDays,
-            maxFixtures: BACKFILL_MAX_FIXTURES,
-            mode: "missing_first",
-            skipNearPriority: true,
-            label: `backfill-${label}-p${pass}`,
+            label: `post-fixtures-${label}`,
           },
           {
-            jobId: backfillJobId,
+            jobId: `odds-bulk-by-date-${label}-${ts}`,
             removeOnComplete: 10,
             removeOnFail: 50,
           },
         );
-      }
+        console.log(
+          `[fixturesBulk] enqueued odds:bulk-by-date (horizon=${oddsHorizonDays}d)`,
+        );
+      } else {
+        for (let pass = 1; pass <= BACKFILL_PASSES; pass++) {
+          const backfillJobId = `odds-backfill-${label}-p${pass}-${ts}`;
+          await oddsQueue.add(
+            "odds:horizon-backfill",
+            {
+              horizonDays: oddsHorizonDays,
+              maxFixtures: BACKFILL_MAX_FIXTURES,
+              mode: "missing_first",
+              skipNearPriority: true,
+              label: `backfill-${label}-p${pass}`,
+            },
+            {
+              jobId: backfillJobId,
+              removeOnComplete: 10,
+              removeOnFail: 50,
+            },
+          );
+        }
 
-      console.log(
-        `[fixturesBulk] enqueued ${BACKFILL_PASSES} odds backfill passes (horizon=${oddsHorizonDays}d, max=${BACKFILL_MAX_FIXTURES}/pass)`,
-      );
+        console.log(
+          `[fixturesBulk] enqueued ${BACKFILL_PASSES} odds backfill passes (horizon=${oddsHorizonDays}d, max=${BACKFILL_MAX_FIXTURES}/pass)`,
+        );
+      }
     } catch (err) {
       console.error(
         "[fixturesBulk] failed to enqueue odds backfill:",
