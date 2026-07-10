@@ -5,12 +5,29 @@ import { resolvePrematchOdds } from "./resolveOdds.js";
 import { getOddsTolerance } from "./tolerance.js";
 import { writeFreezeSnapshot } from "./freeze.js";
 import { recordValidationMetric } from "../../lib/validationMetrics.js";
+import { perfTimed } from "../../lib/perfTiming.js";
 
 function hasBlockingState(row) {
   const state = String(row.marketState || "").toUpperCase();
   if (state === "LOCKED") return "market_locked";
   if (state === "SUSPENDED" || state === "CLOSED") return "market_suspended";
   return null;
+}
+
+function blockMetricCode(row, clientCode) {
+  if (!row.serverLive) return clientCode;
+  switch (row.marketStateReason) {
+    case "no_live_source":
+      return "live_no_live_source";
+    case "event_locked":
+      return "live_event_locked";
+    case "locked":
+      return "live_locked";
+    case "ended":
+      return "live_ended";
+    default:
+      return clientCode;
+  }
 }
 
 export async function validatePlacementSelections({
@@ -38,9 +55,13 @@ export async function validatePlacementSelections({
     };
   }
 
-  const resolved = live
-    ? await resolveLiveOdds({ prismaClient, selections, now })
-    : await resolvePrematchOdds({ prismaClient, selections, now });
+  const resolved = await perfTimed(
+    live ? "validate.resolveLiveOdds" : "validate.resolvePrematchOdds",
+    () =>
+      live
+        ? resolveLiveOdds({ prismaClient, selections, now })
+        : resolvePrematchOdds({ prismaClient, selections, now }),
+  );
 
   for (const row of resolved) {
     if (row.code === "unknown_fixture") {
@@ -71,7 +92,7 @@ export async function validatePlacementSelections({
     if (blockedCode) {
       recordValidationMetric({
         channel: live ? "live" : "prematch",
-        code: blockedCode,
+        code: blockMetricCode(row, blockedCode),
         latencyMs: Date.now() - startedAt,
       });
       return {
@@ -86,13 +107,14 @@ export async function validatePlacementSelections({
     live,
     selectionsCount: selections.length,
   });
-  const driftResult = live
-    ? { oddsChanges: [], versionChanges: [] }
-    : compareOddsDrift({
+  const driftableResolved = resolved.filter((row) => !row.serverLive);
+  const driftResult = driftableResolved.length
+    ? compareOddsDrift({
         selections,
-        resolved,
+        resolved: driftableResolved,
         tolerance,
-      });
+      })
+    : { oddsChanges: [], versionChanges: [] };
   const oddsDrift = driftResult.oddsChanges || [];
   const versionDrift = driftResult.versionChanges || [];
 

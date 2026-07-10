@@ -14,6 +14,7 @@ export const QUEUE_NAMES = {
   LIVE: "sync-live",
   LEAGUES_META: "sync-leagues-meta",
   SETTLEMENT_RETRY: "settlement-retry",
+  HOLD_REAPER: "hold-reaper",
 };
 
 export const REPEATABLE_JOB_NAMES = {
@@ -24,6 +25,7 @@ export const REPEATABLE_JOB_NAMES = {
   LIVE_TICK: "live:tick",
   LEAGUES_META: "leagues:meta",
   SETTLEMENT_RETRY: "settlement:retry",
+  HOLD_REAPER_TICK: "hold-reaper:tick",
 };
 
 const DEFAULT_JOB_OPTIONS = {

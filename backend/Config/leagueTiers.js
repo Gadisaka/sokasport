@@ -1,19 +1,22 @@
 import { getLeagueTierMap } from "./ingestionConfig.js";
+import { getLeagueRank } from "./leagueRanks.js";
 
 const DEFAULT_TIER = 1;
 
 /**
- * Tier for prioritizing odds sync (0 = elite). Unlisted allowed leagues use DEFAULT_TIER.
- * Disallowed leagues are never queried — callers may pass null api_league_id → DEFAULT_TIER.
+ * Tier for prioritizing odds sync (0 = elite). When LEAGUE_TIERS_JSON is unset,
+ * league rank from leagueRanks.js is used as the tier (lower rank = higher priority).
  */
 export function getLeagueTier(apiLeagueId) {
   if (apiLeagueId == null || !Number.isFinite(Number(apiLeagueId))) {
     return DEFAULT_TIER;
   }
   const map = getLeagueTierMap();
-  if (!map.size) return DEFAULT_TIER;
-  const t = map.get(Number(apiLeagueId));
-  return Number.isFinite(t) ? t : DEFAULT_TIER;
+  if (map.size) {
+    const t = map.get(Number(apiLeagueId));
+    return Number.isFinite(t) ? t : DEFAULT_TIER;
+  }
+  return getLeagueRank(Number(apiLeagueId));
 }
 
 /**

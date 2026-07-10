@@ -154,6 +154,10 @@ export function mapFixtureToMatch(fixture, oddsPayload = null) {
   return {
     id: `fx-${fixture.api_fixture_id}`,
     apiFixtureId: fixture.api_fixture_id,
+    apiLeagueId: fixture?.league?.api_league_id ?? null,
+    leagueRank: Number.isFinite(Number(fixture?.league?.rank))
+      ? Number(fixture.league.rank)
+      : 9999,
     league: `${country} - ${leagueName}`,
     match: `${home} V ${away}`,
     date: formatDateForUi(fixture.start_time),
@@ -205,6 +209,8 @@ export function applyOddsToMatch(match, oddsPayload) {
         country_flag: match.countryFlag,
         logo: match.leagueLogo,
         sport: match.sportName || "Football",
+        api_league_id: match.apiLeagueId,
+        rank: match.leagueRank,
       },
       markets: oddsPayload.markets,
     },

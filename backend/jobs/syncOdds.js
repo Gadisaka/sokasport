@@ -19,6 +19,7 @@ import {
   getOddsNearPriorityDays,
   getOddsNearPriorityEndUtc,
 } from "../Config/ingestionConfig.js";
+import { refreshFixturesByDateCaches } from "../services/fixturesListService.js";
 import { sortFixturesForOddsIngest } from "../Config/leagueTiers.js";
 import { recomputeExtraMarketsCountForFixture } from "../services/extraMarketsCount.js";
 
@@ -369,13 +370,31 @@ export default async function syncOdds(options = {}) {
       await sleep(ODDS_CALL_DELAY_MS);
     }
 
-    // Invalidate public caches so fresh DB state is served
+    // Keep public list caches warm only when odds actually changed.
+    // Rebuilding every 2 minutes with 0 upserts was saturating Mongo and
+    // making even cache-hit /fixtures requests wait on the connection pool.
     await deleteByPattern("fixtures:today:*");
-    await deleteByPattern("fixtures:by-date:*");
     await deleteByPattern("fixtures:upcoming:*");
     await deleteByPattern("live:fixtures:*");
     if (total > 0) {
       await deleteByPattern("odds:fixture:*:bk-*");
+      try {
+        const refreshed = await refreshFixturesByDateCaches();
+        console.log(
+          `[syncOdds] fixtures by-date refreshed:`,
+          refreshed.map((r) => `${r.ymd}=${r.count ?? r.error}`).join(", "),
+        );
+      } catch (err) {
+        console.error(
+          "[syncOdds] fixtures by-date refresh failed:",
+          err?.message || err,
+        );
+        await deleteByPattern("fixtures:by-date:*");
+      }
+    } else {
+      console.log(
+        "[syncOdds] skip fixtures by-date refresh (no odds upserts)",
+      );
     }
 
     console.log(

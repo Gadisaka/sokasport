@@ -1,5 +1,6 @@
 import { resolveMarketState } from "./marketState.js";
 import { buildPrematchMarketVersion } from "./versioning.js";
+import { perfTimed } from "../../lib/perfTiming.js";
 
 function kickoffInPast(startTime, now = new Date()) {
   if (!startTime) return false;
@@ -160,6 +161,90 @@ function pickOddLineForSelection(fixtureLines, { valuesIn, marketNames }) {
   return highestOdd(valueMatches);
 }
 
+/**
+ * Group legs by DB fixture id so each fixture gets one tight markets+oddLines
+ * fetch (union of that fixture's market names and selection value candidates).
+ */
+function groupSelectionMetaByFixture(selectionMeta, fixtureByApiId) {
+  /** @type {Map<string, { fixtureId: string, marketNames: Set<string>, valuesIn: Set<string> }>} */
+  const groups = new Map();
+  for (const meta of selectionMeta) {
+    const fixture = fixtureByApiId.get(meta.sel.apiFixtureId);
+    if (!fixture) continue;
+    let group = groups.get(fixture.id);
+    if (!group) {
+      group = {
+        fixtureId: fixture.id,
+        marketNames: new Set(),
+        valuesIn: new Set(),
+      };
+      groups.set(fixture.id, group);
+    }
+    for (const name of meta.marketNames) group.marketNames.add(name);
+    for (const value of meta.valuesIn) group.valuesIn.add(value);
+  }
+  return [...groups.values()].map((group) => ({
+    fixtureId: group.fixtureId,
+    marketNames: [...group.marketNames],
+    valuesIn: [...group.valuesIn],
+  }));
+}
+
+const oddLineSelect = {
+  odd: true,
+  value: true,
+  market: { select: { name: true, fixture_id: true } },
+  bookmaker: { select: { api_bookmaker_id: true } },
+};
+
+async function fetchOddLinesForOneFixture(
+  prismaClient,
+  { fixtureId, marketNames, valuesIn },
+) {
+  if (!marketNames.length || !valuesIn.length) return [];
+
+  const markets = await prismaClient.fixtureMarket.findMany({
+    where: {
+      fixture_id: fixtureId,
+      name: { in: marketNames },
+    },
+    select: { id: true, name: true, fixture_id: true },
+  });
+  const marketIds = markets.map((m) => m.id);
+  if (!marketIds.length) return [];
+
+  return prismaClient.fixtureOddLine.findMany({
+    where: {
+      market_id: { in: marketIds },
+      value: { in: valuesIn },
+    },
+    select: oddLineSelect,
+  });
+}
+
+async function fetchOddLinesForSelections(
+  prismaClient,
+  selectionMeta,
+  fixtureByApiId,
+) {
+  const groups = groupSelectionMetaByFixture(selectionMeta, fixtureByApiId);
+  if (!groups.length) return [];
+
+  if (groups.length === 1) {
+    const lines = await perfTimed("resolve.prematch.fixtureOddLines", () =>
+      fetchOddLinesForOneFixture(prismaClient, groups[0]),
+    );
+    return lines;
+  }
+
+  const chunks = await perfTimed("resolve.prematch.fixtureOddLines", () =>
+    Promise.all(
+      groups.map((group) => fetchOddLinesForOneFixture(prismaClient, group)),
+    ),
+  );
+  return chunks.flat();
+}
+
 export async function resolvePrematchOdds({
   prismaClient,
   selections = [],
@@ -168,20 +253,22 @@ export async function resolvePrematchOdds({
   const fixtureIds = [
     ...new Set(selections.map((s) => s.apiFixtureId).filter(Boolean)),
   ];
-  const fixtures = await prismaClient.fixture.findMany({
-    where: { api_fixture_id: { in: fixtureIds } },
-    select: {
-      id: true,
-      api_fixture_id: true,
-      status: true,
-      start_time: true,
-    },
-  });
+  const fixtures = await perfTimed("resolve.prematch.fixtures", () =>
+    prismaClient.fixture.findMany({
+      where: { api_fixture_id: { in: fixtureIds } },
+      select: {
+        id: true,
+        api_fixture_id: true,
+        status: true,
+        start_time: true,
+      },
+    }),
+  );
   const fixtureByApiId = new Map(fixtures.map((f) => [f.api_fixture_id, f]));
 
   // Pre-compute each leg's candidate values/market names once, then resolve
-  // every odd line for the whole slip in a SINGLE batched query instead of
-  // 1-2 queries per leg (the old N+1). Lines are matched in memory per leg.
+  // odd lines per fixture (parallel for multi-leg accas) with tight market
+  // name filters — not every market on every fixture in the slip.
   const selectionMeta = selections.map((sel) => ({
     sel,
     valuesIn: buildSelectionCandidates({
@@ -195,24 +282,11 @@ export async function resolvePrematchOdds({
     }),
   }));
 
-  const dbFixtureIds = [...new Set(fixtures.map((f) => f.id))];
-  const allValues = [...new Set(selectionMeta.flatMap((m) => m.valuesIn))];
-
-  let oddLines = [];
-  if (dbFixtureIds.length > 0 && allValues.length > 0) {
-    oddLines = await prismaClient.fixtureOddLine.findMany({
-      where: {
-        value: { in: allValues },
-        market: { fixture_id: { in: dbFixtureIds } },
-      },
-      select: {
-        odd: true,
-        value: true,
-        market: { select: { name: true, fixture_id: true } },
-        bookmaker: { select: { api_bookmaker_id: true } },
-      },
-    });
-  }
+  const oddLines = await fetchOddLinesForSelections(
+    prismaClient,
+    selectionMeta,
+    fixtureByApiId,
+  );
 
   const linesByFixtureId = new Map();
   for (const line of oddLines) {

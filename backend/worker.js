@@ -14,6 +14,7 @@ import { processOdds } from "./queues/processors/odds.js";
 import { processLive } from "./queues/processors/live.js";
 import { processLeaguesMeta } from "./queues/processors/leaguesMeta.js";
 import { processSettlementRetry } from "./queues/processors/settlementRetry.js";
+import { processHoldReaper } from "./queues/processors/holdReaper.js";
 
 /**
  * Worker process entry point.
@@ -33,6 +34,7 @@ const PROCESSOR_REGISTRY = {
   [QUEUE_NAMES.LIVE]: processLive,
   [QUEUE_NAMES.LEAGUES_META]: processLeaguesMeta,
   [QUEUE_NAMES.SETTLEMENT_RETRY]: processSettlementRetry,
+  [QUEUE_NAMES.HOLD_REAPER]: processHoldReaper,
 };
 
 const workers = [];

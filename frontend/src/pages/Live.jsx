@@ -841,6 +841,7 @@ function Live() {
     () => ({
       regionGroups,
       countryGroups,
+      catalogItems,
       allLeaguesId: "all-leagues",
       totalLeagueCount,
       selectedLeagueId,
@@ -849,7 +850,7 @@ function Live() {
       onTimeChange: () => {},
       timeOptions: [],
     }),
-    [regionGroups, countryGroups, totalLeagueCount, selectedLeagueId],
+    [regionGroups, countryGroups, catalogItems, totalLeagueCount, selectedLeagueId],
   );
 
   return (

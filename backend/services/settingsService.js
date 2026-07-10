@@ -14,7 +14,13 @@ import {
 
 export const PREFERRED_BOOKMAKER_SETTING_KEY = "PREFERRED_BOOKMAKER_API_ID";
 const PREFERRED_BOOKMAKER_CACHE_KEY = "settings:preferred_bookmaker";
+const PREFERRED_BOOKMAKER_RECORD_CACHE_PREFIX =
+  "settings:preferred_bookmaker_row:";
 const PREFERRED_BOOKMAKER_CACHE_TTL = 60;
+const PREFERRED_RECORD_MEMORY_MS = 15_000;
+
+/** Process-local cache so hot /fixtures hits avoid Mongo under worker load. */
+let preferredRecordMemory = { at: 0, apiId: undefined, record: undefined };
 
 function parseStoredBookmakerId(raw) {
   if (raw == null || raw === "") return null;
@@ -52,13 +58,33 @@ export async function getPreferredBookmakerApiId() {
  * Resolve the internal Prisma bookmaker row for the preferred api id.
  * Returns `null` when unset OR when the bookmaker has not yet been seen
  * (we can't filter odds by an unknown bookmaker — fall back to "all").
+ * Cached in memory + Redis so public list endpoints stay off Mongo.
  */
 export async function getPreferredBookmakerRecord() {
   const apiId = await getPreferredBookmakerApiId();
   if (apiId == null) return null;
-  return prisma.bookmaker.findUnique({
-    where: { api_bookmaker_id: apiId },
-  });
+
+  const now = Date.now();
+  if (
+    preferredRecordMemory.apiId === apiId &&
+    now - preferredRecordMemory.at < PREFERRED_RECORD_MEMORY_MS
+  ) {
+    return preferredRecordMemory.record;
+  }
+
+  const rowKey = `${PREFERRED_BOOKMAKER_RECORD_CACHE_PREFIX}${apiId}`;
+  let row = await getCache(rowKey);
+  if (row == null) {
+    row = await prisma.bookmaker.findUnique({
+      where: { api_bookmaker_id: apiId },
+    });
+    if (row) {
+      await setCache(rowKey, row, PREFERRED_BOOKMAKER_CACHE_TTL);
+    }
+  }
+
+  preferredRecordMemory = { at: now, apiId, record: row ?? null };
+  return row ?? null;
 }
 
 /**
@@ -87,6 +113,8 @@ export async function setPreferredBookmakerApiId(apiId) {
   }
 
   await deleteCache(PREFERRED_BOOKMAKER_CACHE_KEY);
+  await deleteByPattern(`${PREFERRED_BOOKMAKER_RECORD_CACHE_PREFIX}*`);
+  preferredRecordMemory = { at: 0, apiId: undefined, record: undefined };
   await deleteByPattern("fixtures:today:*");
   await deleteByPattern("fixtures:by-date:*");
   await deleteByPattern("fixtures:upcoming:*");

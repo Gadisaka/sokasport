@@ -7,8 +7,20 @@ export function kickoffMs(match) {
   return Number.isFinite(ts) ? ts : Infinity;
 }
 
-export function leagueRank(leagueKey) {
-  const o = getTopLeagueOrder(leagueKey);
+/** Prefer API league.rank; fall back to client topLeagues matchers. */
+export function leagueRank(leagueKeyOrMatch) {
+  if (
+    leagueKeyOrMatch &&
+    typeof leagueKeyOrMatch === "object" &&
+    Number.isFinite(Number(leagueKeyOrMatch.leagueRank))
+  ) {
+    return Number(leagueKeyOrMatch.leagueRank);
+  }
+  const key =
+    typeof leagueKeyOrMatch === "string"
+      ? leagueKeyOrMatch
+      : leagueKeyOrMatch?.league;
+  const o = getTopLeagueOrder(key);
   return o === null ? NON_TOP_RANK : o;
 }
 
@@ -28,9 +40,15 @@ function earliestKickMs(leagueMatches) {
   return min;
 }
 
+function groupLeagueRank(leagueMatches, leagueKey) {
+  const fromApi = leagueMatches[0]?.leagueRank;
+  if (Number.isFinite(Number(fromApi))) return Number(fromApi);
+  return leagueRank(leagueKey);
+}
+
 export function compareLeagueGroups(la, ma, lb, mb) {
-  const ra = leagueRank(la);
-  const rb = leagueRank(lb);
+  const ra = groupLeagueRank(ma, la);
+  const rb = groupLeagueRank(mb, lb);
   if (ra !== rb) return ra - rb;
   const ka = earliestKickMs(ma);
   const kb = earliestKickMs(mb);
@@ -38,15 +56,15 @@ export function compareLeagueGroups(la, ma, lb, mb) {
   return String(la).localeCompare(String(lb));
 }
 
-/** Flat list: pinned leagues first (in top order), then all others by kickoff time. */
+/** Flat list: ranked leagues first, then kickoff within league. */
 export function compareMatchesForDisplay(a, b) {
-  const ra = leagueRank(a?.league);
-  const rb = leagueRank(b?.league);
+  const ra = leagueRank(a);
+  const rb = leagueRank(b);
   if (ra !== rb) return ra - rb;
 
   const la = String(a?.league ?? "");
   const lb = String(b?.league ?? "");
-  if (la !== lb && ra < NON_TOP_RANK) {
+  if (la !== lb) {
     return la.localeCompare(lb);
   }
 
@@ -57,7 +75,7 @@ export function sortMatchesForDisplay(matches) {
   return [...(matches || [])].sort(compareMatchesForDisplay);
 }
 
-/** Group by league; top leagues pinned on top; fixtures sorted by kickoff inside each league. */
+/** Group by league; sort groups by API leagueRank then kickoff inside each. */
 export function groupMatchesByLeague(matches) {
   const groups = new Map();
   for (const match of matches || []) {

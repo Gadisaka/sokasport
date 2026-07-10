@@ -34,6 +34,7 @@ const REGION_ICONS = {
 function TopLeaguesSidebar({
   regionGroups = [],
   countryGroups = [],
+  catalogItems = [],
   allLeaguesId = "all-leagues",
   totalLeagueCount,
   selectedLeagueId,
@@ -54,8 +55,37 @@ function TopLeaguesSidebar({
   const searchRef = useRef(null);
 
   const { topLeagueItems, topIdsSet } = useMemo(() => {
-    const items = collectLeagueItems(regionGroups, countryGroups);
-    const tops = items
+    const allItems = collectLeagueItems(regionGroups, countryGroups);
+    const countById = new Map(allItems.map((item) => [item.id, item.count]));
+
+    const hasApiSections = catalogItems.some((item) => item.section === "top");
+    if (hasApiSections) {
+      const tops = catalogItems
+        .filter((item) => item.section === "top")
+        .map((item) => {
+          const id = String(item.id || "").trim();
+          const sep = id.indexOf(" - ");
+          const labelFromId = sep === -1 ? id : id.slice(sep + 3);
+          return {
+            id,
+            label: String(item.label || "").trim() || labelFromId,
+            count: countById.get(id) || 0,
+            leagueLogo: item.leagueLogo ?? null,
+            countryFlag: item.countryFlag ?? null,
+            rank: Number(item.rank) || 9999,
+          };
+        })
+        .sort(
+          (a, b) =>
+            a.rank - b.rank || String(a.label).localeCompare(String(b.label)),
+        );
+      return {
+        topLeagueItems: tops,
+        topIdsSet: new Set(tops.map((l) => l.id)),
+      };
+    }
+
+    const tops = allItems
       .map((item) => ({ item, order: getTopLeagueOrder(item.id) }))
       .filter((x) => x.order !== null)
       .sort(
@@ -68,7 +98,7 @@ function TopLeaguesSidebar({
       topLeagueItems: ordered,
       topIdsSet: new Set(ordered.map((l) => l.id)),
     };
-  }, [regionGroups, countryGroups]);
+  }, [catalogItems, regionGroups, countryGroups]);
 
   const expandedInitializedRef = useRef(false);
 

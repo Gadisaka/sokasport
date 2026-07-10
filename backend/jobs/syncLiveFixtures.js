@@ -2,13 +2,15 @@ import prisma from "../Config/db.js";
 import { upsertNoTx } from "../utils/upsertNoTx.js";
 import { api } from "../services/apiSportsService.js";
 import { deleteByPattern, getRedisClient } from "../services/cacheService.js";
+import { refreshFixturesByDateCaches } from "../services/fixturesListService.js";
 import { parseMarkets } from "../utils/oddsParser.js";
 import { getEnabledSports } from "../services/sportsRegistry.js";
 import { getPreferredBookmakerApiId } from "../services/settingsService.js";
 import { buildOddsParseOptions } from "../Config/oddsFilters.js";
 import { recomputeExtraMarketsCountForFixture } from "../services/extraMarketsCount.js";
 import { publishMarketEvent } from "../lib/socketHub.js";
-import { isFixtureResultLocked } from "../lib/fixtureResultLock.js";
+import { isFixtureResultLocked, buildFixtureSyncData } from "../lib/fixtureResultLock.js";
+import { resolveFixtureScores } from "./lib/fixtureScores.js";
 import {
   writeLiveOddsSnapshot,
   LIVE_ODDS_SNAPSHOT_TTL_SECONDS,
@@ -117,7 +119,6 @@ export default async function syncLiveFixtures() {
 
       for (const entry of liveData) {
         const f = entry.fixture ?? entry;
-        const goals = entry.goals ?? entry.scores ?? {};
         if (!f?.id) continue;
 
         const existing = await prisma.fixture.findUnique({
@@ -128,8 +129,12 @@ export default async function syncLiveFixtures() {
         if (existing.league?.sport?.slug !== sportSlug) continue;
 
         const status = STATUS_MAP[f.status?.short] ?? "LIVE";
-        const homeScore = goals?.home ?? null;
-        const awayScore = goals?.away ?? null;
+        // Terminal fixtures persist the 90' regulation score; live fixtures keep
+        // the running `goals` so the in-play score stays correct.
+        const { homeScore, awayScore, etHome, etAway, penHome, penAway } =
+          resolveFixtureScores(entry, {
+            preferFullTime: isTerminalFixtureStatus(status),
+          });
         const scoreChanged =
           existing.home_score !== homeScore ||
           existing.away_score !== awayScore;
@@ -152,16 +157,22 @@ export default async function syncLiveFixtures() {
         // every ~30s; without this guard each tick rewrites every in-play
         // fixture even when scores/status are identical.
         if (scoreChanged || statusChanged) {
-          if (!isFixtureResultLocked(existing)) {
-            await prisma.fixture.update({
-              where: { api_fixture_id: f.id },
-              data: {
-                status,
-                home_score: homeScore,
-                away_score: awayScore,
-              },
-            });
-          }
+          await prisma.fixture.update({
+            where: { api_fixture_id: f.id },
+            data: buildFixtureSyncData(existing, {
+              start_time: existing.start_time,
+              status,
+              home_score: homeScore,
+              away_score: awayScore,
+              et_home_score: etHome,
+              et_away_score: etAway,
+              pen_home_score: penHome,
+              pen_away_score: penAway,
+              league_id: existing.league_id,
+              home_team_id: existing.home_team_id,
+              away_team_id: existing.away_team_id,
+            }),
+          });
         }
 
         // Trigger settlement when fixture transitions to terminal status (PEN).
@@ -276,11 +287,18 @@ export default async function syncLiveFixtures() {
     }
 
     if (updated > 0) {
-      // Blow away the bookmaker-namespaced public caches so the next request
-      // rebuilds with the new scores / odds.
+      // Blow away live/today caches; rebuild by-date so home stays warm.
       await deleteByPattern("live:fixtures:*");
       await deleteByPattern("fixtures:today:*");
-      await deleteByPattern("fixtures:by-date:*");
+      try {
+        await refreshFixturesByDateCaches();
+      } catch (err) {
+        console.error(
+          "[syncLive] fixtures by-date refresh failed:",
+          err?.message || err,
+        );
+        await deleteByPattern("fixtures:by-date:*");
+      }
     }
   } catch (err) {
     console.error("[syncLive] error:", err);

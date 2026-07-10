@@ -137,6 +137,37 @@ test("null fixture returns PENDING placeholder", () => {
   assert.equal(mr.source, "FIXTURE");
 });
 
+test("AET fixture: ET goals excluded from consistency check → stays FINAL on 90' score", () => {
+  // 1-1 at 90', 2-1 after extra time. `scores.fullTime` holds the 90' regulation
+  // score (1-1) — Match Winner settles as a draw. The ET goal (period 2ET) must
+  // NOT count toward the regulation tally, otherwise the fixture would mismatch
+  // (2 regulation goals vs a 1-1 score) and get stranded.
+  const mr = buildMatchResultV2FromFixture(
+    {
+      id: "fx-aet",
+      status: "AET",
+      home_score: 1,
+      away_score: 1,
+      et_home_score: 2,
+      et_away_score: 1,
+    },
+    {
+      events: [
+        { type: "GOAL", minute: 30, period: "1H", team: "HOME", scorer: { id: "p1" }, flags: {} },
+        { type: "GOAL", minute: 80, period: "2H", team: "AWAY", scorer: { id: "p2" }, flags: {} },
+        // extra-time winner — must be ignored by detectInconsistency
+        { type: "GOAL", minute: 115, period: "2ET", team: "HOME", scorer: { id: "p3" }, flags: {} },
+      ],
+    },
+  );
+  assert.equal(mr.finality, "FINAL");        // regulation tally 1-1 == score 1-1
+  assert.equal(mr.scores.fullTime.home, 1);  // 90' regulation score
+  assert.equal(mr.scores.fullTime.away, 1);
+  assert.equal(mr.scores.extraTime.home, 2); // ET preserved separately
+  assert.equal(mr.scores.extraTime.away, 1);
+  assert.equal(_internals.detectInconsistency(mr), null);
+});
+
 test("admin match FINISHED with result label → FINAL, resultLabel preserved", () => {
   const mr = buildMatchResultV2FromMatch({
     id: "m-1",

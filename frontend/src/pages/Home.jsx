@@ -77,6 +77,8 @@ function Home() {
     matches,
     allMatches,
     loading,
+    error,
+    refreshAll,
     hydrateMatchOdds,
     oddsDetailByFixtureId,
     resolvedTimeId,
@@ -349,6 +351,7 @@ function Home() {
     () => ({
       regionGroups,
       countryGroups,
+      catalogItems,
       allLeaguesId,
       totalLeagueCount,
       selectedLeagueId,
@@ -364,6 +367,7 @@ function Home() {
     [
       regionGroups,
       countryGroups,
+      catalogItems,
       allLeaguesId,
       totalLeagueCount,
       selectedLeagueId,
@@ -429,6 +433,24 @@ function Home() {
                 searchQuery={clubSearch}
                 onSearchChange={setClubSearch}
               />
+              {!loading && error ? (
+                <div
+                  className="mb-3 flex flex-col items-start gap-2 rounded-xl border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-50 sm:flex-row sm:items-center sm:justify-between"
+                  role="alert"
+                >
+                  <p>
+                    {error?.message ||
+                      "Couldn't load matches. Please try again."}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => refreshAll()}
+                    className="shrink-0 rounded-lg bg-[#019052] px-3 py-1.5 text-xs font-semibold text-white hover:brightness-110"
+                  >
+                    Retry
+                  </button>
+                </div>
+              ) : null}
               <MatchesTable
                 matches={matches}
                 onMatchClick={handleMatchClick}

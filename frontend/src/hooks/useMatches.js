@@ -13,7 +13,6 @@ import {
   parseUiDateToDate,
   utcTodayYmd,
 } from "../utils/matchTimeUtils";
-import { sortMatchesForDisplay } from "../utils/matchDisplaySort";
 import {
   buildSportsbookTimeOptions,
   calendarTimeIdToUtcDayOffset,
@@ -48,6 +47,12 @@ const PREMATCH_POLL_MS_RAW = Number.parseInt(
 const PREMATCH_POLL_MS = Number.isFinite(PREMATCH_POLL_MS_RAW)
   ? PREMATCH_POLL_MS_RAW
   : 90_000;
+
+/** Initial home-page fixtures fetch — never spin forever. */
+const INITIAL_FIXTURES_TIMEOUT_MS = Number.parseInt(
+  import.meta.env.VITE_FIXTURES_FETCH_TIMEOUT_MS || "15000",
+  10,
+) || 15_000;
 
 const UPCOMING_FRONTEND_BUFFER_MS = 5 * 60 * 1000;
 const UPCOMING_FIXTURES_DAYS = 14;
@@ -165,12 +170,12 @@ export function useMatches({ includeLive = true, filters = {} } = {}) {
     setError(null);
   }, []);
 
-  const loadDateImpl = useCallback(async (dateStr, { signal } = {}) => {
+  const loadDateImpl = useCallback(async (dateStr, { signal, timeoutMs } = {}) => {
     if (!USE_FIXTURES_BY_DATE) return;
     if (loadedDatesRef.current.has(dateStr)) return;
 
     try {
-      const rows = await fetchFixturesByDate(dateStr, { signal });
+      const rows = await fetchFixturesByDate(dateStr, { signal, timeoutMs });
       if (signal?.aborted) return;
       loadedDatesRef.current.add(dateStr);
       setFixturesMap((prev) => {
@@ -180,15 +185,24 @@ export function useMatches({ includeLive = true, filters = {} } = {}) {
       });
       setError(null);
     } catch (e) {
-      if (e?.name !== "AbortError") {
-        setError(e);
-        loadedDatesRef.current.add(dateStr);
-        setFixturesMap((prev) => {
-          const next = new Map(prev);
-          if (!next.has(dateStr)) next.set(dateStr, []);
-          return next;
-        });
-      }
+      // External abort (unmount / refresh) — ignore. Timeout / network — surface.
+      if (signal?.aborted && e?.name === "AbortError") return;
+      const timedOut =
+        e?.name === "TimeoutError" ||
+        String(e?.message || "").toLowerCase().includes("timed out");
+      if (e?.name === "AbortError" && !timedOut) return;
+
+      setError(
+        timedOut
+          ? new Error("Matches took too long to load. Please try again.")
+          : e,
+      );
+      loadedDatesRef.current.add(dateStr);
+      setFixturesMap((prev) => {
+        const next = new Map(prev);
+        if (!next.has(dateStr)) next.set(dateStr, []);
+        return next;
+      });
     }
   }, []);
 
@@ -212,11 +226,17 @@ export function useMatches({ includeLive = true, filters = {} } = {}) {
       if (USE_FIXTURES_BY_DATE) {
         loadedDatesRef.current.clear();
         setFixturesMap(new Map());
-        await loadDateImpl(utcTodayYmd(), { signal: ac.signal });
+        // Only block the home spinner on today's list. Other calendar days
+        // load lazily when the user changes the day filter (see effect below).
+        // Prefetching the full horizon here stampeded /fixtures?date= and
+        // kept loading=true for many seconds even after the API was fast.
+        await loadDateImpl(utcTodayYmd(), {
+          signal: ac.signal,
+          timeoutMs: INITIAL_FIXTURES_TIMEOUT_MS,
+        });
       } else {
         await refreshWindowLegacy(ac.signal);
       }
-      setError(null);
       refreshLive().catch(() => {});
     } catch (e) {
       if (e?.name !== "AbortError") setError(e);
@@ -322,7 +342,13 @@ export function useMatches({ includeLive = true, filters = {} } = {}) {
       byFixtureId.set(live.api_fixture_id, mapFixtureToMatch(live));
     }
 
-    return sortMatchesForDisplay(Array.from(byFixtureId.values()));
+    return Array.from(byFixtureId.values()).sort((a, b) => {
+      const dr = (a.leagueRank ?? 9999) - (b.leagueRank ?? 9999);
+      if (dr !== 0) return dr;
+      const ka = a.kickoffAt ? new Date(a.kickoffAt).getTime() : 0;
+      const kb = b.kickoffAt ? new Date(b.kickoffAt).getTime() : 0;
+      return ka - kb || Number(a.apiFixtureId) - Number(b.apiFixtureId);
+    });
   }, [flatPrematchFixtures, liveFixtures]);
 
   const hydrateMatchOdds = useCallback(async (apiFixtureId) => {

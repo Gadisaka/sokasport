@@ -3,10 +3,10 @@ import {
   cancelTicket,
   confirmPrintTicket,
   preparePrintTicket,
-  validatePrintTicket,
   createTicket,
   getTicketById,
   getTicketByReceipt,
+  getTicketByCoupon,
   getTicketSellBlocking,
   listTickets,
   payoutTicket,
@@ -28,6 +28,11 @@ router.get(
   "/by-receipt",
   authorizePermission("tickets:read"),
   getTicketByReceipt,
+);
+router.get(
+  "/by-coupon",
+  authorizePermission("tickets:read"),
+  getTicketByCoupon,
 );
 router.get("/:id", authorizePermission("tickets:read"), getTicketById);
 router.get(
@@ -52,12 +57,6 @@ router.post(
   authorizePermission("tickets:create"),
   createSportsbookRateLimiter("cashier_confirm_print"),
   preparePrintTicket,
-);
-router.post(
-  "/:id/validate-print",
-  authorizePermission("tickets:create"),
-  createSportsbookRateLimiter("cashier_confirm_print"),
-  validatePrintTicket,
 );
 router.patch(
   "/:id/confirm-print",

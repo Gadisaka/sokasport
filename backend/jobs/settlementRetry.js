@@ -31,6 +31,7 @@ import { api, sleep } from "../services/apiSportsService.js";
 import { settleFixture } from "../services/ticketSettlementService.js";
 import { enrichFixtureResult } from "./enrichFixtureResult.js";
 import { STATUS_MAP } from "./syncFixtures.js";
+import { resolveFixtureScores } from "./lib/fixtureScores.js";
 import {
   buildFixtureSyncData,
   isFixtureResultLocked,
@@ -217,16 +218,25 @@ async function rescueZombieFixtures(now, minStart) {
       }
 
       const f = entry.fixture ?? entry;
-      const goals = entry.goals ?? entry.scores ?? {};
       const status = STATUS_MAP[f?.status?.short] ?? fx.status;
+      // Terminal fixtures persist the 90' regulation score (`score.fulltime`)
+      // so Match Winner et al. settle on regulation, not the ET-inclusive total.
+      const { homeScore, awayScore, etHome, etAway, penHome, penAway } =
+        resolveFixtureScores(entry, {
+          preferFullTime: TERMINAL_STATUSES.includes(status),
+        });
 
       const incoming = {
         start_time: f?.date ? new Date(f.date) : fx.start_time,
         status,
-        home_score: goals?.home ?? null,
-        away_score: goals?.away ?? null,
+        home_score: homeScore,
+        away_score: awayScore,
         ht_home_score: entry?.score?.halftime?.home ?? null,
         ht_away_score: entry?.score?.halftime?.away ?? null,
+        et_home_score: etHome,
+        et_away_score: etAway,
+        pen_home_score: penHome,
+        pen_away_score: penAway,
         league_id: fx.league_id,
         home_team_id: fx.home_team_id,
         away_team_id: fx.away_team_id,

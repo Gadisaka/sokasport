@@ -5,7 +5,7 @@ import {
 } from "./leagueRegions";
 
 /**
- * @param {Array<{ id: string, label?: string, leagueLogo?: string|null, countryFlag?: string|null, pinned?: boolean }>} catalogItems
+ * @param {Array<{ id: string, label?: string, leagueLogo?: string|null, countryFlag?: string|null, pinned?: boolean, rank?: number, section?: string }>} catalogItems
  *   Ordered list from GET /api/football/sidebar-leagues (empty = fallback to counts-only).
  * @param {Map<string, number>} counts — league display key → match count from client data.
  * @param {Map<string, { leagueLogo?: string|null, countryFlag?: string|null }>} leagueMetaByKey
@@ -17,11 +17,34 @@ export function buildLeagueSidebarGroups(
 ) {
   const leagueItems = [];
   const seen = new Set();
+  const rankById = new Map();
+  const topSectionIds = new Set();
+
+  if (catalogItems?.length) {
+    for (const item of catalogItems) {
+      const id = String(item.id || "").trim();
+      if (!id) continue;
+      if (Number.isFinite(Number(item.rank))) {
+        rankById.set(id, Number(item.rank));
+      }
+      if (item.section === "top") topSectionIds.add(id);
+    }
+  }
+
+  function compareLeagues(a, b) {
+    const rankA = rankById.get(a.id);
+    const rankB = rankById.get(b.id);
+    if (rankA != null && rankB != null && rankA !== rankB) return rankA - rankB;
+    if (rankA != null && rankB == null) return -1;
+    if (rankA == null && rankB != null) return 1;
+    return b.count - a.count || a.label.localeCompare(b.label);
+  }
 
   if (catalogItems?.length) {
     for (const item of catalogItems) {
       const id = String(item.id || "").trim();
       if (!id || seen.has(id)) continue;
+      if (item.section === "top") continue;
       seen.add(id);
       const meta = leagueMetaByKey.get(id) || {};
       const count = counts.get(id) || 0;
@@ -54,7 +77,7 @@ export function buildLeagueSidebarGroups(
 
   if (catalogItems?.length) {
     for (const [id, count] of counts) {
-      if (!id || seen.has(id)) continue;
+      if (!id || seen.has(id) || topSectionIds.has(id)) continue;
       seen.add(id);
       const sep = id.indexOf(" - ");
       const label = sep === -1 ? id : id.slice(sep + 3);
@@ -92,9 +115,7 @@ export function buildLeagueSidebarGroups(
     return {
       region,
       label: REGION_LABELS[region],
-      leagues: leagues.sort(
-        (a, b) => b.count - a.count || a.label.localeCompare(b.label),
-      ),
+      leagues: leagues.sort(compareLeagues),
       matchCount: leagues.reduce((sum, l) => sum + l.count, 0),
     };
   });
@@ -103,9 +124,7 @@ export function buildLeagueSidebarGroups(
     .map(([country, leagues]) => ({
       country,
       countryFlag: leagues.find((l) => l.countryFlag)?.countryFlag ?? null,
-      leagues: leagues.sort(
-        (a, b) => b.count - a.count || a.label.localeCompare(b.label),
-      ),
+      leagues: leagues.sort(compareLeagues),
       matchCount: leagues.reduce((sum, l) => sum + l.count, 0),
     }))
     .sort(
@@ -177,7 +196,7 @@ export function buildLeagueTabOptions({
       count,
       logo: leagueMetaByKey.get(league)?.leagueLogo || null,
       countryFlag: leagueMetaByKey.get(league)?.countryFlag || null,
-   }))
+    }))
     .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
 
   return [head, ...dynamic];

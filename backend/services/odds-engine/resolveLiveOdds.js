@@ -4,9 +4,43 @@ import {
   buildSelectionCandidates,
   resolvePrematchOdds,
 } from "./resolveOdds.js";
-import { resolveMarketState } from "./marketState.js";
+import { resolveLiveLegState } from "./marketState.js";
+import { readFixtureLockRemainingMs } from "./liveFixtureLock.js";
 import { api } from "../apiSportsService.js";
-import { writeLiveOddsSnapshot } from "../liveOddsCache.js";
+import {
+  writeLiveOddsSnapshot,
+  LIVE_ODDS_SNAPSHOT_TTL_SECONDS,
+} from "../liveOddsCache.js";
+
+const LIVE_ODDS_MAX_AGE_MS = Number(process.env.LIVE_ODDS_MAX_AGE_MS || 15000);
+const SNAPSHOT_SKEW_TOLERANCE_MS = Number(
+  process.env.LIVE_ODDS_SKEW_TOLERANCE_MS || 3000,
+);
+
+if (
+  LIVE_ODDS_SNAPSHOT_TTL_SECONDS * 1000 <=
+  LIVE_ODDS_MAX_AGE_MS + SNAPSHOT_SKEW_TOLERANCE_MS
+) {
+  console.warn(
+    `[resolveLiveOdds] LIVE_ODDS_SNAPSHOT_TTL_SECONDS=${LIVE_ODDS_SNAPSHOT_TTL_SECONDS}s ` +
+      `is not comfortably above the freshness window ` +
+      `(${(LIVE_ODDS_MAX_AGE_MS + SNAPSHOT_SKEW_TOLERANCE_MS) / 1000}s) — ` +
+      `fresh snapshots may be evicted before they age out.`,
+  );
+}
+
+export function isSnapshotFresh(
+  updatedAtIso,
+  nowMs = Date.now(),
+  maxAgeMs = LIVE_ODDS_MAX_AGE_MS,
+) {
+  if (!updatedAtIso) return false;
+  const t = Date.parse(updatedAtIso);
+  if (!Number.isFinite(t)) return false;
+  const age = nowMs - t;
+  if (age < 0) return -age <= SNAPSHOT_SKEW_TOLERANCE_MS;
+  return age <= maxAgeMs;
+}
 
 function safeNumber(value) {
   if (value === null || value === undefined || value === "") return NaN;
@@ -98,14 +132,10 @@ export async function resolveLiveOdds({
 }) {
   const redis = getRedisClient();
 
-  // One HMGET per key (instead of one HGET per candidate field) and all
-  // selections flushed in a single pipeline round-trip (instead of dozens of
-  // sequential awaits) — then resolve the matched field in memory.
   const rows = selections.map((sel) => {
     const fields = buildLiveFieldCandidates(sel);
     return {
       sel,
-      // hmget needs at least one field; "__none__" never exists in the hash.
       fields: fields.length ? fields : ["__none__"],
       fieldCandidates: fields,
       oddsKey: `live-odds:${sel.apiFixtureId}`,
@@ -116,7 +146,6 @@ export async function resolveLiveOdds({
     };
   });
 
-  // Round 1: discover which field carries odds for each selection.
   let oddsExec = [];
   try {
     if (rows.length) {
@@ -135,7 +164,6 @@ export async function resolveLiveOdds({
     return { ...row, oddsValue: matched.value, lookupFields };
   });
 
-  // Round 2: read state/version/updatedAt/lockUntil for the matched field.
   let metaExec = [];
   try {
     if (staged.length) {
@@ -187,15 +215,14 @@ export async function resolveLiveOdds({
     };
   });
 
-  // API-Sports fetch fallback: for any selection that missed Redis, fetch the
-  // single-fixture live odds, persist to Redis, and extract the matched odd.
-  // Fetches run in parallel (one per missed fixture), so this adds at most one
-  // upstream round-trip regardless of leg count.
   const missedFixtureIds = new Set();
   const selectionsByFixture = new Map();
   for (let i = 0; i < liveRows.length; i++) {
     const row = liveRows[i];
-    const hasRedis = Number.isFinite(row.redisOdds) && row.redisOdds > 1;
+    const hasRedis =
+      Number.isFinite(row.redisOdds) &&
+      row.redisOdds > 1 &&
+      isSnapshotFresh(row.redisUpdatedAt);
     if (!hasRedis && Number.isFinite(row.apiFixtureId)) {
       missedFixtureIds.add(row.apiFixtureId);
       if (!selectionsByFixture.has(row.apiFixtureId)) {
@@ -248,29 +275,80 @@ export async function resolveLiveOdds({
     now,
   });
 
+  const fixtureLockMs = await readFixtureLockRemainingMs(
+    redis,
+    selections.map((sel) => sel.apiFixtureId),
+  );
+
   return fallback.map((row) => {
     const redisRow = redisByIndex.get(row.index);
-    const hasRedis =
-      Number.isFinite(redisRow?.redisOdds) && redisRow.redisOdds > 1;
+    const hasLiveOdds =
+      Number.isFinite(redisRow?.redisOdds) &&
+      redisRow.redisOdds > 1 &&
+      isSnapshotFresh(redisRow?.redisUpdatedAt);
     const hasDbFallback =
       Number.isFinite(row.serverOdds) && row.serverOdds > 1;
-    const serverOdds = hasRedis
-      ? redisRow.redisOdds
+    const lockRemainingMs = Math.max(
+      0,
+      Number(redisRow?.lockRemainingMs || 0),
+    );
+    const apiFixtureId = Number(row.apiFixtureId ?? redisRow?.apiFixtureId);
+    const fixtureLockRemainingMs = Math.max(
+      0,
+      Number(fixtureLockMs.get(apiFixtureId) || 0),
+    );
+
+    const { marketState, serverLive } = resolveLiveLegState({
+      fixtureStatus: row.fixtureStatus,
+      started: row.started,
+      hasLiveOdds,
+      hasDbFallback,
+      redisState: redisRow?.redisState || null,
+      lockRemainingMs,
+      fixtureLockRemainingMs,
+    });
+
+    const serverOdds = serverLive
+      ? hasLiveOdds
+        ? redisRow.redisOdds
+        : NaN
       : hasDbFallback
         ? row.serverOdds
-        : NaN;
-    const source = hasRedis
-      ? redisRow.source || "REDIS_LIVE"
-      : "DB_FALLBACK";
+        : hasLiveOdds
+          ? redisRow.redisOdds
+          : NaN;
+
+    const source = serverLive
+      ? hasLiveOdds
+        ? redisRow.source || "REDIS_LIVE"
+        : "NO_LIVE_SOURCE"
+      : hasDbFallback
+        ? "DB_FALLBACK"
+        : hasLiveOdds
+          ? redisRow.source || "REDIS_LIVE"
+          : "NO_SOURCE";
+
+    const marketStateReason =
+      marketState === "OPEN"
+        ? "ok"
+        : fixtureLockRemainingMs > 0
+          ? "event_locked"
+          : marketState === "LOCKED"
+            ? "locked"
+            : serverLive && !hasLiveOdds
+              ? "no_live_source"
+              : marketState === "CLOSED"
+                ? "ended"
+                : "suspended";
+
     return {
       ...row,
+      serverLive,
       serverOdds,
-      marketState: resolveMarketState({
-        fixtureStatus: row.fixtureStatus,
-        hasOddLine: hasRedis || hasDbFallback,
-        operatorState: redisRow?.redisState || row.marketState,
-      }),
-      lockRemainingMs: Math.max(0, Number(redisRow?.lockRemainingMs || 0)),
+      marketState,
+      marketStateReason,
+      lockRemainingMs,
+      fixtureLockRemainingMs,
       serverMarketVersion: Number.isFinite(redisRow?.redisVersion)
         ? redisRow.redisVersion
         : row.serverMarketVersion || null,

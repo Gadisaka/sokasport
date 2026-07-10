@@ -1,5 +1,17 @@
 League and competition IDs below are **API-Football** ([api-sports.io](https://www.api-football.com/)) `league.id` values from the `/v3/leagues` endpoint (verified by fetching the catalogue). Where the API uses a different display name than the colloquial title, it is noted in parentheses.
 
+## Rank model (runtime)
+
+Ingestion and display no longer use a fixed allowlist alone:
+
+- **Full catalogue:** `Config/allLeaguesList.js` (1,232 IDs from API-Football).
+- **Priority ranks:** `Config/leagueRanks.js` (1 = highest). Ranks 1–8 = preferred top leagues; **9–10 = `PRODUCT_PRIORITY_LEAGUE_IDS` (Ethiopia)**; then legacy allowlist seed; then remainder of catalogue.
+- **Ingestion:** each bulk sync stores fixtures only for the **top 200 active leagues by rank** (`INGEST_ACTIVE_CAP`). Product-priority leagues are always included when active.
+- **Sidebar:** active leagues only — top section (`isTopLeague`) plus up to `SIDEBAR_ACTIVE_CAP` regional leagues under country tabs.
+- **Regenerate ranks:** `node backend/scripts/generateLeagueRanks.mjs` after editing the seed allowlist or refreshing `allLeaguesList.js`.
+
+The sections below document the original **seed allowlist**. See `allowedLeagues.js` for the source list.
+
 ### Europe (Top 5)
 
 - English Premier League — `39` (Premier League · England)

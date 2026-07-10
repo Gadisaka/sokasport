@@ -50,6 +50,7 @@ function isFrance(id) {
 
 const TOP_LEAGUE_MATCHERS = [
   (id) => isEthiopia(id) && /premier/i.test(lower(id)),
+  (id) => isEthiopia(id) && /cup/i.test(lower(id)),
   (id) =>
     isEngland(id) &&
     /premier\s*league/i.test(lower(id)) &&

@@ -2,8 +2,13 @@ import prisma from "../Config/db.js";
 import { upsertNoTx } from "../utils/upsertNoTx.js";
 import { api, sleep } from "../services/apiSportsService.js";
 import { deleteByPattern } from "../services/cacheService.js";
+import { refreshFixturesByDateCaches } from "../services/fixturesListService.js";
 import { getEnabledSports } from "../services/sportsRegistry.js";
-import { isAllowedLeague } from "../Config/allowedLeagues.js";
+import { PRODUCT_PRIORITY_LEAGUE_IDS } from "../Config/allowedLeagues.js";
+import {
+  getIngestActiveCap,
+  pickTopActiveLeagues,
+} from "../Config/leagueRanks.js";
 import { getFixturesDaysAhead } from "../Config/ingestionConfig.js";
 import {
   isTerminalFixtureStatus,
@@ -14,6 +19,7 @@ import {
   buildFixtureSyncData,
   fixtureSyncUnchanged,
 } from "../lib/fixtureResultLock.js";
+import { resolveFixtureScores } from "./lib/fixtureScores.js";
 
 /**
  * Bulk-by-date fixture ingestion.
@@ -188,11 +194,15 @@ async function upsertFixtureRow(entry, leagueId, homeTeamId, awayTeamId) {
   if (!f?.id)
     return { upserted: false, fixtureId: null, becameTerminal: false };
 
-  const goals = entry.goals ?? entry.scores ?? {};
   const status = STATUS_MAP[f.status?.short] ?? "NS";
   const startTime = new Date(f.date);
-  const homeScore = goals?.home ?? null;
-  const awayScore = goals?.away ?? null;
+  // For terminal fixtures, home/away score is the 90' regulation score
+  // (`score.fulltime`), NOT the ET-inclusive `goals` — so Match Winner and all
+  // other full-time markets settle on regulation. Live fixtures keep `goals`.
+  const { homeScore, awayScore, etHome, etAway, penHome, penAway } =
+    resolveFixtureScores(entry, {
+      preferFullTime: isTerminalFixtureStatus(status),
+    });
   // Half-time scores live under `score.halftime` in the API-Sports /fixtures
   // payload (separate from `goals`, which is the current/full-time score).
   // Required by HT markets (HALF_TIME_RESULT, HT_OVER_UNDER, HT_FT).
@@ -226,6 +236,10 @@ async function upsertFixtureRow(entry, leagueId, homeTeamId, awayTeamId) {
       away_score: awayScore,
       ht_home_score: htHomeScore,
       ht_away_score: htAwayScore,
+      et_home_score: etHome,
+      et_away_score: etAway,
+      pen_home_score: penHome,
+      pen_away_score: penAway,
       league_id: leagueId,
       home_team_id: homeTeamId,
       away_team_id: awayTeamId,
@@ -259,6 +273,10 @@ async function upsertFixtureRow(entry, leagueId, homeTeamId, awayTeamId) {
         away_score: awayScore,
         ht_home_score: htHomeScore,
         ht_away_score: htAwayScore,
+        et_home_score: etHome,
+        et_away_score: etAway,
+        pen_home_score: penHome,
+        pen_away_score: penAway,
         league_id: leagueId,
         home_team_id: homeTeamId,
         away_team_id: awayTeamId,
@@ -285,6 +303,10 @@ async function upsertFixtureRow(entry, leagueId, homeTeamId, awayTeamId) {
       away_score: awayScore,
       ht_home_score: htHomeScore,
       ht_away_score: htAwayScore,
+      et_home_score: etHome,
+      et_away_score: etAway,
+      pen_home_score: penHome,
+      pen_away_score: penAway,
       league_id: leagueId,
       home_team_id: homeTeamId,
       away_team_id: awayTeamId,
@@ -323,18 +345,24 @@ async function safeSettleFixture(fixtureId, sportSlug) {
 }
 
 /**
- * Run a single date slice for one sport (near-window or full-horizon bulk jobs).
+ * Upsert fixtures for one sport/date slice (pre-fetched upstream payload).
  */
-async function runDate(sportSlug, providerName, date, caches) {
+async function processDateFixtures(
+  sportSlug,
+  providerName,
+  date,
+  fixtures,
+  caches,
+  ingestEligible,
+) {
   const sport = await getOrUpsertSport(
     sportSlug,
     providerName,
     caches.sportCache,
   );
 
-  const fixtures = await api(sportSlug).getFixturesByDate(date);
   console.log(
-    `[syncFixtures] ${sportSlug} ${date}: upstream fixtures=${fixtures.length}`,
+    `[syncFixtures] ${sportSlug} ${date}: upstream fixtures=${fixtures.length}, ingestEligible=${ingestEligible.size}`,
   );
 
   let upserts = 0;
@@ -351,9 +379,8 @@ async function runDate(sportSlug, providerName, date, caches) {
       continue;
     }
 
-    // Skip fixtures from leagues not in our allowlist
     const apiLeagueId = entry.league?.id;
-    if (!apiLeagueId || !isAllowedLeague(apiLeagueId)) {
+    if (!apiLeagueId || !ingestEligible.has(apiLeagueId)) {
       skipped++;
       continue;
     }
@@ -466,10 +493,56 @@ export async function runFixturesBulkByDate(opts = {}) {
   let totalTicketsSettled = 0;
   let totalPayoutsCredited = 0;
 
+  const ingestCap = getIngestActiveCap();
+
   for (const sportSlug of enabled) {
+    /** @type {Array<{ date: string, fixtures: unknown[] }>} */
+    const buffered = [];
+    /** @type {Map<number, number>} */
+    const leagueActivity = new Map();
+
     for (const date of dates) {
       try {
-        const result = await runDate(sportSlug, sportSlug, date, caches);
+        const fixtures = await api(sportSlug).getFixturesByDate(date);
+        buffered.push({ date, fixtures });
+        for (const entry of fixtures) {
+          const apiLeagueId = entry.league?.id;
+          if (!apiLeagueId) continue;
+          leagueActivity.set(
+            apiLeagueId,
+            (leagueActivity.get(apiLeagueId) ?? 0) + 1,
+          );
+        }
+      } catch (err) {
+        console.error(
+          `[syncFixtures] ${sportSlug} ${date} fetch failed:`,
+          err.message,
+        );
+      }
+      await sleep(DATE_CALL_DELAY_MS);
+    }
+
+    const ingestEligible = pickTopActiveLeagues(
+      leagueActivity.keys(),
+      ingestCap,
+    );
+    for (const id of PRODUCT_PRIORITY_LEAGUE_IDS) {
+      if (leagueActivity.has(id)) ingestEligible.add(id);
+    }
+    console.log(
+      `[syncFixtures] ${sportSlug} rank gate – activeLeagues=${leagueActivity.size}, ingestCap=${ingestCap}, eligible=${ingestEligible.size}`,
+    );
+
+    for (const { date, fixtures } of buffered) {
+      try {
+        const result = await processDateFixtures(
+          sportSlug,
+          sportSlug,
+          date,
+          fixtures,
+          caches,
+          ingestEligible,
+        );
         totalUpserts += result.upserts;
         totalSkipped += result.skipped;
         totalSettled += result.settled || 0;
@@ -477,21 +550,31 @@ export async function runFixturesBulkByDate(opts = {}) {
         totalPayoutsCredited += result.payoutsCredited || 0;
       } catch (err) {
         console.error(
-          `[syncFixtures] ${sportSlug} ${date} failed:`,
+          `[syncFixtures] ${sportSlug} ${date} upsert failed:`,
           err.message,
         );
       }
-      await sleep(DATE_CALL_DELAY_MS);
     }
   }
 
-  // Cache keys for /fixtures/today, /upcoming, and /live are namespaced by the
-  // active preferred bookmaker. Blow them all away so the next public read
-  // rebuilds with fresh data.
+  // Keep by-date list caches warm (home page). Invalidate other list keys
+  // that are not rebuilt here.
   await deleteByPattern("fixtures:today:*");
-  await deleteByPattern("fixtures:by-date:*");
   await deleteByPattern("fixtures:upcoming:*");
   await deleteByPattern("live:fixtures:*");
+  try {
+    const refreshed = await refreshFixturesByDateCaches();
+    console.log(
+      `[syncFixtures] fixtures by-date refreshed:`,
+      refreshed.map((r) => `${r.ymd}=${r.count ?? r.error}`).join(", "),
+    );
+  } catch (err) {
+    console.error(
+      "[syncFixtures] fixtures by-date refresh failed:",
+      err?.message || err,
+    );
+    await deleteByPattern("fixtures:by-date:*");
+  }
 
   console.log(
     `[syncFixtures] bulk-by-date done – upserts=${totalUpserts}, skipped=${totalSkipped}, settled=${totalSettled}, ticketsSettled=${totalTicketsSettled}, payoutsCredited=${totalPayoutsCredited}, days=${dates.length}, leaguesSeen=${caches.leagueCache.size}, teamsSeen=${caches.teamCache.size}`,

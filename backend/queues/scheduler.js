@@ -149,6 +149,15 @@ function buildRepeatables() {
         jobId: toJobId(REPEATABLE_JOB_NAMES.SETTLEMENT_RETRY),
       },
     },
+    {
+      queue: QUEUE_NAMES.HOLD_REAPER,
+      name: REPEATABLE_JOB_NAMES.HOLD_REAPER_TICK,
+      data: {},
+      opts: {
+        repeat: { every: envSeconds("HOLD_REAPER_SECONDS", 20 * SECONDS) },
+        jobId: toJobId(REPEATABLE_JOB_NAMES.HOLD_REAPER_TICK),
+      },
+    },
   ];
 }
 

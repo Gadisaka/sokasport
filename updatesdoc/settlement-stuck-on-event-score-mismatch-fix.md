@@ -100,6 +100,59 @@ Note: `events = null` (not `[]`). The presence gate in V2 treats `null` as "even
 
 - Replaced the old `"inconsistent events → PENDING"` test with `"inconsistent events → stays FINAL, events nulled"` (3–1 score, one event): asserts `finality === "FINAL"`, scores preserved, `events === null`.
 - Added `"terminal fixture WITHOUT a usable score → PENDING"` to lock the `final_without_scores` branch.
+- Added `"penalty shootout (PEN): shootout goals excluded → stays FINAL, score = 1-1"` (flagged shootout events) and `"… without flags but period PEN is still excluded (legacy payload)"` (covers fixtures enriched before the shootout flag existed).
+
+---
+
+## Second fix — penalty-shootout (and extra-time) games
+
+A `PEN` fixture stayed stuck even with the scoped downgrade, because the **event/score mismatch was being created by the shootout itself**, not by a bad feed.
+
+### Root cause
+
+- A finished penalty game has `status = PEN` and `goals`/`score.fulltime = 1-1`. The penalty-shootout result lives in `score.penalty` and is **not** added to `goals`.
+- API-Sports reports each **shootout penalty as a normal `Goal` event** with `comments: "Penalty Shootout"` and `time.elapsed = null`. In `enrichFixtureResult.normalizeApiEvent`, `Number(null) || 0 = 0` → `periodFromElapsed(0)` tagged them **`"1H"`**, so they were counted as regulation goals.
+- Result: a 1-1 game with a 4-3 shootout tallied events like `5-4` vs score `1-1` → `score_event_mismatch` → stuck or events nulled.
+
+### The fix (two files)
+
+**[backend/jobs/enrichFixtureResult.js](../backend/jobs/enrichFixtureResult.js)** — detect shootout goals at ingestion and tag them so they're never mistaken for regulation goals:
+
+```js
+const isShootout = /penalty\s*shootout/i.test(comments) || detail.includes("penalty shootout");
+// in the GOAL branch:
+period: isShootout ? "PEN" : periodFromElapsed(elapsedMin),
+flags: { ownGoal, penalty, shootout: isShootout, varOverturned },
+```
+
+**[backend/services/matchResult/v2.js](../backend/services/matchResult/v2.js)** — exclude shootout and ET goals from the score reconciliation:
+
+```js
+const liveGoals = payload.events.filter(
+  (e) => e.type === "GOAL"
+      && !e.flags?.varOverturned
+      && !e.flags?.shootout
+      && e.period !== "PEN"
+      && e.period !== "1ET"   // 90'-only rule: ET goals are not part of scores.fullTime
+      && e.period !== "2ET",
+);
+```
+
+Now a `PEN` fixture's regulation tally (`1-1`) matches its score (`1-1`) → **consistent → stays FINAL, events kept**.
+
+---
+
+## 90' regulation score (Match Winner FT settlement fix)
+
+Match Winner — and every other full-time market (Double Chance, Over/Under, BTTS, Correct Score, Handicaps, Odd/Even, Team Total, …) — settles on the **90' regulation score**, NOT the extra-time-inclusive `goals`.
+
+API-Sports returns two full-match scores: `goals` (running/final total, which **includes ET** on an `AET` game) and `score.fulltime` (the score at the 90' whistle). Previously every sync path stored `goals` into `Fixture.home_score`/`away_score`, so a game that was 1-1 at 90' and 2-1 after ET wrongly settled Match Winner as a home win instead of a draw.
+
+The fix stores the 90' regulation score for **terminal** fixtures (live/in-play fixtures keep the running `goals` so the displayed score stays correct):
+
+- `[backend/jobs/lib/fixtureScores.js](../backend/jobs/lib/fixtureScores.js)` — `resolveFixtureScores(entry, { preferFullTime })` prefers `score.fulltime` for terminal fixtures, falling back to `goals`. Also extracts `score.extratime` / `score.penalty` into the `et_*` / `pen_*` columns.
+- Used by `syncFixtures.js`, `settlementRetry.js` (zombie rescue), and `syncLiveFixtures.js`; persisted via `buildFixtureSyncData`.
+- `detectInconsistency` in `matchResult/v2.js` now excludes `1ET`/`2ET` goals from the score reconciliation, so an `AET` fixture's regulation tally matches its 90' score and stays `FINAL`.
 
 ---
 

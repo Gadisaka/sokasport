@@ -177,17 +177,23 @@ function detectInconsistency(payload) {
     return "final_without_scores";
   }
   if (!Array.isArray(payload.events)) return null;
-  // Count only goals that contribute to the fulltime/ET score. Exclude:
-  //  - VAR-overturned goals (chalked off), and
+  // Count only goals that contribute to the 90' regulation score. Exclude:
+  //  - VAR-overturned goals (chalked off),
   //  - penalty-SHOOTOUT goals (post-ET tie-breaker; NOT part of `score.fulltime`
   //    — a 1-1 game won 4-3 on pens still has a 1-1 score). Counting shootout
-  //    goals would always mismatch the score and strand every PEN fixture.
+  //    goals would always mismatch the score and strand every PEN fixture, and
+  //  - EXTRA-TIME goals (`1ET`/`2ET`). `scores.fullTime` now holds the 90'
+  //    regulation score (Match Winner et al. settle on regulation), so an ET
+  //    goal is not part of that tally — counting it would mismatch and strand
+  //    every AET fixture.
   const liveGoals = payload.events.filter(
     (e) =>
       e.type === "GOAL" &&
       !e.flags?.varOverturned &&
       !e.flags?.shootout &&
-      e.period !== "PEN",
+      e.period !== "PEN" &&
+      e.period !== "1ET" &&
+      e.period !== "2ET",
   );
   if (liveGoals.length === 0) return null; // no usable events — trust scores
   // Count by CREDITED team: an own goal's event carries the scoring player's

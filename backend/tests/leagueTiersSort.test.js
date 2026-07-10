@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { sortFixturesForOddsIngest } from "../Config/leagueTiers.js";
+import { sortFixturesForOddsIngest, getLeagueTier } from "../Config/leagueTiers.js";
 
 test("sortFixturesForOddsIngest orders lower tier before higher tier", () => {
   process.env.LEAGUE_TIERS_JSON = JSON.stringify({ 39: 0, 140: 5 });
@@ -26,6 +26,11 @@ test("sortFixturesForOddsIngest orders lower tier before higher tier", () => {
   assert.equal(sorted[1].id, "b");
 
   delete process.env.LEAGUE_TIERS_JSON;
+});
+
+test("getLeagueTier uses league rank when LEAGUE_TIERS_JSON is unset", () => {
+  delete process.env.LEAGUE_TIERS_JSON;
+  assert.ok(getLeagueTier(39) < getLeagueTier(999999));
 });
 
 test("sortFixturesForOddsIngest prefers kickoffs inside nearPriorityEnd bucket", () => {

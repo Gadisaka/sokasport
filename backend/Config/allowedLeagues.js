@@ -1,9 +1,9 @@
 /**
- * Allowlist of API-Football league IDs that we ingest fixtures and odds for.
- * IDs sourced from LIST_OF_LEAGUES.md (verified against API-Football /v3/leagues).
+ * Legacy seed allowlist for league rank generation (ranks after preferred +
+ * product priority). Runtime fixture ingestion uses dynamic top-active-by-rank
+ * via leagueRanks.js — see syncFixtures.js.
  *
- * Only fixtures belonging to these leagues will be stored in the database.
- * This dramatically reduces API usage, DB size, and sync times.
+ * IDs sourced from LIST_OF_LEAGUES.md (verified against API-Football /v3/leagues).
  */
 
 export const ALLOWED_LEAGUE_IDS = new Set([
@@ -147,8 +147,9 @@ export const ALLOWED_LEAGUE_IDS = new Set([
 ]);
 
 /**
- * Always listed in the sportsbook sidebar (even with 0 fixtures in the client slice).
+ * Always listed in the sportsbook sidebar Top Leagues when active.
  * Subset of ALLOWED_LEAGUE_IDS — top domestic + flagship UEFA club competitions.
+ * Seeded as ranks 1–8 in leagueRanks.js.
  */
 export const PREFERRED_LEAGUE_IDS = new Set([
   2, // UEFA Champions League
@@ -162,7 +163,17 @@ export const PREFERRED_LEAGUE_IDS = new Set([
 ]);
 
 /**
- * Quick membership check for filtering fixtures during ingestion.
+ * Local product priority — ranked immediately after PREFERRED (ranks 9+),
+ * pinned in sidebar Top Leagues when active, always ingested when fixtures exist.
+ */
+export const PRODUCT_PRIORITY_LEAGUE_IDS = new Set([
+  363, // Premier League (Ethiopia)
+  1228, // Ethiopia Cup
+]);
+
+/**
+ * Legacy allowlist check (scripts / backward compat). Ingestion uses dynamic
+ * top-active-by-rank via leagueRanks.js — see syncFixtures.js.
  * @param {number} leagueId API-Football league.id
  */
 export function isAllowedLeague(leagueId) {

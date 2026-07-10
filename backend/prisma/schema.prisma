@@ -41,6 +41,7 @@ enum MatchStatus {
 
 enum TicketStatus {
   OPEN
+  HELD
   PRINTED
   WON
   LOST

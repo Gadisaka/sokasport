@@ -139,12 +139,10 @@ export function useCouponLookupMutation() {
       if (!coupon) throw new Error("Coupon number is required");
       const params = new URLSearchParams();
       params.set("couponNumber", coupon);
-      params.set("limit", "1");
       if (status) params.set("status", status);
-      const payload = await apiRequest(`/tickets?${params.toString()}`);
-      const item = Array.isArray(payload?.items) ? payload.items[0] : null;
-      if (!item) throw new Error("Ticket not found");
-      const detail = await apiRequest(`/tickets/${item.id}`);
+      const detail = await apiRequest(
+        `/tickets/by-coupon?${params.toString()}`,
+      );
       return mapTicketDetail(detail);
     },
   });
@@ -284,27 +282,17 @@ export function useRemoveTicketSelectionMutation() {
 export function usePreparePrintTicketMutation() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ ticketId }) =>
-      apiRequest(`/tickets/${ticketId}/prepare-print`, {
-        method: "POST",
-        body: JSON.stringify({}),
-      }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: TICKETS_KEY });
-    },
-  });
-}
-
-export function useValidatePrintTicketMutation() {
-  return useMutation({
     mutationFn: ({ ticketId, acceptOddsChanges = false, selections = [] }) =>
-      apiRequest(`/tickets/${ticketId}/validate-print`, {
+      apiRequest(`/tickets/${ticketId}/prepare-print`, {
         method: "POST",
         body: JSON.stringify({
           acceptOddsChanges,
           selections,
         }),
       }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: TICKETS_KEY });
+    },
   });
 }
 

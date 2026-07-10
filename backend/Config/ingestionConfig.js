@@ -87,6 +87,20 @@ export function getOddsNearPriorityEndUtc(nearDays) {
   return end;
 }
 
+/**
+ * Used when admin preferred bookmaker is set but BOOKMAKER_FALLBACK_CHAIN is empty.
+ * Lower-tier leagues (e.g. Ethiopia Premier League) often lack Bet365 lines but
+ * are covered by these books.
+ */
+export const DEFAULT_BOOKMAKER_FALLBACK_CHAIN = [
+  2, // Marathonbet
+  11, // 1xBet
+  16, // Unibet
+  34, // Superbet
+  32, // Betano
+  3, // Betfair
+];
+
 /** Comma-separated API-Sports bookmaker ids (preference tail after admin preferred). */
 export function parseBookmakerFallbackChain() {
   const raw = process.env.BOOKMAKER_FALLBACK_CHAIN;

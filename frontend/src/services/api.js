@@ -153,17 +153,61 @@ export async function fetchFixturesUpcoming(
 
 /**
  * GET /api/football/fixtures?date=YYYY-MM-DD — slim prematch list for one UTC day.
+ * @param {string} dateYmd
+ * @param {{ signal?: AbortSignal, timeoutMs?: number }} [options]
+ *   When `timeoutMs` is set and no external `signal` aborts first, the request
+ *   is aborted after that many ms (home initial load guardrail).
  */
 export async function fetchFixturesByDate(dateYmd, options = {}) {
-  const { signal } = options;
+  const { signal, timeoutMs } = options;
   const safe = encodeURIComponent(String(dateYmd || "").trim());
-  const res = await fetch(`${API_URL}/api/football/fixtures?date=${safe}`, {
-    signal,
-  });
-  if (!res.ok) {
-    throw new Error(`Failed to fetch fixtures by date: ${res.status}`);
+
+  let timeoutId;
+  let timeoutController;
+  let fetchSignal = signal;
+  if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
+    timeoutController = new AbortController();
+    if (signal) {
+      if (signal.aborted) {
+        timeoutController.abort(signal.reason);
+      } else {
+        signal.addEventListener(
+          "abort",
+          () => timeoutController.abort(signal.reason),
+          { once: true },
+        );
+      }
+    }
+    timeoutId = setTimeout(() => {
+      timeoutController.abort(
+        new DOMException(`Fixtures by date timed out after ${timeoutMs}ms`, "TimeoutError"),
+      );
+    }, timeoutMs);
+    fetchSignal = timeoutController.signal;
   }
-  return res.json();
+
+  try {
+    const res = await fetch(`${API_URL}/api/football/fixtures?date=${safe}`, {
+      signal: fetchSignal,
+    });
+    if (!res.ok) {
+      throw new Error(`Failed to fetch fixtures by date: ${res.status}`);
+    }
+    return res.json();
+  } catch (e) {
+    const timedOut =
+      timeoutController?.signal?.aborted &&
+      (timeoutController.signal.reason?.name === "TimeoutError" ||
+        String(timeoutController.signal.reason?.message || "")
+          .toLowerCase()
+          .includes("timed out"));
+    if (timedOut) {
+      throw new Error(`Fixtures by date timed out after ${timeoutMs}ms`);
+    }
+    throw e;
+  } finally {
+    if (timeoutId != null) clearTimeout(timeoutId);
+  }
 }
 
 export async function fetchFixturesLive(options = {}) {
