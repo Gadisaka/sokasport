@@ -294,7 +294,6 @@ export async function buildFixturesByDate(ymd, { preferred } = {}) {
       home_score: true,
       away_score: true,
       extra_markets_count: true,
-      available_odd_cells_count: true,
       home_team: {
         select: { id: true, name: true, logo: true, api_team_id: true },
       },
