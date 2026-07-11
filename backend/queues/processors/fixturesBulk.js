@@ -25,8 +25,10 @@ const BACKFILL_PASSES = Math.max(
  *
  * Post-ingest odds:
  *   - When ODDS_BULK_BY_DATE_ENABLED (default): enqueue one odds:bulk-by-date
- *     sweep covering the horizon via `/odds?date=`.
- *   - When disabled: legacy ODDS_BACKFILL_PASSES × per-fixture backfill jobs.
+ *     sweep for the full ODDS_HORIZON_DAYS (not clamped to the fixture span),
+ *     so near/today fixture ticks still fill distant days.
+ *   - When disabled: legacy ODDS_BACKFILL_PASSES × per-fixture backfill jobs
+ *     (still scoped to the just-synced span).
  */
 export async function processFixturesBulk(job) {
   const label = job.data?.label ?? "bulk";
@@ -55,7 +57,14 @@ export async function processFixturesBulk(job) {
   }
 
   const spanDays = syncedUtcDaysSpan(runOpts);
-  const oddsHorizonDays = Math.min(spanDays, getOddsHorizonDays());
+  // Bulk `/odds?date=` must always cover the full odds horizon (default 14d).
+  // Do NOT clamp to the fixture sync span — near/today jobs only sync 1–3
+  // calendar days, and clamping left days 4–14 never getting odds until the
+  // 3h scheduled sweep (if it ran at all).
+  const oddsHorizonDays = getOddsHorizonDays();
+  // Legacy per-fixture backfill still scopes to the just-synced window so a
+  // near tick doesn't try to walk thousands of distant fixtures one-by-one.
+  const legacyBackfillHorizonDays = Math.min(spanDays, oddsHorizonDays);
 
   console.log(
     `[fixturesBulk] starting (${label}, spanDays=${spanDays}, jobId=${job.id})`,
@@ -86,7 +95,7 @@ export async function processFixturesBulk(job) {
           },
         );
         console.log(
-          `[fixturesBulk] enqueued odds:bulk-by-date (horizon=${oddsHorizonDays}d)`,
+          `[fixturesBulk] enqueued odds:bulk-by-date (horizon=${oddsHorizonDays}d, fixtureSpan=${spanDays}d)`,
         );
       } else {
         for (let pass = 1; pass <= BACKFILL_PASSES; pass++) {
@@ -94,7 +103,7 @@ export async function processFixturesBulk(job) {
           await oddsQueue.add(
             "odds:horizon-backfill",
             {
-              horizonDays: oddsHorizonDays,
+              horizonDays: legacyBackfillHorizonDays,
               maxFixtures: BACKFILL_MAX_FIXTURES,
               mode: "missing_first",
               skipNearPriority: true,
@@ -109,7 +118,7 @@ export async function processFixturesBulk(job) {
         }
 
         console.log(
-          `[fixturesBulk] enqueued ${BACKFILL_PASSES} odds backfill passes (horizon=${oddsHorizonDays}d, max=${BACKFILL_MAX_FIXTURES}/pass)`,
+          `[fixturesBulk] enqueued ${BACKFILL_PASSES} odds backfill passes (horizon=${legacyBackfillHorizonDays}d, max=${BACKFILL_MAX_FIXTURES}/pass)`,
         );
       }
     } catch (err) {
