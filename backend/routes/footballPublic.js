@@ -24,8 +24,8 @@ import {
   isTopLeague,
   pickTopActiveLeagues,
 } from "../Config/leagueRanks.js";
-import { recomputeExtraMarketsCountForFixture } from "../services/extraMarketsCount.js";
 import { writeLiveOddsFromApiResponse } from "../services/liveOddsCache.js";
+import { persistParsedOddsForFixture } from "../jobs/syncOdds.js";
 import {
   attachLeagueRanksToList,
   bookmakerCacheSuffix,
@@ -51,6 +51,13 @@ const TODAY_MARKETS_PER_FIXTURE = Number(
 );
 const TODAY_ODD_LINES_PER_MARKET = Number(
   process.env.TODAY_ODD_LINES_PER_MARKET || 120,
+);
+/** Caps for GET /odds/:id expand payload (warm DB read + cold hydrate response). */
+const ODDS_DETAIL_MARKET_LIMIT = Number(
+  process.env.ODDS_DETAIL_MARKET_LIMIT || 24,
+);
+const ODDS_DETAIL_ODD_LINE_LIMIT = Number(
+  process.env.ODDS_DETAIL_ODD_LINE_LIMIT || 80,
 );
 const UPCOMING_WINDOW_DEFAULT_DAYS = Number(
   process.env.FIXTURES_WINDOW_DEFAULT_DAYS || 14,
@@ -203,73 +210,93 @@ function isLegacyOnlyFixtureMarkets(markets) {
   );
 }
 
+/** Slim Prisma include for expand detail — capped, no bookmaker join (FE unused). */
+function detailMarketsInclude(bookmakerId) {
+  return buildMarketsInclude(bookmakerId, {
+    marketLimit: ODDS_DETAIL_MARKET_LIMIT,
+    oddLineLimit: ODDS_DETAIL_ODD_LINE_LIMIT,
+    includeBookmaker: false,
+  });
+}
+
 /**
- * PERF/ARCH: This function performs O(bookmakers × markets × values) Mongo
- * upserts and is invoked from the request path of `/odds/:apiFixtureId`
- * whenever a fixture has no markets yet. It's the single largest source
- * of CPU/IO on the API process today.
- *
- * TODO (out of scope for the safe pass): move this to a dedicated BullMQ
- * job (e.g. enqueue on `sync-odds` with a `{ apiFixtureId }` payload that
- * `processOdds` knows how to dispatch). The request handler should then
- * just enqueue and return whatever is currently in the DB – workers
- * remain the sole writers, the API stays read-only, and clients pick up
- * fresh data on the next refresh tick. Doing it now would change the
- * cold-start UX (a brand-new fixture would render with empty markets
- * until the worker finishes), so it warrants a dedicated PR with a
- * frontend story for the loading state.
+ * Map parseMarkets() output onto a fixture row so expand can respond before
+ * Mongo upserts finish. Shape matches what applyOddsToMatch expects.
  */
-async function upsertParsedOddsForFixture(fixtureId, parsed) {
-  for (const bk of parsed.bookmakers || []) {
-    const bookmaker = await prisma.bookmaker.upsert({
-      where: { api_bookmaker_id: bk.apiBookmakerId },
-      update: { name: bk.name },
-      create: { api_bookmaker_id: bk.apiBookmakerId, name: bk.name },
-    });
-
-    for (const mkt of bk.markets || []) {
-      const market = await prisma.fixtureMarket.upsert({
-        where: {
-          fixture_id_name: {
-            fixture_id: fixtureId,
-            name: mkt.name,
-          },
-        },
-        update: {},
-        create: { name: mkt.name, fixture_id: fixtureId },
-      });
-
-      for (const v of mkt.values || []) {
-        await prisma.fixtureOddLine.upsert({
-          where: {
-            market_id_bookmaker_id_value: {
-              market_id: market.id,
-              bookmaker_id: bookmaker.id,
-              value: v.value,
-            },
-          },
-          update: { odd: v.odd },
-          create: {
-            value: v.value,
-            odd: v.odd,
-            market_id: market.id,
-            bookmaker_id: bookmaker.id,
-          },
-        });
-      }
-    }
+function attachParsedMarketsToFixture(fixture, parsed) {
+  const bk = parsed?.bookmakers?.[0];
+  if (!bk) {
+    return { ...fixture, markets: [] };
   }
 
-  await recomputeExtraMarketsCountForFixture(fixtureId);
+  const markets = (bk.markets || [])
+    .slice(0, ODDS_DETAIL_MARKET_LIMIT)
+    .map((mkt) => ({
+      name: mkt.name,
+      odd_lines: (mkt.values || [])
+        .slice(0, ODDS_DETAIL_ODD_LINE_LIMIT)
+        .map((v) => ({
+          value: v.value,
+          odd: v.odd,
+        }))
+        .filter(
+          (line) =>
+            String(line.value || "").trim().length > 0 &&
+            Number.isFinite(Number(line.odd)) &&
+            Number(line.odd) > 0,
+        ),
+    }))
+    .filter((m) => Array.isArray(m.odd_lines) && m.odd_lines.length > 0);
+
+  return { ...fixture, markets };
+}
+
+/** Fire-and-forget list cache invalidation + warm rebuild (must not block expand). */
+function scheduleListCacheRefreshAfterOddsWrite() {
+  void (async () => {
+    try {
+      await deleteByPattern("fixtures:today:*");
+      await deleteByPattern("fixtures:upcoming:*");
+      await deleteByPattern("live:fixtures:*");
+    } catch (err) {
+      console.error(
+        "[odds hydration] list cache delete failed:",
+        err?.message || err,
+      );
+    }
+    try {
+      await refreshFixturesByDateCaches();
+    } catch (err) {
+      console.error(
+        "[odds hydration] fixtures by-date refresh failed:",
+        err?.message || err,
+      );
+    }
+  })();
+}
+
+/**
+ * Persist hydrated odds off the request path. Uses the shared syncOdds helper
+ * (same write semantics as background ingest).
+ */
+function schedulePersistParsedOdds(fixture, parsed) {
+  void (async () => {
+    try {
+      await persistParsedOddsForFixture(fixture, parsed);
+      scheduleListCacheRefreshAfterOddsWrite();
+    } catch (err) {
+      console.error(
+        `[odds hydration] background persist failed fixture=${fixture?.api_fixture_id}:`,
+        err?.message || err,
+      );
+    }
+  })();
 }
 
 /**
  * Per-fixture in-process single-flight for the hydration path of
- * `/odds/:apiFixtureId`. The frontend (useMatches) hydrates up to 12
- * fixtures in parallel on every 30s window refresh; without dedupe,
- * concurrent requests for the same cold fixture each ran the full
- * upstream + parse + upsert pipeline. This Map ensures only the first
- * caller does the work and the rest await the same promise.
+ * `/odds/:apiFixtureId`. Concurrent expands of the same cold fixture share
+ * one upstream+parse; Mongo upserts run in the background after respond.
  */
 const oddsHydrationInflight = new Map();
 
@@ -619,7 +646,8 @@ router.get("/odds/:apiFixtureId", async (req, res) => {
     }
 
     const preferred = await getPreferredBookmakerRecord();
-    const cacheKey = `odds:fixture:${apiFixtureId}:${bookmakerCacheSuffix(preferred)}:${fixturesListCacheModeSuffix()}`;
+    // Suffix market cap so raising ODDS_DETAIL_MARKET_LIMIT busts stale fat caches.
+    const cacheKey = `odds:fixture:${apiFixtureId}:${bookmakerCacheSuffix(preferred)}:${fixturesListCacheModeSuffix()}:m${ODDS_DETAIL_MARKET_LIMIT}`;
 
     let data = await getCache(cacheKey);
     if (
@@ -636,23 +664,16 @@ router.get("/odds/:apiFixtureId", async (req, res) => {
         where: { api_fixture_id: apiFixtureId },
         include: {
           league: { include: { sport: true } },
-          markets: buildMarketsInclude(preferred?.id),
+          markets: detailMarketsInclude(preferred?.id),
         },
       });
       if (!fixture) {
         return res.status(404).json({ message: "Fixture not found" });
       }
 
-      // On-demand hydration: if nothing was persisted yet (or the preferred
-      // bookmaker hasn't priced this fixture at all), fetch the full odds
-      // blob from upstream and persist. We re-query with the filter after
-      // so clients always see bookmaker-scoped data.
-      //
-      // SAFE-PASS: routed through `oddsHydrationInflight` so that 12
-      // simultaneous requests for the same cold fixture (typical when
-      // useMatches hydrates a window) don't each pay the full
-      // upstream + parse + upsert cost. Long-term this should move to a
-      // worker (see comment on `upsertParsedOddsForFixture`).
+      // On-demand hydration: cold / legacy-only fixtures fetch upstream once
+      // (single-flight), return parsed markets immediately, and persist to
+      // Mongo in the background so expand does not wait on upsert amplification.
       const hasAnyMarkets = stripEmptyMarkets(fixture).markets.length > 0;
       const shouldRefreshLegacyMarkets =
         hasAnyMarkets && isLegacyOnlyFixtureMarkets(fixture.markets);
@@ -663,42 +684,44 @@ router.get("/odds/:apiFixtureId", async (req, res) => {
           hydrationPromise = (async () => {
             const sportSlug = fixture.league?.sport?.slug || "football";
             const rawOdds = await api(sportSlug).getOdds(apiFixtureId);
-            if (!rawOdds.length) return;
+            if (!rawOdds.length) return null;
 
-            // On-demand hydration must honor the same single-bookmaker /
-            // market allowlist policy as the background sync jobs so we
-            // don't reintroduce write amplification through this path.
             const parseOptions = buildOddsParseOptions(
               preferred?.api_bookmaker_id ?? null,
             );
             const parsed = parseMarkets(rawOdds, parseOptions);
-            await upsertParsedOddsForFixture(fixture.id, parsed);
-            await deleteByPattern("fixtures:today:*");
-            await deleteByPattern("fixtures:upcoming:*");
-            await deleteByPattern("live:fixtures:*");
-            // Rebuild-then-swap home-page list caches (avoid cold miss).
-            await refreshFixturesByDateCaches().catch((err) => {
-              console.error(
-                "[odds hydration] fixtures by-date refresh failed:",
-                err?.message || err,
-              );
-            });
+            if (!parsed?.bookmakers?.length) return null;
+
+            const responseFixture = attachParsedMarketsToFixture(
+              fixture,
+              parsed,
+            );
+            stripEmptyMarkets(responseFixture);
+
+            // Persist off the critical path — expand waits on upstream+parse only.
+            schedulePersistParsedOdds(fixture, parsed);
+
+            return responseFixture;
           })().finally(() => {
             oddsHydrationInflight.delete(inflightKey);
           });
           oddsHydrationInflight.set(inflightKey, hydrationPromise);
         }
 
-        await hydrationPromise;
-
-        fixture = await prisma.fixture.findUnique({
-          where: { api_fixture_id: apiFixtureId },
-          include: {
-            league: { include: { sport: true } },
-            markets: buildMarketsInclude(preferred?.id),
-          },
-        });
-        stripEmptyMarkets(fixture);
+        const hydrated = await hydrationPromise;
+        if (hydrated?.markets?.length) {
+          fixture = hydrated;
+        } else {
+          // Upstream empty / parse miss — re-read DB (may still be empty).
+          fixture = await prisma.fixture.findUnique({
+            where: { api_fixture_id: apiFixtureId },
+            include: {
+              league: { include: { sport: true } },
+              markets: detailMarketsInclude(preferred?.id),
+            },
+          });
+          stripEmptyMarkets(fixture);
+        }
       }
 
       data = fixture;
@@ -712,10 +735,7 @@ router.get("/odds/:apiFixtureId", async (req, res) => {
           where: { api_fixture_id: apiFixtureId },
           include: {
             league: { include: { sport: true } },
-            markets: buildMarketsInclude(null, {
-              marketLimit: TODAY_MARKETS_PER_FIXTURE,
-              oddLineLimit: TODAY_ODD_LINES_PER_MARKET,
-            }),
+            markets: detailMarketsInclude(null),
           },
         });
         if (loose) {
