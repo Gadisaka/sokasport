@@ -57,6 +57,66 @@ const INITIAL_FIXTURES_TIMEOUT_MS = Number.parseInt(
 const UPCOMING_FRONTEND_BUFFER_MS = 5 * 60 * 1000;
 const UPCOMING_FIXTURES_DAYS = 14;
 
+/** Retry transient fixtures-by-date failures before surfacing an error. */
+const FIXTURES_FETCH_MAX_ATTEMPTS = 3;
+const FIXTURES_FETCH_RETRY_DELAYS_MS = [1500, 3000];
+
+const SESSION_FIXTURES_PREFIX = "sokasport:fixtures-by-date:";
+
+function sessionFixturesKey(dateStr) {
+  return `${SESSION_FIXTURES_PREFIX}${dateStr}`;
+}
+
+function readSessionFixtures(dateStr) {
+  try {
+    const raw = sessionStorage.getItem(sessionFixturesKey(dateStr));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeSessionFixtures(dateStr, rows) {
+  try {
+    sessionStorage.setItem(
+      sessionFixturesKey(dateStr),
+      JSON.stringify(Array.isArray(rows) ? rows : []),
+    );
+  } catch {
+    // Quota / private mode — ignore.
+  }
+}
+
+function sleep(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(Object.assign(new Error("Aborted"), { name: "AbortError" }));
+      return;
+    }
+    const id = setTimeout(resolve, ms);
+    const onAbort = () => {
+      clearTimeout(id);
+      reject(Object.assign(new Error("Aborted"), { name: "AbortError" }));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function isAbortLike(e, signal) {
+  if (signal?.aborted) return true;
+  if (e?.name === "AbortError") {
+    const timedOut =
+      e?.name === "TimeoutError" ||
+      String(e?.message || "")
+        .toLowerCase()
+        .includes("timed out");
+    return !timedOut;
+  }
+  return false;
+}
+
 function matchesTimeFilter(matchDate, timeId) {
   if (!timeId || timeId === "all") return true;
   const date = parseUiDateToDate(matchDate);
@@ -98,10 +158,19 @@ function isCalendarDayTimeId(id) {
 }
 
 export function useMatches({ includeLive = true, filters = {} } = {}) {
-  const [fixturesMap, setFixturesMap] = useState(() => new Map());
+  const todayYmd = utcTodayYmd();
+  const cachedToday = USE_FIXTURES_BY_DATE ? readSessionFixtures(todayYmd) : null;
+
+  const [fixturesMap, setFixturesMap] = useState(() => {
+    if (cachedToday) {
+      return new Map([[todayYmd, cachedToday]]);
+    }
+    return new Map();
+  });
   const [windowFixtures, setWindowFixtures] = useState([]);
   const [liveFixtures, setLiveFixtures] = useState([]);
-  const [loading, setLoading] = useState(true);
+  // Skip blocking spinner when we already have session-cached fixtures.
+  const [loading, setLoading] = useState(() => !cachedToday);
   const [error, setError] = useState(null);
   const [oddsDetailByFixtureId, setOddsDetailByFixtureId] = useState(
     () => new Map(),
@@ -111,9 +180,18 @@ export function useMatches({ includeLive = true, filters = {} } = {}) {
   const oddsInflightRef = useRef(new Map());
   const oddsAbortByFixtureRef = useRef(new Map());
   const oddsDetailRef = useRef(oddsDetailByFixtureId);
-  const loadedDatesRef = useRef(new Set());
+  const loadedDatesRef = useRef(
+    new Set(cachedToday ? [todayYmd] : []),
+  );
   const prematchPollAbortRef = useRef(null);
   const prematchInitialAbortRef = useRef(null);
+  // Allow refreshAll to revalidate a date that was hydrated from sessionStorage.
+  const forceReloadDatesRef = useRef(new Set());
+  const fixturesMapHasDataRef = useRef(Boolean(cachedToday));
+
+  useEffect(() => {
+    fixturesMapHasDataRef.current = fixturesMap.size > 0;
+  }, [fixturesMap]);
 
   useEffect(() => {
     oddsDetailRef.current = oddsDetailByFixtureId;
@@ -153,16 +231,24 @@ export function useMatches({ includeLive = true, filters = {} } = {}) {
 
     const pairs = await Promise.all(
       dates.map(async (d) => {
-        const rows = await fetchFixturesByDate(d, { signal });
-        return [d, Array.isArray(rows) ? rows : []];
+        try {
+          const rows = await fetchFixturesByDate(d, { signal });
+          writeSessionFixtures(d, Array.isArray(rows) ? rows : []);
+          return [d, Array.isArray(rows) ? rows : []];
+        } catch {
+          return null;
+        }
       }),
     );
 
     if (signal?.aborted) return;
 
+    const ok = pairs.filter(Boolean);
+    if (!ok.length) return;
+
     setFixturesMap((prev) => {
       const next = new Map(prev);
-      for (const [d, rows] of pairs) {
+      for (const [d, rows] of ok) {
         next.set(d, rows);
       }
       return next;
@@ -172,38 +258,51 @@ export function useMatches({ includeLive = true, filters = {} } = {}) {
 
   const loadDateImpl = useCallback(async (dateStr, { signal, timeoutMs } = {}) => {
     if (!USE_FIXTURES_BY_DATE) return;
-    if (loadedDatesRef.current.has(dateStr)) return;
+    const force = forceReloadDatesRef.current.has(dateStr);
+    if (!force && loadedDatesRef.current.has(dateStr)) return;
 
-    try {
-      const rows = await fetchFixturesByDate(dateStr, { signal, timeoutMs });
+    let lastError = null;
+    for (let attempt = 0; attempt < FIXTURES_FETCH_MAX_ATTEMPTS; attempt += 1) {
       if (signal?.aborted) return;
-      loadedDatesRef.current.add(dateStr);
-      setFixturesMap((prev) => {
-        const next = new Map(prev);
-        next.set(dateStr, Array.isArray(rows) ? rows : []);
-        return next;
-      });
-      setError(null);
-    } catch (e) {
-      // External abort (unmount / refresh) — ignore. Timeout / network — surface.
-      if (signal?.aborted && e?.name === "AbortError") return;
-      const timedOut =
-        e?.name === "TimeoutError" ||
-        String(e?.message || "").toLowerCase().includes("timed out");
-      if (e?.name === "AbortError" && !timedOut) return;
-
-      setError(
-        timedOut
-          ? new Error("Matches took too long to load. Please try again.")
-          : e,
-      );
-      loadedDatesRef.current.add(dateStr);
-      setFixturesMap((prev) => {
-        const next = new Map(prev);
-        if (!next.has(dateStr)) next.set(dateStr, []);
-        return next;
-      });
+      try {
+        const rows = await fetchFixturesByDate(dateStr, { signal, timeoutMs });
+        if (signal?.aborted) return;
+        const safe = Array.isArray(rows) ? rows : [];
+        loadedDatesRef.current.add(dateStr);
+        forceReloadDatesRef.current.delete(dateStr);
+        writeSessionFixtures(dateStr, safe);
+        setFixturesMap((prev) => {
+          const next = new Map(prev);
+          next.set(dateStr, safe);
+          return next;
+        });
+        setError(null);
+        return;
+      } catch (e) {
+        if (isAbortLike(e, signal)) return;
+        lastError = e;
+        const delay = FIXTURES_FETCH_RETRY_DELAYS_MS[attempt];
+        if (delay != null && attempt < FIXTURES_FETCH_MAX_ATTEMPTS - 1) {
+          try {
+            await sleep(delay, signal);
+          } catch {
+            return;
+          }
+        }
+      }
     }
+
+    // Final failure — do NOT mark the date loaded so Retry / filter change can refetch.
+    const timedOut =
+      lastError?.name === "TimeoutError" ||
+      String(lastError?.message || "")
+        .toLowerCase()
+        .includes("timed out");
+    setError(
+      timedOut
+        ? new Error("Matches took too long to load. Please try again.")
+        : lastError,
+    );
   }, []);
 
   const refreshLive = useCallback(async () => {
@@ -217,20 +316,23 @@ export function useMatches({ includeLive = true, filters = {} } = {}) {
   }, [includeLive]);
 
   const refreshAll = useCallback(async () => {
-    setLoading(true);
+    const hasCachedPaint =
+      USE_FIXTURES_BY_DATE &&
+      (loadedDatesRef.current.size > 0 || fixturesMapHasDataRef.current);
+    // Only show the blocking spinner when we have nothing to paint.
+    if (!hasCachedPaint) setLoading(true);
     prematchInitialAbortRef.current?.abort();
     const ac = new AbortController();
     prematchInitialAbortRef.current = ac;
 
     try {
       if (USE_FIXTURES_BY_DATE) {
-        loadedDatesRef.current.clear();
-        setFixturesMap(new Map());
-        // Only block the home spinner on today's list. Other calendar days
-        // load lazily when the user changes the day filter (see effect below).
-        // Prefetching the full horizon here stampeded /fixtures?date= and
-        // kept loading=true for many seconds even after the API was fast.
-        await loadDateImpl(utcTodayYmd(), {
+        const today = utcTodayYmd();
+        // Revalidate today even if sessionStorage hydrated it.
+        forceReloadDatesRef.current.add(today);
+        loadedDatesRef.current.delete(today);
+        // Keep existing map for instant paint; loadDateImpl will overwrite.
+        await loadDateImpl(today, {
           signal: ac.signal,
           timeoutMs: INITIAL_FIXTURES_TIMEOUT_MS,
         });

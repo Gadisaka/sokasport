@@ -4,6 +4,8 @@ export const TTL = {
   LEAGUES: 86400,
   TEAMS: 86400,
   FIXTURES: 1800,
+  /** Last-known-good fixtures-by-date fallback when rebuild fails (24h). */
+  FIXTURES_STALE: 86400,
   /** Sidebar league catalog (pinned ∪ fixtures in odds horizon) */
   SIDEBAR_LEAGUES: 90,
   ODDS: 300,

@@ -297,7 +297,7 @@ export default async function syncLiveFixtures() {
           "[syncLive] fixtures by-date refresh failed:",
           err?.message || err,
         );
-        await deleteByPattern("fixtures:by-date:*");
+        // Keep existing by-date keys — stale data beats a cold miss for visitors.
       }
     }
   } catch (err) {

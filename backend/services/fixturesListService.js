@@ -214,6 +214,11 @@ export function fixturesByDateCacheKey(ymd, preferred) {
   return `fixtures:by-date:${FIXTURES_BY_DATE_CACHE_VERSION}:${ymd}:${bookmakerCacheSuffix(preferred)}:${fixturesListCacheModeSuffix()}`;
 }
 
+/** Long-TTL last-known-good key — served when a rebuild fails. */
+export function fixturesByDateStaleCacheKey(ymd, preferred) {
+  return `fixtures:by-date:stale:${FIXTURES_BY_DATE_CACHE_VERSION}:${ymd}:${bookmakerCacheSuffix(preferred)}:${fixturesListCacheModeSuffix()}`;
+}
+
 /**
  * Bookmaker id to use in the first list query.
  * Relaxed mode: null (any persisted bookmaker) — odds sync stores one
@@ -340,6 +345,12 @@ export async function buildFixturesByDate(ymd, { preferred } = {}) {
 
   const data = attachLeagueRanksToList(merged);
   await setCache(cacheKey, data, TTL.FIXTURES);
+  // Keep a long-TTL copy so visitors never 500 on a transient rebuild failure.
+  await setCache(
+    fixturesByDateStaleCacheKey(parsed.ymd, preferredRecord),
+    data,
+    TTL.FIXTURES_STALE,
+  );
   rememberFixtures(cacheKey, data);
   console.log(
     `[fixturesList] build ${parsed.ymd} count=${data.length} ms=${Date.now() - t0}`,
@@ -349,6 +360,7 @@ export async function buildFixturesByDate(ymd, { preferred } = {}) {
 
 /**
  * Cache-aside with memory → Redis → single-flight DB rebuild.
+ * On rebuild failure, fall back to the long-TTL last-known-good key.
  */
 export async function getOrBuildFixturesByDate(ymd) {
   const preferred = await getPreferredBookmakerRecord();
@@ -358,6 +370,7 @@ export async function getOrBuildFixturesByDate(ymd) {
   }
 
   const cacheKey = fixturesByDateCacheKey(parsed.ymd, preferred);
+  const staleKey = fixturesByDateStaleCacheKey(parsed.ymd, preferred);
 
   const mem = memoryFixtures(cacheKey);
   if (mem) return mem;
@@ -370,9 +383,22 @@ export async function getOrBuildFixturesByDate(ymd) {
 
   let inflight = fixturesByDateInflight.get(cacheKey);
   if (!inflight) {
-    inflight = buildFixturesByDate(parsed.ymd, { preferred }).finally(() => {
-      fixturesByDateInflight.delete(cacheKey);
-    });
+    inflight = buildFixturesByDate(parsed.ymd, { preferred })
+      .catch(async (err) => {
+        const stale = await getCache(staleKey);
+        if (stale) {
+          console.warn(
+            `[fixturesList] rebuild ${parsed.ymd} failed; serving stale:`,
+            err?.message || err,
+          );
+          rememberFixtures(cacheKey, stale);
+          return stale;
+        }
+        throw err;
+      })
+      .finally(() => {
+        fixturesByDateInflight.delete(cacheKey);
+      });
     fixturesByDateInflight.set(cacheKey, inflight);
   }
   return inflight;

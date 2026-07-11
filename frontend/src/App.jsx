@@ -1,18 +1,31 @@
-import { useEffect } from 'react'
+import { lazy, Suspense, useEffect } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { enforcePlayerSession } from './utils/authSession'
 import Home from './pages/Home'
-import Live from './pages/Live'
-import Login from './pages/Login'
-import Register from './pages/Register'
-import BetHistory from './pages/BetHistory'
-import Profile from './pages/Profile'
-import Withdraw from './pages/Withdraw'
-import Deposit from './pages/Deposit'
-import Transactions from './pages/Transactions'
-import CheckTicket from './pages/CheckTicket'
-import InfoArticlePage from './pages/InfoArticlePage'
 import { LanguageProvider } from './i18n/LanguageContext.jsx'
+
+const Live = lazy(() => import('./pages/Live'))
+const Login = lazy(() => import('./pages/Login'))
+const Register = lazy(() => import('./pages/Register'))
+const BetHistory = lazy(() => import('./pages/BetHistory'))
+const Profile = lazy(() => import('./pages/Profile'))
+const Withdraw = lazy(() => import('./pages/Withdraw'))
+const Deposit = lazy(() => import('./pages/Deposit'))
+const Transactions = lazy(() => import('./pages/Transactions'))
+const CheckTicket = lazy(() => import('./pages/CheckTicket'))
+const InfoArticlePage = lazy(() => import('./pages/InfoArticlePage'))
+
+function RouteFallback() {
+  return (
+    <div
+      className="flex min-h-[40vh] items-center justify-center text-sm text-white/70"
+      role="status"
+      aria-live="polite"
+    >
+      Loading…
+    </div>
+  )
+}
 
 function App() {
   useEffect(() => {
@@ -21,6 +34,7 @@ function App() {
 
   return (
     <LanguageProvider>
+    <Suspense fallback={<RouteFallback />}>
     <Routes>
       <Route path="/" element={<Home />} />
       <Route path="/live" element={<Live />} />
@@ -36,6 +50,7 @@ function App() {
       <Route path="/info/:slug" element={<InfoArticlePage />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
+    </Suspense>
     </LanguageProvider>
   )
 }

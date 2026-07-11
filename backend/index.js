@@ -1,4 +1,5 @@
 import "dotenv/config";
+import compression from "compression";
 import cors from "cors";
 import express from "express";
 import http from "node:http";
@@ -33,6 +34,7 @@ import { startCronJobs } from "./jobs/index.js";
 import { runBootstrap } from "./jobs/bootstrap.js";
 import { authenticateToken } from "./middleware/auth.js";
 import { pingRedis } from "./services/cacheService.js";
+import { refreshFixturesByDateCaches } from "./services/fixturesListService.js";
 import { initSocketHub } from "./lib/socketHub.js";
 import { createCorsOptions } from "./lib/corsConfig.js";
 import { perfTimingMiddleware } from "./middleware/perfTiming.js";
@@ -41,6 +43,7 @@ const app = express();
 const server = http.createServer(app);
 const port = Number(process.env.PORT || 3000);
 
+app.use(compression());
 app.use(express.json());
 app.use(perfTimingMiddleware);
 
@@ -119,6 +122,37 @@ await initSocketHub(server);
 server.listen(port, () => {
   console.log(`Server is running on port ${port}`);
 });
+
+/** Keep home-page fixtures-by-date caches warm independent of sync jobs. */
+const FIXTURES_WARM_INTERVAL_MS = Number(
+  process.env.FIXTURES_WARM_INTERVAL_MS || 10 * 60 * 1000,
+);
+
+function warmFixturesByDateCaches(reason) {
+  refreshFixturesByDateCaches()
+    .then((results) => {
+      console.log(
+        `[fixturesList] warm (${reason}):`,
+        (results || [])
+          .map((r) => `${r.ymd}=${r.count ?? r.error}`)
+          .join(", ") || "ok",
+      );
+    })
+    .catch((err) => {
+      console.error(
+        `[fixturesList] warm (${reason}) failed:`,
+        err?.message || err,
+      );
+    });
+}
+
+warmFixturesByDateCaches("startup");
+if (FIXTURES_WARM_INTERVAL_MS > 0) {
+  setInterval(
+    () => warmFixturesByDateCaches("interval"),
+    FIXTURES_WARM_INTERVAL_MS,
+  ).unref?.();
+}
 
 if (process.env.ENABLE_API_FOOTBALL_CRON === "true") {
   // Default path: bootstrap enqueues an initial bulk fixtures job and the
