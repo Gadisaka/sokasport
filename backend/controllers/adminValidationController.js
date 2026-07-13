@@ -115,7 +115,7 @@ export async function getTicketValidationMonitor(req, res) {
     const [logs, total] = await Promise.all([
       prisma.auditLog.findMany({
         where,
-        include: { user: { select: { name: true } } },
+        include: { user: { select: { fullname: true } } },
         orderBy: { created_at: "desc" },
         skip,
         take: limit,
@@ -129,7 +129,7 @@ export async function getTicketValidationMonitor(req, res) {
         createdAt: log.created_at,
         action: log.action,
         actorRole: log.actor_role || "",
-        actorName: log.user?.name || "System",
+        actorName: log.user?.fullname || "System",
         code: String(log.meta?.code || "").toLowerCase(),
         fixtureId: log.meta?.fixtureId || null,
         userId: log.user_id || null,

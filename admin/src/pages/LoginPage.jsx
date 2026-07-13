@@ -11,7 +11,7 @@ export default function LoginPage() {
   const { login, isLoggingIn } = useAuth();
   const navigate = useNavigate();
 
-  const [phone, setPhone] = useState("");
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [devicePending, setDevicePending] = useState(null);
@@ -23,7 +23,7 @@ export default function LoginPage() {
 
     try {
       const fingerprint = await getDeviceFingerprint();
-      const loggedInUser = await login(phone.trim(), password, fingerprint);
+      const loggedInUser = await login(username.trim(), password, fingerprint);
       navigate(loggedInUser?.role === "CASHIER" ? "/tickets" : "/", {
         replace: true,
       });
@@ -32,6 +32,7 @@ export default function LoginPage() {
         setDevicePending({
           message: err.message,
           cashierName: err.details?.cashierName,
+          cashierUsername: err.details?.cashierUsername,
           cashierPhone: err.details?.cashierPhone,
           pendingId: err.details?.pendingId,
         });
@@ -60,6 +61,12 @@ export default function LoginPage() {
               <p>
                 <span className="text-[var(--muted)]">Cashier:</span>{" "}
                 {devicePending.cashierName}
+              </p>
+            )}
+            {devicePending.cashierUsername && (
+              <p>
+                <span className="text-[var(--muted)]">Username:</span>{" "}
+                {devicePending.cashierUsername}
               </p>
             )}
             {devicePending.cashierPhone && (
@@ -110,13 +117,14 @@ export default function LoginPage() {
 
           <div className="space-y-4">
             <TextInput
-              label="Phone"
-              type="tel"
-              value={phone}
-              onChange={(e) => setPhone(e.target.value)}
-              placeholder="Enter phone number"
+              label="Username"
+              type="text"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              placeholder="Enter username"
               required
               autoFocus
+              autoComplete="username"
             />
             <TextInput
               label="Password"

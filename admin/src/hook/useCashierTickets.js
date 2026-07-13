@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "./useApiRequest";
+import { CASHIER_DASHBOARD_STATS_KEY } from "./useCashierDashboardStats";
 
 const TICKETS_KEY = ["cashier", "tickets"];
 
@@ -197,6 +198,7 @@ export function usePayoutTicketMutation() {
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: TICKETS_KEY });
+      qc.invalidateQueries({ queryKey: CASHIER_DASHBOARD_STATS_KEY });
     },
   });
 }

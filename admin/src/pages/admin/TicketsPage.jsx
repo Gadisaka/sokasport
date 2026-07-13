@@ -200,7 +200,7 @@ export default function AdminTicketsPage() {
                 <option value="">All branches</option>
                 {cashiers.map((c) => (
                   <option key={c.cashierProfileId} value={c.cashierProfileId}>
-                    {c.name} — {c.branchName}
+                    {c.fullname || c.name} — {c.branchName}
                   </option>
                 ))}
               </select>

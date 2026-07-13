@@ -15,7 +15,7 @@ export default function ProfilePage() {
     user && PROFILE_CONTACT_EDIT_ROLES.includes(user.role),
   );
 
-  const [name, setName] = useState("");
+  const [fullname, setFullname] = useState("");
   const [phone, setPhone] = useState("");
   const [contactErr, setContactErr] = useState(null);
   const [contactMsg, setContactMsg] = useState(null);
@@ -30,11 +30,11 @@ export default function ProfilePage() {
 
   useEffect(() => {
     if (!user) return;
-    setName(user.name ?? "");
+    setFullname(user.fullname ?? "");
     setPhone(user.phone ?? "");
     setContactErr(null);
     setContactMsg(null);
-  }, [user?.id, user?.name, user?.phone]);
+  }, [user?.id, user?.fullname, user?.phone]);
 
   async function handleSaveContact(e) {
     e.preventDefault();
@@ -45,7 +45,7 @@ export default function ProfilePage() {
     try {
       const data = await apiRequest("/auth/profile", {
         method: "PATCH",
-        body: JSON.stringify({ name, phone }),
+        body: JSON.stringify({ fullname, phone }),
       });
       if (data.accessToken) {
         replaceAccessToken(data.accessToken);
@@ -105,9 +105,15 @@ export default function ProfilePage() {
           <div className="space-y-6">
             <form onSubmit={handleSaveContact} className="space-y-4">
               <TextInput
-                label="Name"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
+                label="Username"
+                value={user?.username ?? ""}
+                readOnly
+                disabled
+              />
+              <TextInput
+                label="Full name"
+                value={fullname}
+                onChange={(e) => setFullname(e.target.value)}
                 readOnly={!canEditContact}
                 disabled={!canEditContact}
               />

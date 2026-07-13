@@ -39,6 +39,7 @@ import {
 } from "../services/heldTicketService.js";
 import { logPlacementValidation } from "../lib/placementValidationLogger.js";
 import { toMoney, d, sub } from "../lib/moneyDecimal.js";
+import { debitWallet } from "../lib/walletBalance.js";
 import {
   buildCouponNumber,
   couponLookupCandidates,
@@ -284,7 +285,9 @@ async function resolveCouponNumberForCreate(
 
   const template = await client.ticket.findFirst({
     where: { coupon_number: { in: candidates } },
-    include: ticketSelectionRelationArgs,
+    include: {
+      selections: ticketSelectionRelationArgs,
+    },
   });
 
   if (!template?.selections?.length) {
@@ -420,7 +423,7 @@ const ticketDetailInclude = {
   selections: ticketSelectionRelationArgs,
   cashier: {
     include: {
-      user: { select: { name: true } },
+      user: { select: { fullname: true } },
     },
   },
 };
@@ -573,7 +576,7 @@ function mapTicket(ticket, { printed = false } = {}) {
     receiptNumber: ticket.receipt_number ?? null,
     userId: ticket.user_id,
     cashierId: ticket.cashier_id,
-    cashierName: ticket.cashier?.user?.name ?? null,
+    cashierName: ticket.cashier?.user?.fullname ?? null,
     branchName: ticket.branch_name,
     branchLocation: ticket.branch_location,
     stake: ticket.stake,
@@ -1669,22 +1672,16 @@ export async function createPrebookTicket(req, res) {
           });
           if (!wallet) throw new Error("PLAYER_WALLET_NOT_FOUND");
 
-          const balanceBefore = toMoney(wallet.balance);
-          if (balanceBefore < numericStake)
-            throw new Error("INSUFFICIENT_BALANCE");
-
-          const balanceAfter = toMoney(sub(balanceBefore, numericStake));
-          await tx.wallet.update({
-            where: { id: wallet.id },
-            data: { balance: balanceAfter },
+          const debited = await debitWallet(tx, wallet, numericStake, {
+            fromWithdrawable: false,
           });
           await tx.transaction.create({
             data: {
               wallet_id: wallet.id,
               type: "BET",
               amount: numericStake,
-              balance_before: balanceBefore,
-              balance_after: balanceAfter,
+              balance_before: debited.balanceBefore,
+              balance_after: debited.balanceAfter,
               reference: idempotencyKey
                 ? `idem:${authenticatedUserId}:${idempotencyKey}`
                 : `ticket:${receiptNumber}`,
@@ -1704,7 +1701,7 @@ export async function createPrebookTicket(req, res) {
           }
 
           const ticket = await tx.ticket.create({ data });
-          return { ticket, balanceAfter };
+          return { ticket, balanceAfter: debited.balanceAfter };
         }),
         ),
       );
@@ -3131,7 +3128,9 @@ export async function repeatTicket(req, res) {
   try {
     const source = await prisma.ticket.findUnique({
       where: { id: req.params.id },
-      include: ticketSelectionRelationArgs,
+      include: {
+        selections: ticketSelectionRelationArgs,
+      },
     });
     if (!source) {
       return res.status(404).json({ message: "Ticket not found" });
@@ -3203,7 +3202,9 @@ export async function removeTicketSelection(req, res) {
   try {
     const ticket = await prisma.ticket.findUnique({
       where: { id: req.params.id },
-      include: ticketSelectionRelationArgs,
+      include: {
+        selections: ticketSelectionRelationArgs,
+      },
     });
     if (!ticket) {
       return res.status(404).json({ message: "Ticket not found" });

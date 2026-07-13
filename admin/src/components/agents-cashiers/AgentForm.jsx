@@ -6,7 +6,8 @@ import PrimaryButton from "../ui/PrimaryButton";
 export default function AgentForm({ initialValues, onSubmit, isPending }) {
   const isEdit = Boolean(initialValues);
 
-  const [name, setName] = useState(initialValues?.name ?? "");
+  const [username, setUsername] = useState(initialValues?.username ?? "");
+  const [fullname, setFullname] = useState(initialValues?.fullname ?? "");
   const [email, setEmail] = useState(initialValues?.email ?? "");
   const [phone, setPhone] = useState(initialValues?.phone ?? "");
   const [password, setPassword] = useState("");
@@ -16,7 +17,7 @@ export default function AgentForm({ initialValues, onSubmit, isPending }) {
   async function handleSubmit(e) {
     e.preventDefault();
     setError("");
-    const body = { name, email, phone, status };
+    const body = { username: username.trim(), fullname, email, phone, status };
     if (!isEdit || password) body.password = password;
     try { await onSubmit(body); }
     catch (err) { setError(err.message || "Something went wrong"); }
@@ -29,7 +30,15 @@ export default function AgentForm({ initialValues, onSubmit, isPending }) {
           {error}
         </div>
       )}
-      <TextInput label="Full name" value={name} onChange={(e) => setName(e.target.value)} required />
+      <TextInput
+        label="Username"
+        value={username}
+        onChange={(e) => setUsername(e.target.value)}
+        required={!isEdit}
+        placeholder="Login username"
+        autoComplete="username"
+      />
+      <TextInput label="Full name" value={fullname} onChange={(e) => setFullname(e.target.value)} required />
       <TextInput label="Email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
       <TextInput label="Phone" type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} />
       <TextInput

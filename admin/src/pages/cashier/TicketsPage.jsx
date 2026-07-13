@@ -67,6 +67,15 @@ function formatCurrency(value) {
 
 const PRINT_DRIFT_CODES = new Set(["odds_changed", "market_version_changed"]);
 
+function oddsDirection(oldOdds, newOdds) {
+  const a = Number(oldOdds);
+  const b = Number(newOdds);
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+  if (b > a) return "up";
+  if (b < a) return "down";
+  return null;
+}
+
 function buildAcceptDriftSelections(changedRows, ticket) {
   const snapshotSelections = Array.isArray(ticket?.selections)
     ? ticket.selections
@@ -89,11 +98,38 @@ function buildAcceptDriftSelections(changedRows, ticket) {
   });
 }
 
-function printDriftConfirmMessage(code) {
-  if (code === "market_version_changed") {
-    return "Market data was refreshed. Click OK to accept the latest market and continue printing.";
-  }
-  return "Ticket odds changed. Click OK to accept the latest odds and continue printing.";
+function buildDriftDisplayRows(changedRows, ticket) {
+  const snapshotSelections = Array.isArray(ticket?.selections)
+    ? ticket.selections
+    : [];
+  return changedRows.map((row) => {
+    const idx = Number(row.index);
+    const fromTicket = snapshotSelections[idx];
+    const home = fromTicket?.match?.homeTeam ?? "";
+    const away = fromTicket?.match?.awayTeam ?? "";
+    const matchLabel = fromTicket?.match
+      ? String(away).trim()
+        ? `${home} vs ${away}`
+        : home || "-"
+      : "-";
+    const submitted = Number(row.submittedOdds ?? fromTicket?.odds);
+    const server = Number(row.serverOdds);
+    const hasServerOdds = Number.isFinite(server) && server > 1;
+    return {
+      index: idx,
+      matchLabel,
+      marketLabel: row.marketLabel ?? fromTicket?.marketLabel ?? "",
+      label:
+        row.label ?? fromTicket?.label ?? fromTicket?.selection ?? "",
+      submittedOdds: Number.isFinite(submitted) ? submitted : null,
+      serverOdds: hasServerOdds ? server : null,
+      direction:
+        hasServerOdds && Number.isFinite(submitted)
+          ? oddsDirection(submitted, server)
+          : null,
+      versionOnly: !hasServerOdds,
+    };
+  });
 }
 
 function printDriftCancelMessage(code) {
@@ -371,6 +407,8 @@ export default function CashierTicketsPage() {
   const [printedCache, setPrintedCache] = useState(() => readPrintedCache());
   const [platformWinningsTax, setPlatformWinningsTax] = useState(null);
   const [bettingLimits, setBettingLimits] = useState(null);
+  const [driftPrompt, setDriftPrompt] = useState(null);
+  const driftPromptResolveRef = useRef(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -397,6 +435,31 @@ export default function CashierTicketsPage() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    return () => {
+      if (driftPromptResolveRef.current) {
+        driftPromptResolveRef.current(false);
+        driftPromptResolveRef.current = null;
+      }
+    };
+  }, []);
+
+  const resolveDriftPrompt = (accepted) => {
+    const resolve = driftPromptResolveRef.current;
+    driftPromptResolveRef.current = null;
+    setDriftPrompt(null);
+    if (resolve) resolve(Boolean(accepted));
+  };
+
+  const askDriftConfirmation = (prompt) =>
+    new Promise((resolve) => {
+      if (driftPromptResolveRef.current) {
+        driftPromptResolveRef.current(false);
+      }
+      driftPromptResolveRef.current = resolve;
+      setDriftPrompt(prompt);
+    });
 
   const lookupCoupon = useCouponLookupMutation();
   const lookupReceipt = useReceiptLookupMutation();
@@ -449,7 +512,10 @@ export default function CashierTicketsPage() {
         ...sellTicket,
         cashierId: sellTicket.cashierId || user?.cashierId || user?.id || "",
         cashierName:
-          String(sellTicket.cashierName || "").trim() || user?.name || "",
+          String(sellTicket.cashierName || "").trim() ||
+          user?.fullname ||
+          user?.username ||
+          "",
       }
     : null;
   const {
@@ -646,7 +712,18 @@ export default function CashierTicketsPage() {
           const changedRows = Array.isArray(error.details.selections)
             ? error.details.selections
             : [];
-          const shouldAccept = window.confirm(printDriftConfirmMessage(driftCode));
+          const displayRows = buildDriftDisplayRows(
+            changedRows,
+            ticketForWalletAndPrint,
+          );
+          const newTotalOdds = Number(error.details.newTotalOdds);
+          const shouldAccept = await askDriftConfirmation({
+            code: driftCode,
+            rows: displayRows,
+            oldTotalOdds: toNumber(ticketForWalletAndPrint?.totalOdds),
+            newTotalOdds: Number.isFinite(newTotalOdds) ? newTotalOdds : null,
+            stake: toNumber(ticketForWalletAndPrint?.stake),
+          });
           if (!shouldAccept) {
             throw Object.assign(new Error(printDriftCancelMessage(driftCode)), {
               handled: true,
@@ -1395,6 +1472,160 @@ export default function CashierTicketsPage() {
           </PanelCard>
         </div>
       </div>
+
+      <Modal
+        open={Boolean(driftPrompt)}
+        onClose={() => resolveDriftPrompt(false)}
+        title={
+          driftPrompt?.code === "market_version_changed"
+            ? "Market updated"
+            : "Odds have changed"
+        }
+        centered
+        maxWidthClassName="max-w-2xl"
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-[var(--muted)]">
+            {driftPrompt?.code === "market_version_changed"
+              ? "Market data was refreshed. Review the latest values before continuing to print."
+              : "Ticket odds changed since this coupon was placed. Review the latest odds before continuing to print."}
+          </p>
+
+          <div className="overflow-x-auto rounded-sm border border-[var(--border)]">
+            <table className="w-full text-left text-sm">
+              <thead>
+                <tr className="border-b border-[var(--border)] text-xs uppercase tracking-wide text-[var(--muted)]">
+                  <th className="px-3 py-2">Match</th>
+                  <th className="px-3 py-2">Market / Pick</th>
+                  <th className="px-3 py-2 text-right">Odds</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(driftPrompt?.rows || []).map((row) => (
+                  <tr
+                    key={`drift-${row.index}`}
+                    className="border-b border-[var(--border)] last:border-0"
+                  >
+                    <td className="px-3 py-2">{row.matchLabel}</td>
+                    <td className="px-3 py-2">
+                      <div>{row.marketLabel || "—"}</div>
+                      <div className="text-xs text-[var(--muted)]">
+                        {row.label || "—"}
+                      </div>
+                    </td>
+                    <td className="px-3 py-2 text-right font-semibold">
+                      {row.versionOnly ? (
+                        <span className="text-xs font-medium text-[var(--muted)]">
+                          Market refreshed
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center justify-end gap-1.5">
+                          {row.submittedOdds != null ? (
+                            <span className="font-normal text-[var(--muted)] line-through">
+                              {Number(row.submittedOdds).toFixed(2)}
+                            </span>
+                          ) : null}
+                          <span>
+                            {row.serverOdds != null
+                              ? Number(row.serverOdds).toFixed(2)
+                              : "—"}
+                          </span>
+                          {row.direction === "up" ? (
+                            <span
+                              className="text-[#15803d]"
+                              aria-label="Odds increased"
+                            >
+                              ▲
+                            </span>
+                          ) : null}
+                          {row.direction === "down" ? (
+                            <span
+                              className="text-[#b91c1c]"
+                              aria-label="Odds decreased"
+                            >
+                              ▼
+                            </span>
+                          ) : null}
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="rounded-sm border border-[var(--border)] bg-[var(--surfaceMuted)] px-3 py-2 text-sm">
+            <div className="flex justify-between gap-3">
+              <span className="text-[var(--muted)]">Total odds</span>
+              <span className="inline-flex items-center gap-1.5 font-semibold">
+                {driftPrompt?.oldTotalOdds != null ? (
+                  <span className="font-normal text-[var(--muted)] line-through">
+                    {Number(driftPrompt.oldTotalOdds).toFixed(2)}
+                  </span>
+                ) : null}
+                <span>
+                  {driftPrompt?.newTotalOdds != null
+                    ? Number(driftPrompt.newTotalOdds).toFixed(2)
+                    : "—"}
+                </span>
+                {driftPrompt?.oldTotalOdds != null &&
+                driftPrompt?.newTotalOdds != null
+                  ? (() => {
+                      const dir = oddsDirection(
+                        driftPrompt.oldTotalOdds,
+                        driftPrompt.newTotalOdds,
+                      );
+                      if (dir === "up") {
+                        return (
+                          <span className="text-[#15803d]" aria-hidden>
+                            ▲
+                          </span>
+                        );
+                      }
+                      if (dir === "down") {
+                        return (
+                          <span className="text-[#b91c1c]" aria-hidden>
+                            ▼
+                          </span>
+                        );
+                      }
+                      return null;
+                    })()
+                  : null}
+              </span>
+            </div>
+            {driftPrompt?.newTotalOdds != null &&
+            Number.isFinite(Number(driftPrompt.stake)) ? (
+              <div className="mt-1 flex justify-between gap-3">
+                <span className="text-[var(--muted)]">Potential win</span>
+                <span className="font-semibold">
+                  {formatCurrency(
+                    Number(driftPrompt.stake) * Number(driftPrompt.newTotalOdds),
+                  )}
+                </span>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="flex flex-wrap justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => resolveDriftPrompt(false)}
+              className="rounded-sm border border-[var(--border)] px-4 py-2 text-sm font-semibold text-[var(--muted)]"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => resolveDriftPrompt(true)}
+              className="rounded-sm bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-white"
+            >
+              Accept new odds and print
+            </button>
+          </div>
+        </div>
+      </Modal>
 
       <Modal
         open={ticketPreviewOpen}

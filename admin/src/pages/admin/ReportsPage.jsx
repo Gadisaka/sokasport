@@ -82,7 +82,7 @@ export default function AdminReportsPage() {
       const list = agent?.cashiers || [];
       return list.map((c) => ({
         value: c.cashierProfileId,
-        label: `${c.name} · ${c.branchName || "—"}`,
+        label: `${c.fullname || c.name} · ${c.branchName || "—"}`,
       }));
     }
     const list = cashiersQuery.data || [];
@@ -90,7 +90,7 @@ export default function AdminReportsPage() {
       .filter((c) => c.cashierProfileId)
       .map((c) => ({
         value: c.cashierProfileId,
-        label: `${c.name} · ${c.branch?.name || "—"}`,
+        label: `${c.fullname || c.name} · ${c.branch?.name || "—"}`,
       }));
   }, [agentIdDraft, agents, cashiersQuery.data]);
 
@@ -214,7 +214,7 @@ export default function AdminReportsPage() {
                     <option value="">All agents</option>
                     {agents.map((a) => (
                       <option key={a.id} value={a.id}>
-                        {a.name}
+                        {a.fullname || a.name}
                       </option>
                     ))}
                   </select>

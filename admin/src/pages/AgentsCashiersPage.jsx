@@ -149,7 +149,7 @@ function CashiersTab() {
                   className="cursor-pointer border-b border-[var(--border)] last:border-0 hover:bg-[var(--surfaceMuted)]"
                 >
                   <td className="px-4 py-3">
-                    <p className="font-medium">{c.name}</p>
+                    <p className="font-medium">{c.fullname}</p>
                     <p className="text-xs text-[var(--muted)]">
                       {c.phone || c.email}
                     </p>
@@ -171,7 +171,7 @@ function CashiersTab() {
                   </td>
                   <td className="px-4 py-3">
                     {c.agent ? (
-                      <Tag>{c.agent.name}</Tag>
+                      <Tag>{c.agent.fullname}</Tag>
                     ) : (
                       <span className="text-xs text-[var(--muted)]">
                         Unassigned
@@ -227,7 +227,7 @@ function CashierDetail({ cashier, onClose }) {
 
   const agentOptions = (agentsQuery.data?.items ?? []).map((a) => ({
     value: a.id,
-    label: a.name,
+    label: a.fullname,
   }));
 
   async function handleUpdate(body) {
@@ -239,7 +239,7 @@ function CashierDetail({ cashier, onClose }) {
   async function handleDelete() {
     if (
       !window.confirm(
-        `Delete cashier "${cashier.name}" and their profile? This cannot be undone.`,
+        `Delete cashier "${cashier.fullname}" and their profile? This cannot be undone.`,
       )
     )
       return;
@@ -307,7 +307,8 @@ function CashierDetail({ cashier, onClose }) {
     <Modal open onClose={onClose} title="Cashier details">
       <div className="space-y-4">
         <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
-          <DetailRow label="Name" value={cashier.name} />
+          <DetailRow label="Name" value={cashier.fullname} />
+          <DetailRow label="Username" value={cashier.username || "—"} />
           <DetailRow label="Email" value={cashier.email} />
           <DetailRow label="Phone" value={cashier.phone || "—"} />
           <DetailRow
@@ -351,7 +352,7 @@ function CashierDetail({ cashier, onClose }) {
           </p>
           {cashier.agent ? (
             <div className="flex items-center justify-between">
-              <Tag>{cashier.agent.name}</Tag>
+              <Tag>{cashier.agent.fullname}</Tag>
               <button
                 type="button"
                 onClick={handleUnassign}
@@ -548,7 +549,7 @@ function AgentCard({
     )
     .map((c) => ({
       value: c.cashierProfileId,
-      label: `${c.name} — ${c.branchName} (${c.branchLocation})`,
+      label: `${c.fullname} — ${c.branchName} (${c.branchLocation})`,
     }));
 
   async function handleAssign() {
@@ -583,7 +584,7 @@ function AgentCard({
   async function handleDelete() {
     if (
       !window.confirm(
-        `Delete agent "${agent.name}"? All cashier assignments will be removed.`,
+        `Delete agent "${agent.fullname}"? All cashier assignments will be removed.`,
       )
     )
       return;
@@ -595,7 +596,7 @@ function AgentCard({
       <PanelCard className="p-5">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <p className="text-base font-semibold">{agent.name}</p>
+            <p className="text-base font-semibold">{agent.fullname}</p>
             <p className="text-xs text-[var(--muted)]">
               {agent.phone || agent.email}
             </p>
@@ -636,7 +637,7 @@ function AgentCard({
                   className="flex items-start justify-between rounded-sm border border-[var(--border)] bg-[var(--surfaceMuted)] p-3"
                 >
                   <div>
-                    <p className="text-sm font-medium">{ac.name}</p>
+                    <p className="text-sm font-medium">{ac.fullname}</p>
                     <p className="text-xs text-[var(--muted)]">
                       {ac.branchName} — {ac.branchLocation}
                     </p>

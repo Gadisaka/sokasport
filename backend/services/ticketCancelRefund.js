@@ -1,8 +1,17 @@
 /**
  * Reverse wallet debits when a ticket is canceled (player and/or cashier).
  *
+ * Player refunds restore balance only (not withdrawable) so deposit→bet→cancel
+ * cannot turn deposits into cashable funds.
+ *
  * @module services/ticketCancelRefund
  */
+
+import {
+  creditWallet,
+  restoreWallet,
+  walletSnapshot,
+} from "../lib/walletBalance.js";
 
 async function creditWalletInTx(tx, { walletId, amount, reference }) {
   const existing = await tx.transaction.findFirst({
@@ -17,11 +26,10 @@ async function creditWalletInTx(tx, { walletId, amount, reference }) {
   const numericAmount = Number(amount) || 0;
   if (!wallet || numericAmount <= 0) return null;
 
-  const balanceBefore = Number(wallet.balance) || 0;
-  const balanceAfter = balanceBefore + numericAmount;
-  await tx.wallet.update({
-    where: { id: wallet.id },
-    data: { balance: balanceAfter },
+  const beforeSnap = walletSnapshot(wallet);
+  // Refunds are never withdrawable — prevents deposit/bet/cancel laundering.
+  const credited = await creditWallet(tx, wallet, numericAmount, {
+    withdrawable: false,
   });
 
   try {
@@ -30,17 +38,14 @@ async function creditWalletInTx(tx, { walletId, amount, reference }) {
         wallet_id: wallet.id,
         type: "DEPOSIT",
         amount: numericAmount,
-        balance_before: balanceBefore,
-        balance_after: balanceAfter,
+        balance_before: credited.balanceBefore,
+        balance_after: credited.balanceAfter,
         reference,
       },
     });
   } catch (insertErr) {
     if (insertErr?.code === "P2002") {
-      await tx.wallet.update({
-        where: { id: wallet.id },
-        data: { balance: balanceBefore },
-      });
+      await restoreWallet(tx, wallet, beforeSnap);
       return null;
     }
     throw insertErr;
@@ -50,7 +55,7 @@ async function creditWalletInTx(tx, { walletId, amount, reference }) {
     amount: numericAmount,
     walletId: wallet.id,
     walletType: wallet.wallet_type,
-    balanceAfter,
+    balanceAfter: credited.balanceAfter,
   };
 }
 

@@ -29,7 +29,7 @@ function Profile() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  const [name, setName] = useState("");
+  const [fullname, setFullname] = useState("");
   const [phone, setPhone] = useState("");
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileMsg, setProfileMsg] = useState(null);
@@ -52,7 +52,7 @@ function Profile() {
         ]);
         if (cancelled) return;
         setProfile(me);
-        setName(me.name ?? "");
+        setFullname(me.fullname ?? "");
         setPhone(me.phone ?? "");
         setBalance(wallet === null ? null : Number(wallet.balance ?? 0));
       } catch (e) {
@@ -80,7 +80,7 @@ function Profile() {
     setProfileSaving(true);
     try {
       const payload = {};
-      if (name.trim() !== (profile?.name ?? "")) payload.name = name.trim();
+      if (fullname.trim() !== (profile?.fullname ?? "")) payload.fullname = fullname.trim();
       if (isPlayer && phone.trim() !== (profile?.phone ?? "")) {
         payload.phone = phone.trim();
       }
@@ -90,7 +90,7 @@ function Profile() {
       }
       const { user } = await updateProfile(payload);
       setProfile(user);
-      setName(user.name ?? "");
+      setFullname(user.fullname ?? "");
       setPhone(user.phone ?? "");
       setProfileMsg("Profile updated.");
     } catch (err) {
@@ -243,8 +243,8 @@ function Profile() {
                     </span>
                     <input
                       type="text"
-                      value={name}
-                      onChange={(e) => setName(e.target.value)}
+                      value={fullname}
+                      onChange={(e) => setFullname(e.target.value)}
                       required
                       className={accountInputCls}
                     />

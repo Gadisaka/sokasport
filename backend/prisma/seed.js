@@ -65,35 +65,40 @@ const ROLES = [
 const STAFF_TEST_ACCOUNTS = [
   {
     role: "SUPER_ADMIN",
-    name: "Super Admin",
+    username: "superadmin",
+    fullname: "Super Admin",
     email: "superadmin@test.local",
     phone: "0911112222",
     password: "Test@12345",
   },
   {
     role: "ADMIN",
-    name: "Admin User",
+    username: "admin",
+    fullname: "Admin User",
     email: "admin@test.local",
     phone: "0911113333",
     password: "Test@12345",
   },
   {
     role: "FINANCIAL_SUPPORT",
-    name: "Financial Support",
+    username: "financial",
+    fullname: "Financial Support",
     email: "financial.support@test.local",
     phone: "0911114444",
     password: "Test@12345",
   },
   {
     role: "AGENT",
-    name: "Agent User",
+    username: "agent",
+    fullname: "Agent User",
     email: "agent@test.local",
     phone: "0911115555",
     password: "Test@12345",
   },
   {
     role: "CASHIER",
-    name: "Cashier User",
+    username: "cashier",
+    fullname: "Cashier User",
     email: "cashier@test.local",
     phone: "0911116666",
     password: "Test@12345",
@@ -118,7 +123,8 @@ async function main() {
     await prisma.user.upsert({
       where: { email: account.email },
       update: {
-        name: account.name,
+        username: account.username,
+        fullname: account.fullname,
         phone,
         password: hashedPassword,
         status: true,
@@ -127,7 +133,8 @@ async function main() {
         },
       },
       create: {
-        name: account.name,
+        username: account.username,
+        fullname: account.fullname,
         email: account.email,
         phone,
         password: hashedPassword,
@@ -138,7 +145,7 @@ async function main() {
       },
     });
 
-    console.log(`  User ${account.role} (${phone}) — ok`);
+    console.log(`  User ${account.role} (${account.username} / ${phone}) — ok`);
   }
   console.log(`Seeded ${STAFF_TEST_ACCOUNTS.length} staff test accounts.`);
 
@@ -181,7 +188,7 @@ async function main() {
 
     const cashierUsers = await prisma.user.findMany({
       where: { role_id: cashierRole.id },
-      select: { id: true, name: true, status: true },
+      select: { id: true, fullname: true, status: true },
     });
 
     for (const user of cashierUsers) {
@@ -202,7 +209,7 @@ async function main() {
           },
           select: { id: true },
         });
-        console.log(`  Created cashier wallet for ${user.name}`);
+        console.log(`  Created cashier wallet for ${user.fullname}`);
       }
 
       await prisma.cashier.upsert({
@@ -221,7 +228,7 @@ async function main() {
           status: Boolean(user.status),
         },
       });
-      console.log(`  Ensured cashier profile for ${user.name}`);
+      console.log(`  Ensured cashier profile for ${user.fullname}`);
     }
   }
 }

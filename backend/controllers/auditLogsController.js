@@ -47,7 +47,7 @@ export async function listAuditLogs(req, res) {
         orderBy: { created_at: "desc" },
         include: {
           user: {
-            select: { id: true, name: true, phone: true },
+            select: { id: true, fullname: true, phone: true },
           },
         },
       }),

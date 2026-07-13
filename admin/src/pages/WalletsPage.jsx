@@ -115,7 +115,7 @@ function PendingRequestsTab() {
             {items.map((r) => (
               <tr key={r.id} className="border-b border-[var(--border)] last:border-0">
                 <td className="px-4 py-3">
-                  <p className="font-medium">{r.user?.name || "—"}</p>
+                  <p className="font-medium">{r.user?.fullname || "—"}</p>
                   <p className="text-xs text-[var(--muted)]">{r.user?.phone || r.user?.email || "—"}</p>
                 </td>
                 <td className="px-4 py-3">{r.type}</td>
@@ -194,13 +194,13 @@ function ManageWalletsTab() {
             placeholder="Choose wallet..."
             options={items.map((w) => ({
               value: w.id,
-              label: `${w.user.name} (${w.walletType})`,
+              label: `${w.user.fullname} (${w.walletType})`,
             }))}
           />
         </div>
         {selectedWallet && (
           <div className="mt-4 rounded-sm border border-[var(--border)] bg-[var(--surfaceMuted)] p-3 text-sm">
-            <p className="font-medium">{selectedWallet.user.name}</p>
+            <p className="font-medium">{selectedWallet.user.fullname}</p>
             <p className="text-xs text-[var(--muted)]">{selectedWallet.user.phone || selectedWallet.user.email}</p>
             <p className="mt-1 font-mono">Balance: {Number(selectedWallet.balance).toLocaleString()}</p>
           </div>
@@ -230,7 +230,7 @@ function ManageWalletsTab() {
             {items.map((w) => (
               <tr key={w.id} onClick={() => setSelectedWalletId(w.id)} className="cursor-pointer border-b border-[var(--border)] hover:bg-[var(--surfaceMuted)] last:border-0">
                 <td className="px-4 py-3">
-                  <p className="font-medium">{w.user.name}</p>
+                  <p className="font-medium">{w.user.fullname}</p>
                   <p className="text-xs text-[var(--muted)]">{w.user.phone || w.user.email || "—"}</p>
                 </td>
                 <td className="px-4 py-3">{w.user.role}</td>
@@ -287,7 +287,7 @@ function WalletHistoryTab() {
               <tr key={tx.id} className="border-b border-[var(--border)] last:border-0">
                 <td className="px-4 py-3 text-xs">{new Date(tx.createdAt).toLocaleString()}</td>
                 <td className="px-4 py-3">
-                  <p className="font-medium">{tx.user?.name || "—"}</p>
+                  <p className="font-medium">{tx.user?.fullname || "—"}</p>
                   <p className="text-xs text-[var(--muted)]">{tx.user?.phone || tx.user?.email || "—"}</p>
                 </td>
                 <td className="px-4 py-3">{tx.type}</td>

@@ -1,8 +1,9 @@
 /**
  * Auth controller — login and current-user profile.
  *
- * Login uses phone + password (not email). JWT payload includes `sub` (user id),
- * `phone`, and `role` (RoleName enum string) for middleware authorization.
+ * Staff login uses username + password; player login uses phone + password.
+ * JWT payload includes `sub` (user id), `phone`, `username`, and `role`
+ * (RoleName enum string) for middleware authorization.
  *
  * @module controllers/authController
  */
@@ -12,15 +13,29 @@ import { prisma } from "../Config/db.js";
 import { logAuditEvent } from "../lib/auditLog.js";
 import { handleCashierDeviceLogin } from "../lib/cashierDeviceAuth.js";
 import { normalizeEthiopiaPhone } from "../lib/phone.js";
+import {
+  isLoginPathAllowed,
+  resolveLoginIdentifier,
+} from "../lib/loginIdentifier.js";
 
 function publicUserShape(user) {
   return {
     id: user.id,
-    name: user.name,
+    username: user.username ?? null,
+    fullname: user.fullname,
     phone: user.phone,
     role: user.role.name,
     status: user.status,
     createdAt: user.created_at,
+  };
+}
+
+function tokenPayloadFor(user) {
+  return {
+    sub: user.id,
+    phone: user.phone,
+    username: user.username ?? null,
+    role: user.role.name,
   };
 }
 
@@ -33,33 +48,55 @@ if (!JWT_SECRET) {
 
 /**
  * POST /api/auth/login
- * Body: { phone, password, fingerprint? }
+ * Body: exactly one of { username } (staff) or { phone } (player), plus password,
+ * and optional fingerprint for cashiers.
  * Returns { accessToken, user } on success; 401 for bad credentials or disabled user.
  */
 export async function login(req, res) {
-  const { phone, password, fingerprint } = req.body ?? {};
-  const normalizedPhone = phone ? normalizeEthiopiaPhone(phone) : null;
+  const { password, fingerprint } = req.body ?? {};
+  const resolved = resolveLoginIdentifier(req.body ?? {});
 
-  if (!phone || !password) {
+  if (!resolved.ok || !password) {
     await logAuditEvent({
       req,
       action: "AUTH_LOGIN_FAILED",
       module: "AUTH",
       entityType: "USER",
-      meta: { reason: "MISSING_CREDENTIALS", phone: normalizedPhone },
+      meta: {
+        reason: "MISSING_CREDENTIALS",
+        username: resolved.username ?? null,
+        phone: resolved.phone ?? null,
+      },
     });
-    return res
-      .status(400)
-      .json({ message: "Phone and password are required" });
+    return res.status(400).json({
+      message:
+        resolved.message ||
+        "Provide exactly one of username (staff) or phone (player), plus password",
+    });
   }
 
-  const user = await prisma.user.findUnique({
-    where: { phone: normalizedPhone },
-    include: { role: true },
-  });
+  const identifierMeta =
+    resolved.mode === "username"
+      ? { username: resolved.username }
+      : { phone: resolved.phone };
 
-  // Same message for missing user, wrong password, or inactive account (no user enumeration)
-  if (!user || !user.status) {
+  const user =
+    resolved.mode === "username"
+      ? await prisma.user.findUnique({
+          where: { username: resolved.username },
+          include: { role: true },
+        })
+      : await prisma.user.findUnique({
+          where: { phone: resolved.phone },
+          include: { role: true },
+        });
+
+  // Same message for missing user, wrong password, inactive, or wrong login path
+  if (
+    !user ||
+    !user.status ||
+    !isLoginPathAllowed(resolved.mode, user.role.name)
+  ) {
     await logAuditEvent({
       req,
       action: "AUTH_LOGIN_FAILED",
@@ -68,7 +105,14 @@ export async function login(req, res) {
       entityId: user?.id ?? null,
       actorUserId: user?.id ?? null,
       actorRole: user?.role?.name ?? null,
-      meta: { reason: user ? "INACTIVE_USER" : "USER_NOT_FOUND", phone: normalizedPhone },
+      meta: {
+        reason: !user
+          ? "USER_NOT_FOUND"
+          : !user.status
+            ? "INACTIVE_USER"
+            : "WRONG_LOGIN_PATH",
+        ...identifierMeta,
+      },
     });
     return res.status(401).json({ message: "Invalid credentials" });
   }
@@ -83,7 +127,7 @@ export async function login(req, res) {
       entityId: user.id,
       actorUserId: user.id,
       actorRole: user.role.name,
-      meta: { reason: "WRONG_PASSWORD", phone: normalizedPhone },
+      meta: { reason: "WRONG_PASSWORD", ...identifierMeta },
     });
     return res.status(401).json({ message: "Invalid credentials" });
   }
@@ -100,13 +144,7 @@ export async function login(req, res) {
     }
   }
 
-  const tokenPayload = {
-    sub: user.id,
-    phone: user.phone,
-    role: user.role.name,
-  };
-
-  const accessToken = jwt.sign(tokenPayload, JWT_SECRET, {
+  const accessToken = jwt.sign(tokenPayloadFor(user), JWT_SECRET, {
     expiresIn: JWT_EXPIRES_IN,
   });
 
@@ -130,7 +168,8 @@ export async function login(req, res) {
     accessToken,
     user: {
       id: user.id,
-      name: user.name,
+      username: user.username ?? null,
+      fullname: user.fullname,
       phone: user.phone,
       role: user.role.name,
     },
@@ -199,21 +238,27 @@ export async function getMe(req, res) {
 
 /**
  * PATCH /api/auth/profile
- * Requires `authenticateToken`. Body: { name?, phone? } — at least one field.
+ * Requires `authenticateToken`. Body: { fullname?, phone? } — at least one field.
  *
  * Role rules:
- * - PLAYER: name and phone; phone change syncs synthetic email (`${phone}@player.local`). New JWT when phone changes.
- * - ADMIN / SUPER_ADMIN: name and phone; phone change does not alter email. New JWT when phone changes.
- * - Other roles: cannot update name or phone (403).
+ * - PLAYER: fullname and phone; phone change syncs synthetic email (`${phone}@player.local`). New JWT when phone changes.
+ * - ADMIN / SUPER_ADMIN: fullname and phone; phone change does not alter email. New JWT when phone changes.
+ * - Other roles: cannot update fullname or phone (403).
+ * Username is not editable via profile.
  */
 export async function patchProfile(req, res) {
   try {
     const body = req.body ?? {};
-    const nameProvided = Object.prototype.hasOwnProperty.call(body, "name");
+    const fullnameProvided = Object.prototype.hasOwnProperty.call(
+      body,
+      "fullname",
+    );
     const phoneProvided = Object.prototype.hasOwnProperty.call(body, "phone");
 
-    if (!nameProvided && !phoneProvided) {
-      return res.status(400).json({ message: "Provide name and/or phone to update" });
+    if (!fullnameProvided && !phoneProvided) {
+      return res
+        .status(400)
+        .json({ message: "Provide fullname and/or phone to update" });
     }
 
     const user = await prisma.user.findUnique({
@@ -231,7 +276,7 @@ export async function patchProfile(req, res) {
       roleName === "ADMIN" ||
       roleName === "SUPER_ADMIN";
 
-    if ((nameProvided || phoneProvided) && !canEditContact) {
+    if ((fullnameProvided || phoneProvided) && !canEditContact) {
       return res.status(403).json({
         message: "You cannot update your profile contact details",
       });
@@ -239,13 +284,13 @@ export async function patchProfile(req, res) {
 
     const data = {};
 
-    if (nameProvided) {
-      const trimmed = String(body.name ?? "").trim();
+    if (fullnameProvided) {
+      const trimmed = String(body.fullname ?? "").trim();
       if (!trimmed) {
-        return res.status(400).json({ message: "Name cannot be empty" });
+        return res.status(400).json({ message: "Full name cannot be empty" });
       }
-      if (trimmed !== user.name) {
-        data.name = trimmed;
+      if (trimmed !== user.fullname) {
+        data.fullname = trimmed;
       }
     }
 
@@ -253,11 +298,11 @@ export async function patchProfile(req, res) {
       if (!String(body.phone ?? "").trim()) {
         return res.status(400).json({ message: "Phone cannot be empty" });
       }
-      const normalizedPhone = normalizeEthiopiaPhone(body.phone);
-      if (normalizedPhone !== user.phone) {
-        data.phone = normalizedPhone;
+      const nextPhone = normalizeEthiopiaPhone(body.phone);
+      if (nextPhone !== user.phone) {
+        data.phone = nextPhone;
         if (roleName === "PLAYER") {
-          data.email = `${normalizedPhone}@player.local`;
+          data.email = `${nextPhone}@player.local`;
         }
       }
     }
@@ -277,11 +322,9 @@ export async function patchProfile(req, res) {
 
     let accessToken = null;
     if (data.phone !== undefined) {
-      accessToken = jwt.sign(
-        { sub: updated.id, phone: updated.phone, role: updated.role.name },
-        JWT_SECRET,
-        { expiresIn: JWT_EXPIRES_IN },
-      );
+      accessToken = jwt.sign(tokenPayloadFor(updated), JWT_SECRET, {
+        expiresIn: JWT_EXPIRES_IN,
+      });
     }
 
     await logAuditEvent({
@@ -327,7 +370,9 @@ export async function changePassword(req, res) {
     }
 
     if (newPassword.length < 6) {
-      return res.status(400).json({ message: "New password must be at least 6 characters" });
+      return res
+        .status(400)
+        .json({ message: "New password must be at least 6 characters" });
     }
 
     if (newPassword !== confirmPassword) {

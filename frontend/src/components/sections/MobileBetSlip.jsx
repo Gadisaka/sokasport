@@ -33,6 +33,10 @@ import {
   clampSelectionsToMax,
   slipLegCountViolation,
 } from "../../utils/betSlipLimits";
+import {
+  formatOddsChangeParts,
+  oddsDirection,
+} from "../../utils/oddsDirection";
 
 const modalBackdrop =
   "fixed inset-0 flex items-center justify-center bg-black/55 p-4 backdrop-blur-sm";
@@ -295,9 +299,13 @@ function MobileBetSlip({
         const updatedSelections = selections.map((sel, idx) => {
           const row = changed.find((entry) => Number(entry.index) === idx);
           if (!row || !Number.isFinite(Number(row.serverOdds))) return sel;
+          const previousOdds = Number(sel.acceptedOdds ?? sel.value);
+          const newOdds = Number(row.serverOdds);
           return {
             ...sel,
-            acceptedOdds: Number(row.serverOdds),
+            previousOdds: Number.isFinite(previousOdds) ? previousOdds : null,
+            oddsDirection: oddsDirection(previousOdds, newOdds),
+            acceptedOdds: newOdds,
             acceptedMarketVersion: Number(
               row.serverMarketVersion ?? sel.marketVersion ?? 0,
             ),
@@ -305,7 +313,7 @@ function MobileBetSlip({
               row.serverMarketVersion ?? sel.marketVersion ?? 0,
             ),
             marketState: row.marketState || sel.marketState || "OPEN",
-            value: Number(row.serverOdds).toFixed(2),
+            value: newOdds.toFixed(2),
           };
         });
         const idem = err?.idempotencyKey || idempotencyKey;
@@ -862,7 +870,7 @@ function MobileBetSlip({
 
                 {placedBet.usedLatestOdds ? (
                   <p className="mt-3 text-center text-xs font-semibold text-[#9ecbff]">
-                    Latest odds used
+                    Odds were updated before placing
                   </p>
                 ) : null}
 
@@ -926,22 +934,50 @@ function MobileBetSlip({
                     </tr>
                   </thead>
                   <tbody>
-                    {placedBet.selections.map((sel) => (
-                      <tr
-                        key={sel.id}
-                        className="border-b border-[#2a2a3e] text-[#ffffff]"
-                      >
-                        <td className="whitespace-nowrap px-2 py-2">
-                          {new Date().toLocaleDateString()}
-                        </td>
-                        <td className="px-2 py-2">{sel.matchName}</td>
-                        <td className="px-2 py-2">{sel.marketLabel}</td>
-                        <td className="px-2 py-2">{sel.label}</td>
-                        <td className="px-2 py-2 text-right font-bold">
-                          {sel.value}
-                        </td>
-                      </tr>
-                    ))}
+                    {placedBet.selections.map((sel) => {
+                      const oddsParts = formatOddsChangeParts(sel);
+                      return (
+                        <tr
+                          key={sel.id}
+                          className="border-b border-[#2a2a3e] text-[#ffffff]"
+                        >
+                          <td className="whitespace-nowrap px-2 py-2">
+                            {new Date().toLocaleDateString()}
+                          </td>
+                          <td className="px-2 py-2">{sel.matchName}</td>
+                          <td className="px-2 py-2">{sel.marketLabel}</td>
+                          <td className="px-2 py-2">{sel.label}</td>
+                          <td className="px-2 py-2 text-right font-bold">
+                            {oddsParts.previous ? (
+                              <span className="inline-flex items-center justify-end gap-1">
+                                <span className="font-normal text-[rgba(255,255,255,0.45)] line-through">
+                                  {oddsParts.previous}
+                                </span>
+                                <span>{oddsParts.current}</span>
+                                {oddsParts.direction === "up" ? (
+                                  <span
+                                    className="text-[#86efac]"
+                                    aria-label="Odds increased"
+                                  >
+                                    ▲
+                                  </span>
+                                ) : null}
+                                {oddsParts.direction === "down" ? (
+                                  <span
+                                    className="text-[#fca5a5]"
+                                    aria-label="Odds decreased"
+                                  >
+                                    ▼
+                                  </span>
+                                ) : null}
+                              </span>
+                            ) : (
+                              oddsParts.current
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

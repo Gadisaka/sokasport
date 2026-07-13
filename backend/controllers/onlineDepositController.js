@@ -28,6 +28,7 @@ import {
   verifyPaymentRemote,
 } from "../services/paymentVerifyClient.js";
 import { applyDepositBonusesInTx } from "../lib/bonusEngine.js";
+import { creditWallet } from "../lib/walletBalance.js";
 
 function verifySummaryFromResponse(method, data) {
   const m = String(method).toLowerCase();
@@ -278,12 +279,8 @@ export async function verifyOnlineDeposit(req, res) {
         });
         const hadFirst = userRow?.first_deposit_at ?? null;
 
-        const before = Number(w.balance);
-        const after = before + creditAmount;
-
-        await tx.wallet.update({
-          where: { id: w.id },
-          data: { balance: after },
+        const credited = await creditWallet(tx, w, creditAmount, {
+          withdrawable: false,
         });
 
         const depRow = await tx.transaction.create({
@@ -291,8 +288,8 @@ export async function verifyOnlineDeposit(req, res) {
             wallet_id: w.id,
             type: "DEPOSIT",
             amount: creditAmount,
-            balance_before: before,
-            balance_after: after,
+            balance_before: credited.balanceBefore,
+            balance_after: credited.balanceAfter,
             reference: ledgerRef,
           },
         });
@@ -313,7 +310,7 @@ export async function verifyOnlineDeposit(req, res) {
 
         const wFinal = await tx.wallet.findUnique({ where: { id: w.id } });
         return {
-          newBalance: Number(wFinal?.balance ?? after),
+          newBalance: Number(wFinal?.balance ?? credited.balanceAfter),
           creditedAmount: creditAmount,
         };
       });

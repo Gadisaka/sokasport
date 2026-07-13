@@ -57,7 +57,8 @@ export function AuthProvider({ children }) {
 
     return {
       id: meQuery.data.id,
-      name: meQuery.data.name,
+      username: meQuery.data.username ?? null,
+      fullname: meQuery.data.fullname,
       phone: meQuery.data.phone,
       role: meQuery.data.role,
     };
@@ -92,9 +93,9 @@ export function AuthProvider({ children }) {
     localStorage.removeItem("user");
   }, [token, meQuery.isError]);
 
-  async function login(phone, password, fingerprint) {
+  async function login(username, password, fingerprint) {
     const { accessToken, user: loggedInUser } = await loginMutation.mutateAsync({
-      phone,
+      username,
       password,
       fingerprint,
     });

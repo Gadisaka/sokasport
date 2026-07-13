@@ -59,7 +59,7 @@ async function getAgentScope(agentUserId) {
       cashier: {
         include: {
           user: {
-            select: { id: true, name: true, status: true },
+            select: { id: true, fullname: true, status: true },
           },
           wallet: {
             select: { balance: true },
@@ -144,7 +144,7 @@ export async function getAgentCashiers(req, res) {
       return {
         cashierProfileId: cashier.id,
         cashierId: cashier.user_id,
-        cashierName: cashier.user?.name || "Cashier",
+        cashierName: cashier.user?.fullname || "Cashier",
         branchName: cashier.branch_name || "Unknown",
         branchLocation: cashier.branch_location || "",
         status: mapCashierStatus(Boolean(cashier.user?.status)),
@@ -299,7 +299,7 @@ export async function getAgentDashboard(req, res) {
       byHour.set(hourKey, (byHour.get(hourKey) || 0) + 1);
 
       const cashier = cashierById.get(ticket.cashier_id);
-      const cashierName = cashier?.user?.name || "Cashier";
+      const cashierName = cashier?.user?.fullname || "Cashier";
       const perf = cashierPerfMap.get(ticket.cashier_id) || {
         cashierProfileId: ticket.cashier_id,
         cashierName,
@@ -377,7 +377,7 @@ export async function getAgentDashboard(req, res) {
         stake: Number(ticket.stake || 0),
         status: ticket.status,
         createdAt: ticket.created_at,
-        cashierName: cashierById.get(ticket.cashier_id)?.user?.name || "Cashier",
+        cashierName: cashierById.get(ticket.cashier_id)?.user?.fullname || "Cashier",
       })),
       cashierPerformance: [...cashierPerfMap.values()].sort(
         (a, b) => b.volume - a.volume,
@@ -455,7 +455,7 @@ export async function getAgentReports(req, res) {
     });
 
     const cashierNameById = new Map(
-      cashiers.map((cashier) => [cashier.id, cashier.user?.name || "Cashier"]),
+      cashiers.map((cashier) => [cashier.id, cashier.user?.fullname || "Cashier"]),
     );
     const branchMap = new Map();
     const cashierMap = new Map();
@@ -630,7 +630,7 @@ export async function getAgentCashierWalletActivity(req, res) {
       if (c.wallet_id) {
         walletToCashier.set(c.wallet_id, {
           cashierProfileId: c.id,
-          cashierName: c.user?.name || "Cashier",
+          cashierName: c.user?.fullname || "Cashier",
           branchName: c.branch_name || "",
         });
       }
@@ -677,7 +677,7 @@ export async function getAgentCashierWalletActivity(req, res) {
 
     const cashierOptions = cashiers.map((c) => ({
       cashierProfileId: c.id,
-      cashierName: c.user?.name || "Cashier",
+      cashierName: c.user?.fullname || "Cashier",
       branchName: c.branch_name || "",
     }));
 

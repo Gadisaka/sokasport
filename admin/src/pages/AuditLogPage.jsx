@@ -123,7 +123,7 @@ export default function AuditLogPage() {
                     {new Date(log.created_at).toLocaleString()}
                   </td>
                   <td className="px-4 py-3">
-                    <p className="font-medium">{log.user?.name || "System/Unknown"}</p>
+                    <p className="font-medium">{log.user?.fullname || "System/Unknown"}</p>
                     <p className="text-xs text-[var(--muted)]">{log.actor_role || "—"}</p>
                   </td>
                   <td className="px-4 py-3">

@@ -119,7 +119,7 @@ export async function getFinancialSupportDashboard(req, res) {
         },
         include: {
           wallet: {
-            include: { user: { select: { id: true, name: true, phone: true } } },
+            include: { user: { select: { id: true, fullname: true, phone: true } } },
           },
         },
         orderBy: { created_at: "desc" },
@@ -140,7 +140,7 @@ export async function getFinancialSupportDashboard(req, res) {
         },
         include: {
           wallet: {
-            include: { user: { select: { id: true, name: true, phone: true } } },
+            include: { user: { select: { id: true, fullname: true, phone: true } } },
           },
         },
         orderBy: { created_at: "desc" },
@@ -205,7 +205,7 @@ export async function getFinancialSupportDashboard(req, res) {
 
     const pendingWithdrawals = pendingRows.map((row) => ({
       id: row.id,
-      userName: row.wallet?.user?.name || "Unknown",
+      userName: row.wallet?.user?.fullname || "Unknown",
       userPhone: row.wallet?.user?.phone || "",
       amount: Number(row.amount || 0),
       requestedAt: row.created_at,
@@ -215,7 +215,7 @@ export async function getFinancialSupportDashboard(req, res) {
     const recentActivity = rangeTransactions.slice(0, 20).map((tx) => ({
       id: tx.id,
       time: tx.created_at,
-      userName: tx.wallet?.user?.name || "Unknown",
+      userName: tx.wallet?.user?.fullname || "Unknown",
       userPhone: tx.wallet?.user?.phone || "",
       type: tx.type,
       amount: Number(tx.amount || 0),

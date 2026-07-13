@@ -1,5 +1,10 @@
 import { prisma } from "../Config/db.js";
 import { withWalletLock } from "../lib/walletLock.js";
+import {
+  creditWallet,
+  restoreWallet,
+  walletSnapshot,
+} from "../lib/walletBalance.js";
 
 /**
  * Finalize helpers for HELD live-bet tickets (the bet-acceptance delay).
@@ -72,13 +77,13 @@ export async function refundHeldTicket(
 
       const live = await tx.wallet.findUnique({
         where: { id: wallet.id },
-        select: { balance: true },
       });
-      const balanceBefore = Number(live?.balance) || 0;
-      const balanceAfter = balanceBefore + amount;
-      await tx.wallet.update({
-        where: { id: wallet.id },
-        data: { balance: balanceAfter },
+      if (!live) {
+        return { canceled: true, refunded: 0, reason: "no_wallet" };
+      }
+      const beforeSnap = walletSnapshot(live);
+      const credited = await creditWallet(tx, live, amount, {
+        withdrawable: false,
       });
       try {
         await tx.transaction.create({
@@ -86,17 +91,14 @@ export async function refundHeldTicket(
             wallet_id: wallet.id,
             type: "DEPOSIT",
             amount,
-            balance_before: balanceBefore,
-            balance_after: balanceAfter,
+            balance_before: credited.balanceBefore,
+            balance_after: credited.balanceAfter,
             reference: refundRef,
           },
         });
       } catch (err) {
         if (err?.code === "P2002") {
-          await tx.wallet.update({
-            where: { id: wallet.id },
-            data: { balance: balanceBefore },
-          });
+          await restoreWallet(tx, live, beforeSnap);
           return { canceled: true, refunded: 0, reason: "already_refunded_race" };
         }
         throw err;

@@ -32,6 +32,7 @@ function Withdraw() {
       : null;
 
   const [balance, setBalance] = useState(null);
+  const [withdrawable, setWithdrawable] = useState(null);
   const [loading, setLoading] = useState(true);
   const [amount, setAmount] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -47,6 +48,9 @@ function Withdraw() {
         const wallet = await fetchPlayerWallet();
         if (cancelled) return;
         setBalance(wallet === null ? null : Number(wallet.balance ?? 0));
+        setWithdrawable(
+          wallet === null ? null : Number(wallet.withdrawable ?? 0),
+        );
       } catch (e) {
         if (cancelled) return;
         if (e.message === "NOT_LOGGED_IN") {
@@ -76,6 +80,12 @@ function Withdraw() {
       setFormError("Amount exceeds your balance.");
       return;
     }
+    if (withdrawable != null && n > withdrawable) {
+      setFormError(
+        `Withdrawable balance is ${withdrawable.toLocaleString()} ETB. Deposits must be used for betting before withdrawal.`,
+      );
+      return;
+    }
 
     const wdErr = withdrawAmountViolation(limits, n);
     if (wdErr) {
@@ -93,7 +103,10 @@ function Withdraw() {
       });
       setAmount("");
       const wallet = await fetchPlayerWallet();
-      if (wallet) setBalance(Number(wallet.balance ?? 0));
+      if (wallet) {
+        setBalance(Number(wallet.balance ?? 0));
+        setWithdrawable(Number(wallet.withdrawable ?? 0));
+      }
     } catch (err) {
       setFormError(err.message || "Something went wrong.");
     } finally {
@@ -181,6 +194,18 @@ function Withdraw() {
               </p>
               <p className="m-0 text-center text-3xl font-black tabular-nums text-(--sb-positive) sm:text-4xl">
                 {balance === null ? "—" : `${balance.toLocaleString()} ETB`}
+              </p>
+              <p className="mt-3 m-0 text-center text-xs font-extrabold uppercase tracking-[0.18em] text-[rgba(255,255,255,0.72)]">
+                Withdrawable
+              </p>
+              <p className="m-0 text-center text-xl font-black tabular-nums text-[#ffffff] sm:text-2xl">
+                {withdrawable === null
+                  ? "—"
+                  : `${withdrawable.toLocaleString()} ETB`}
+              </p>
+              <p className="mt-2 m-0 text-center text-[11px] leading-relaxed text-[rgba(255,255,255,0.5)]">
+                Deposits become withdrawable after you use them for betting.
+                Winnings are withdrawable immediately.
               </p>
             </SoftPanel>
 

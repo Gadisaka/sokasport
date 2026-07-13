@@ -140,7 +140,7 @@ export async function notifyAdminsDevicePending({
   if (adminIds.length === 0) return;
 
   const payload = deviceApprovalPendingNotification({
-    cashierName: cashier.name,
+    cashierName: cashier.fullname,
     cashierPhone: cashier.phone,
     pendingId,
     ipAddress,
@@ -366,7 +366,8 @@ export async function handleCashierDeviceLogin({
       code: "DEVICE_APPROVAL_REQUIRED",
       message: "Login from a new device requires admin approval.",
       pendingId: pending.id,
-      cashierName: user.name,
+      cashierName: user.fullname,
+      cashierUsername: user.username ?? null,
       cashierPhone: user.phone,
     },
   };
@@ -376,7 +377,7 @@ export async function approvePendingDevice(pendingId, adminUserId) {
   const pending = await prisma.cashierPendingDeviceApproval.findUnique({
     where: { id: pendingId },
     include: {
-      cashier: { select: { id: true, name: true, phone: true } },
+      cashier: { select: { id: true, username: true, fullname: true, phone: true } },
     },
   });
 
@@ -421,7 +422,7 @@ export async function approvePendingDevice(pendingId, adminUserId) {
   });
 
   const payload = deviceApprovedNotification({
-    cashierName: pending.cashier.name,
+    cashierName: pending.cashier.fullname,
   });
   await notifyUserSafe({
     userId: pending.cashier_id,
@@ -435,7 +436,7 @@ export async function rejectPendingDevice(pendingId, adminUserId) {
   const pending = await prisma.cashierPendingDeviceApproval.findUnique({
     where: { id: pendingId },
     include: {
-      cashier: { select: { id: true, name: true, phone: true } },
+      cashier: { select: { id: true, username: true, fullname: true, phone: true } },
     },
   });
 
@@ -460,7 +461,7 @@ export async function rejectPendingDevice(pendingId, adminUserId) {
   });
 
   const payload = deviceRejectedNotification({
-    cashierName: pending.cashier.name,
+    cashierName: pending.cashier.fullname,
   });
   await notifyUserSafe({
     userId: pending.cashier_id,

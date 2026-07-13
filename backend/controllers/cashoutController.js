@@ -1,6 +1,7 @@
 import { prisma } from "../Config/db.js";
 import { logAuditEvent } from "../lib/auditLog.js";
 import { buildCashoutQuote, loadTicketForCashout } from "../services/cashoutService.js";
+import { creditWallet } from "../lib/walletBalance.js";
 
 async function resolveCashierByUserId(userId) {
   if (!userId) return null;
@@ -141,13 +142,10 @@ export async function executeTicketCashout(req, res) {
         throw new Error("Target wallet not found");
       }
 
-      const balanceBefore = Number(targetWallet.balance || 0);
       const amount = Number(quote.amount || 0);
-      const balanceAfter = balanceBefore + amount;
-
-      await tx.wallet.update({
-        where: { id: targetWallet.id },
-        data: { balance: balanceAfter },
+      // Player cashouts are withdrawable winnings; cashier float is plain balance.
+      const credited = await creditWallet(tx, targetWallet, amount, {
+        withdrawable: targetWallet.wallet_type === "PLAYER",
       });
 
       await tx.transaction.create({
@@ -155,8 +153,8 @@ export async function executeTicketCashout(req, res) {
           wallet_id: targetWallet.id,
           type: "CASHOUT",
           amount,
-          balance_before: balanceBefore,
-          balance_after: balanceAfter,
+          balance_before: credited.balanceBefore,
+          balance_after: credited.balanceAfter,
           reference: `cashout:${freshTicket.id}`,
         },
       });
@@ -183,7 +181,7 @@ export async function executeTicketCashout(req, res) {
         ticket: updatedTicket,
         cashout,
         quote,
-        walletBalance: balanceAfter,
+        walletBalance: credited.balanceAfter,
       };
     });
 

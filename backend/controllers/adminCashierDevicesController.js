@@ -17,7 +17,8 @@ function pendingShape(row) {
     cashier: row.cashier
       ? {
           id: row.cashier.id,
-          name: row.cashier.name,
+          username: row.cashier.username ?? null,
+          fullname: row.cashier.fullname,
           phone: row.cashier.phone,
         }
       : null,
@@ -39,7 +40,8 @@ function trustedShape(row) {
     cashier: row.cashier
       ? {
           id: row.cashier.id,
-          name: row.cashier.name,
+          username: row.cashier.username ?? null,
+          fullname: row.cashier.fullname,
           phone: row.cashier.phone,
         }
       : null,
@@ -63,7 +65,9 @@ export async function listPendingDeviceApprovals(req, res) {
       prisma.cashierPendingDeviceApproval.findMany({
         where,
         include: {
-          cashier: { select: { id: true, name: true, phone: true } },
+          cashier: {
+            select: { id: true, username: true, fullname: true, phone: true },
+          },
         },
         orderBy: { created_at: "desc" },
         skip,
@@ -98,7 +102,9 @@ export async function listTrustedDevices(req, res) {
       prisma.cashierTrustedDevice.findMany({
         where,
         include: {
-          cashier: { select: { id: true, name: true, phone: true } },
+          cashier: {
+            select: { id: true, username: true, fullname: true, phone: true },
+          },
         },
         orderBy: { last_seen_at: "desc" },
         skip,

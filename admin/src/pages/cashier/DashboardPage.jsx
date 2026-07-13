@@ -73,7 +73,7 @@ function DashboardContent() {
     try {
       const escposData = await encodeSalesReportAsync(
         {
-          cashierName: user?.name || "",
+          cashierName: user?.fullname || user?.username || "",
           fromLabel: applied.from,
           toLabel: applied.to,
           totalBets: stats.totalTicketsSold,
@@ -113,7 +113,7 @@ function DashboardContent() {
     } finally {
       setPrinting(false);
     }
-  }, [applied.from, applied.to, printing, query.data, user?.name]);
+  }, [applied.from, applied.to, printing, query.data, user?.fullname, user?.username]);
 
   const fmtMoney = (n) =>
     Number(n ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -181,31 +181,31 @@ function DashboardContent() {
       )}
 
       {query.isSuccess && s && (
-        <div className="space-y-2">
-          <p className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
-            Winning tickets (today / yesterday)
-          </p>
+        <div className="space-y-4">
           <div className="grid gap-3 sm:grid-cols-2">
-            <StatCard title="Won tickets (today)" value={fmtCount(s.wonToday?.tickets)} isCount />
-            <StatCard title="Payable today" value={fmtMoney(s.wonToday?.payable)} />
-            <StatCard title="Won tickets (yesterday)" value={fmtCount(s.wonYesterday?.tickets)} isCount />
-            <StatCard title="Payable yesterday" value={fmtMoney(s.wonYesterday?.payable)} />
+            <StatCard title="Total tickets sold" value={fmtCount(s.totalTicketsSold)} isCount />
+            <StatCard title="Sold tickets price" value={fmtMoney(s.totalSoldPrice)} />
+            <StatCard title="Total Deposit Amount" value={fmtMoney(s.totalDepositAmount)} />
+            <StatCard title="Total Withdraw Amount" value={fmtMoney(s.totalWithdrawAmount)} />
+            <StatCard title="Total paid tickets" value={fmtCount(s.totalPaidTickets)} isCount />
+            <StatCard title="Total paid amount" value={fmtMoney(s.totalPaidAmount)} />
+            <StatCard title="Cancelled tickets" value={fmtCount(s.totalCancelledTickets)} isCount />
+            <StatCard title="Cancelled stake" value={fmtMoney(s.totalCancelledStake)} />
+            <div className="sm:col-span-2">
+              <StatCard title="Grand Net" value={fmtMoney(s.grandNet)} />
+            </div>
           </div>
-        </div>
-      )}
 
-      {query.isSuccess && s && (
-        <div className="grid gap-3 sm:grid-cols-2">
-          <StatCard title="Total tickets sold" value={fmtCount(s.totalTicketsSold)} isCount />
-          <StatCard title="Sold tickets price" value={fmtMoney(s.totalSoldPrice)} />
-          <StatCard title="Total Deposit Amount" value={fmtMoney(s.totalDepositAmount)} />
-          <StatCard title="Total Withdraw Amount" value={fmtMoney(s.totalWithdrawAmount)} />
-          <StatCard title="Total paid tickets" value={fmtCount(s.totalPaidTickets)} isCount />
-          <StatCard title="Total paid amount" value={fmtMoney(s.totalPaidAmount)} />
-          <StatCard title="Cancelled tickets" value={fmtCount(s.totalCancelledTickets)} isCount />
-          <StatCard title="Cancelled stake" value={fmtMoney(s.totalCancelledStake)} />
-          <div className="sm:col-span-2">
-            <StatCard title="Grand Net" value={fmtMoney(s.grandNet)} />
+          <div className="space-y-2">
+            <p className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
+              Winning tickets (today / yesterday)
+            </p>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <StatCard title="Won tickets (today)" value={fmtCount(s.wonToday?.tickets)} isCount />
+              <StatCard title="Payable today" value={fmtMoney(s.wonToday?.payable)} />
+              <StatCard title="Won tickets (yesterday)" value={fmtCount(s.wonYesterday?.tickets)} isCount />
+              <StatCard title="Payable yesterday" value={fmtMoney(s.wonYesterday?.payable)} />
+            </div>
           </div>
         </div>
       )}

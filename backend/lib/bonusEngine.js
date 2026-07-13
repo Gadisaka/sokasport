@@ -10,6 +10,11 @@
  * @module lib/bonusEngine
  */
 import { toMoney, d } from "./moneyDecimal.js";
+import {
+  creditWallet,
+  restoreWallet,
+  walletSnapshot,
+} from "./walletBalance.js";
 
 /** @param {string} userId */
 export function welcomeBonusRef(userId) {
@@ -364,13 +369,10 @@ export async function creditBonusIfNew(tx, { walletId, amount, reference }) {
 
   const w = await tx.wallet.findUnique({ where: { id: walletId } });
   if (!w) return { credited: false, reason: "no_wallet" };
-  const before = Number(w.balance) || 0;
-  const after = toMoney(d(before).add(a));
+  const beforeSnap = walletSnapshot(w);
 
-  await tx.wallet.update({
-    where: { id: walletId },
-    data: { balance: after },
-  });
+  // Bonuses are not withdrawable until the player has played through.
+  const credited = await creditWallet(tx, w, a, { withdrawable: false });
 
   try {
     await tx.transaction.create({
@@ -378,23 +380,20 @@ export async function creditBonusIfNew(tx, { walletId, amount, reference }) {
         wallet_id: walletId,
         type: "BONUS",
         amount: a,
-        balance_before: before,
-        balance_after: after,
+        balance_before: credited.balanceBefore,
+        balance_after: credited.balanceAfter,
         reference,
       },
     });
   } catch (err) {
     if (isUniqueConstraintError(err)) {
-      await tx.wallet.update({
-        where: { id: walletId },
-        data: { balance: before },
-      });
+      await restoreWallet(tx, w, beforeSnap);
       return { credited: false, reason: "duplicate_race" };
     }
     throw err;
   }
 
-  return { credited: true, balanceAfter: after };
+  return { credited: true, balanceAfter: credited.balanceAfter };
 }
 
 /**

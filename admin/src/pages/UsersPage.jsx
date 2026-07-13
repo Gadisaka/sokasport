@@ -130,7 +130,7 @@ export default function UsersPage() {
             label="Search"
             value={search}
             onChange={(e) => { setSearch(e.target.value); setPage(1); }}
-            placeholder="Name, phone, or email"
+            placeholder="Name, username, phone, or email"
           />
           {activeTab === "staff" ? (
             <SelectInput
@@ -174,6 +174,7 @@ export default function UsersPage() {
             <thead>
               <tr className="border-b border-[var(--border)] text-xs uppercase tracking-wide text-[var(--muted)]">
                 <th className="px-4 py-3 font-semibold">Name</th>
+                <th className="px-4 py-3 font-semibold">Username</th>
                 <th className="px-4 py-3 font-semibold">Phone</th>
                 <th className="px-4 py-3 font-semibold">Role</th>
                 <th className="px-4 py-3 font-semibold">Status</th>
@@ -187,9 +188,10 @@ export default function UsersPage() {
                   className="border-b border-[var(--border)] last:border-0 hover:bg-[var(--surfaceMuted)]"
                 >
                   <td className="px-4 py-3">
-                    <p className="font-medium">{u.name}</p>
+                    <p className="font-medium">{u.fullname}</p>
                     <p className="text-xs text-[var(--muted)]">{u.email}</p>
                   </td>
+                  <td className="px-4 py-3 text-[var(--muted)]">{u.username || "—"}</td>
                   <td className="px-4 py-3 text-[var(--muted)]">{u.phone || "—"}</td>
                   <td className="px-4 py-3">
                     <Tag>{ROLE_LABELS[u.role] || u.role}</Tag>

@@ -98,7 +98,8 @@ model Role {
 model User {
   id         String   @id @default(uuid()) @map("_id")
   role_id    String
-  name       String
+  username   String?  @unique
+  fullname   String
   email      String   @unique
   phone      String?  @unique
   password   String
@@ -175,10 +176,14 @@ model AgentCashier {
 }
 
 model Wallet {
-  id          String        @id @default(uuid()) @map("_id")
-  user_id     String
-  balance     Float         @default(0)
-  wallet_type WalletType
+  id           String        @id @default(uuid()) @map("_id")
+  user_id      String
+  balance      Float         @default(0)
+  // Amount of `balance` that may be withdrawn. Deposits/bonuses/refunds do
+  // not increase this; payouts/cashouts do. Stake consumes non-withdrawable
+  // first. Invariant for PLAYER wallets: 0 <= withdrawable <= balance.
+  withdrawable Float         @default(0)
+  wallet_type  WalletType
 
   user User @relation(fields: [user_id], references: [id], onDelete: Restrict)
 

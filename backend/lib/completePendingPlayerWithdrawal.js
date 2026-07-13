@@ -2,6 +2,8 @@
  * Shared settlement: pending player WITHDRAW → debit player, credit cashier, update pending row, ledger cashier DEPOSIT.
  * @param {import("@prisma/client").Prisma.TransactionClient} tx
  */
+import { debitWallet } from "./walletBalance.js";
+
 export async function completePendingPlayerWithdrawal(tx, {
   pendingTransactionId,
   cashierWalletId,
@@ -17,20 +19,26 @@ export async function completePendingPlayerWithdrawal(tx, {
   const pWallet = await tx.wallet.findUnique({ where: { id: transaction.wallet_id } });
   if (!pWallet) throw new Error("WALLET_NOT_FOUND");
 
-  const playerBefore = Number(pWallet.balance);
-  if (playerBefore < amount) throw new Error("INSUFFICIENT_PLAYER_BALANCE");
-  const playerAfter = playerBefore - amount;
+  let playerDebit;
+  try {
+    playerDebit = await debitWallet(tx, pWallet, amount, {
+      fromWithdrawable: true,
+    });
+  } catch (err) {
+    if (err?.message === "INSUFFICIENT_BALANCE") {
+      throw new Error("INSUFFICIENT_PLAYER_BALANCE");
+    }
+    if (err?.message === "INSUFFICIENT_WITHDRAWABLE") {
+      throw new Error("INSUFFICIENT_WITHDRAWABLE");
+    }
+    throw err;
+  }
 
   const cWallet = await tx.wallet.findUnique({ where: { id: cashierWalletId } });
   if (!cWallet) throw new Error("CASHIER_WALLET_NOT_FOUND");
 
   const cashierBefore = Number(cWallet.balance);
   const cashierAfter = cashierBefore + amount;
-
-  await tx.wallet.update({
-    where: { id: pWallet.id },
-    data: { balance: playerAfter },
-  });
 
   await tx.wallet.update({
     where: { id: cWallet.id },
@@ -41,8 +49,8 @@ export async function completePendingPlayerWithdrawal(tx, {
     where: { id: pendingTransactionId },
     data: {
       reference: transaction.reference.replace("pending:", `approved:${approverUserId}:`),
-      balance_before: playerBefore,
-      balance_after: playerAfter,
+      balance_before: playerDebit.balanceBefore,
+      balance_after: playerDebit.balanceAfter,
     },
   });
 
@@ -60,6 +68,6 @@ export async function completePendingPlayerWithdrawal(tx, {
   return {
     transaction: updatedTx,
     cashierBalance: cashierAfter,
-    playerBalance: playerAfter,
+    playerBalance: playerDebit.balanceAfter,
   };
 }

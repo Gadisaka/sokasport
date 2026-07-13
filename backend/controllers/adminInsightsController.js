@@ -126,8 +126,8 @@ export async function getAdminDashboardInsights(req, res) {
       prisma.ticket.findMany({
         where: { created_at: { gte: start, lte: end } },
         include: {
-          cashier: { include: { user: { select: { name: true } } } },
-          user: { select: { name: true } },
+          cashier: { include: { user: { select: { fullname: true } } } },
+          user: { select: { fullname: true } },
         },
         orderBy: { created_at: "desc" },
         take: 15,
@@ -168,7 +168,7 @@ export async function getAdminDashboardInsights(req, res) {
             include: {
               user: {
                 select: {
-                  name: true,
+                  fullname: true,
                   role: { select: { name: true } },
                 },
               },
@@ -180,7 +180,7 @@ export async function getAdminDashboardInsights(req, res) {
       }),
       prisma.auditLog.findMany({
         orderBy: { created_at: "desc" },
-        include: { user: { select: { name: true } } },
+        include: { user: { select: { fullname: true } } },
         take: 12,
       }),
     ]);
@@ -283,8 +283,8 @@ export async function getAdminDashboardInsights(req, res) {
       status: ticket.status,
       branchName: ticket.branch_name,
       branchLocation: ticket.branch_location,
-      cashierName: ticket.cashier?.user?.name || "",
-      playerName: ticket.user?.name || "",
+      cashierName: ticket.cashier?.user?.fullname || "",
+      playerName: ticket.user?.fullname || "",
     }));
 
     const recentWalletActivity = recentWalletRaw.map((tx) => ({
@@ -293,7 +293,7 @@ export async function getAdminDashboardInsights(req, res) {
       type: tx.type,
       amount: Number(tx.amount || 0),
       walletType: tx.wallet?.wallet_type || "",
-      userName: tx.wallet?.user?.name || "Unknown",
+      userName: tx.wallet?.user?.fullname || "Unknown",
       userRole: tx.wallet?.user?.role?.name || "",
       reference: tx.reference || "",
     }));
@@ -301,7 +301,7 @@ export async function getAdminDashboardInsights(req, res) {
     const recentAdminActivity = recentAdminRaw.map((log) => ({
       id: log.id,
       createdAt: log.created_at,
-      actorName: log.user?.name || "System",
+      actorName: log.user?.fullname || "System",
       actorRole: log.actor_role || "",
       action: log.action,
       module: log.module,

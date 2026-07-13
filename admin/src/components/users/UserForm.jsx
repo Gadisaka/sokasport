@@ -10,7 +10,8 @@ const ROLES_NEEDING_AGENT_CASHIERS = ["AGENT"];
 export default function UserForm({ meta, initialValues, onSubmit, isPending, submitLabel, currentUserRole }) {
   const isEdit = Boolean(initialValues);
 
-  const [name, setName] = useState(initialValues?.name ?? "");
+  const [username, setUsername] = useState(initialValues?.username ?? "");
+  const [fullname, setFullname] = useState(initialValues?.fullname ?? "");
   const [email, setEmail] = useState(initialValues?.email ?? "");
   const [phone, setPhone] = useState(initialValues?.phone ?? "");
   const [password, setPassword] = useState("");
@@ -32,6 +33,8 @@ export default function UserForm({ meta, initialValues, onSubmit, isPending, sub
     [meta, roleId],
   );
 
+  const isPlayerRole = selectedRoleName === "PLAYER";
+
   const roleOptions = useMemo(() => {
     return (meta?.roles ?? [])
       .filter((r) => {
@@ -52,7 +55,10 @@ export default function UserForm({ meta, initialValues, onSubmit, isPending, sub
     e.preventDefault();
     setError("");
 
-    const body = { name, email, phone, roleId, status };
+    const body = { fullname, email, phone, roleId, status };
+    if (!isPlayerRole) {
+      body.username = username.trim();
+    }
     if (!isEdit || password) body.password = password;
     if (ROLES_NEEDING_BRANCH.includes(selectedRoleName)) {
       body.branchName = branchName;
@@ -77,7 +83,17 @@ export default function UserForm({ meta, initialValues, onSubmit, isPending, sub
         </div>
       )}
 
-      <TextInput label="Full name" value={name} onChange={(e) => setName(e.target.value)} required />
+      {!isPlayerRole && (
+        <TextInput
+          label="Username"
+          value={username}
+          onChange={(e) => setUsername(e.target.value)}
+          required={!isEdit}
+          placeholder="Login username"
+          autoComplete="username"
+        />
+      )}
+      <TextInput label="Full name" value={fullname} onChange={(e) => setFullname(e.target.value)} required />
       <TextInput label="Email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
       <TextInput label="Phone" type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} />
       <TextInput
@@ -132,7 +148,8 @@ export default function UserForm({ meta, initialValues, onSubmit, isPending, sub
                   checked={agentCashierIds.includes(c.cashierProfileId)}
                   onChange={() => toggleAgentCashier(c.cashierProfileId)}
                 />
-                {c.name} — {c.branchName} ({c.branchLocation})
+                {c.fullname || c.name}
+                {c.username ? ` (@${c.username})` : ""} — {c.branchName} ({c.branchLocation})
               </label>
             ))}
             {(!meta?.cashiers || meta.cashiers.length === 0) && (

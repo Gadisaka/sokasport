@@ -288,13 +288,13 @@ export default function AdminShell({ user, onLogout, children }) {
                 className="flex h-8 w-8 items-center justify-center rounded-full bg-[var(--accent)] text-xs font-bold text-white"
                 aria-label="Profile menu"
               >
-                {(user?.name || "?")[0].toUpperCase()}
+                {(user?.fullname || user?.username || "?")[0].toUpperCase()}
               </button>
 
               {profileOpen && (
                 <div className="absolute right-0 top-full z-50 mt-1.5 w-52 rounded-sm border border-[var(--border)] bg-[var(--surface)] py-1 shadow-lg">
                   <div className="border-b border-[var(--border)] px-4 py-2.5">
-                    <p className="text-sm font-medium">{user?.name}</p>
+                    <p className="text-sm font-medium">{user?.fullname || user?.username}</p>
                     <p className="text-xs text-[var(--muted)]">
                       {ROLE_LABELS[user?.role] || user?.role}
                     </p>

@@ -95,13 +95,14 @@ function seedSelection({
   });
 }
 
-function seedWallet({ id, userId, balance }) {
+function seedWallet({ id, userId, balance, withdrawable = 0 }) {
   const store = getStore();
   store.wallet.set(id, {
     id,
     user_id: userId,
     wallet_type: "PLAYER",
     balance,
+    withdrawable,
   });
 }
 
@@ -141,6 +142,7 @@ test("single-leg WON ticket transitions to PAID and credits player wallet", asyn
   // Stake was already debited at placement (not modeled here); credit
   // increases balance by potential_win = 200.
   assert.equal(wallet.balance, 250);
+  assert.equal(wallet.withdrawable, 200);
 
   const txns = [...store.transaction.values()];
   assert.equal(txns.length, 1);

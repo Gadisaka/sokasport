@@ -13,6 +13,7 @@ import bcrypt from "bcrypt";
 import { prisma } from "../Config/db.js";
 import { logAuditEvent } from "../lib/auditLog.js";
 import { normalizePhoneOrNull } from "../lib/phone.js";
+import { validateUsername } from "../lib/username.js";
 
 function toPositiveInt(value, fallback) {
   const n = Number.parseInt(value, 10);
@@ -24,6 +25,35 @@ function mapCashierBranch(cashierProfile) {
   return {
     name: cashierProfile.branch_name ?? "",
     location: cashierProfile.branch_location ?? "",
+  };
+}
+
+function userSearchOr(search) {
+  return [
+    { fullname: { contains: search, mode: "insensitive" } },
+    { username: { contains: search, mode: "insensitive" } },
+    { phone: { contains: search, mode: "insensitive" } },
+    { email: { contains: search, mode: "insensitive" } },
+  ];
+}
+
+function mapStaffUser(u) {
+  return {
+    id: u.id,
+    username: u.username ?? null,
+    fullname: u.fullname,
+    email: u.email,
+    phone: u.phone,
+    status: u.status,
+  };
+}
+
+function mapAgentBrief(agent) {
+  if (!agent) return null;
+  return {
+    id: agent.id,
+    username: agent.username ?? null,
+    fullname: agent.fullname,
   };
 }
 
@@ -46,11 +76,7 @@ export async function listCashiers(req, res) {
     };
 
     if (search) {
-      where.OR = [
-        { name: { contains: search, mode: "insensitive" } },
-        { phone: { contains: search, mode: "insensitive" } },
-        { email: { contains: search, mode: "insensitive" } },
-      ];
+      where.OR = userSearchOr(search);
     }
 
     const [users, total] = await Promise.all([
@@ -65,7 +91,11 @@ export async function listCashiers(req, res) {
             include: {
               wallet: true,
               agent_assignments: {
-                include: { agent: { select: { id: true, name: true } } },
+                include: {
+                  agent: {
+                    select: { id: true, username: true, fullname: true },
+                  },
+                },
               },
             },
           },
@@ -78,19 +108,13 @@ export async function listCashiers(req, res) {
       const cp = u.cashier_profile;
       const agentAssignment = cp?.agent_assignments?.[0];
       return {
-        id: u.id,
-        name: u.name,
-        email: u.email,
-        phone: u.phone,
-        status: u.status,
+        ...mapStaffUser(u),
         createdAt: u.created_at,
         branch: mapCashierBranch(cp),
         wallet: cp?.wallet
           ? { id: cp.wallet.id, balance: Number(cp.wallet.balance) }
           : null,
-        agent: agentAssignment
-          ? { id: agentAssignment.agent.id, name: agentAssignment.agent.name }
-          : null,
+        agent: mapAgentBrief(agentAssignment?.agent),
         cashierProfileId: cp?.id ?? null,
       };
     });
@@ -119,7 +143,11 @@ export async function getCashier(req, res) {
           include: {
             wallet: true,
             agent_assignments: {
-              include: { agent: { select: { id: true, name: true } } },
+              include: {
+                agent: {
+                  select: { id: true, username: true, fullname: true },
+                },
+              },
             },
           },
         },
@@ -134,19 +162,13 @@ export async function getCashier(req, res) {
     const agentAssignment = cp?.agent_assignments?.[0];
 
     return res.json({
-      id: u.id,
-      name: u.name,
-      email: u.email,
-      phone: u.phone,
-      status: u.status,
+      ...mapStaffUser(u),
       createdAt: u.created_at,
       branch: mapCashierBranch(cp),
       wallet: cp?.wallet
         ? { id: cp.wallet.id, balance: Number(cp.wallet.balance) }
         : null,
-      agent: agentAssignment
-        ? { id: agentAssignment.agent.id, name: agentAssignment.agent.name }
-        : null,
+      agent: mapAgentBrief(agentAssignment?.agent),
       cashierProfileId: cp?.id ?? null,
     });
   } catch (error) {
@@ -158,12 +180,13 @@ export async function getCashier(req, res) {
 /**
  * POST /api/admin/agents-cashiers/cashiers
  * Creates user (CASHIER) + wallet + cashier profile (with branch text fields).
- * Body: { name, email, phone, password, branchName, branchLocation, status? }
+ * Body: { username, fullname, email, phone, password, branchName, branchLocation, status? }
  */
 export async function createCashier(req, res) {
   try {
     const {
-      name,
+      username,
+      fullname,
       email,
       phone,
       password,
@@ -172,10 +195,15 @@ export async function createCashier(req, res) {
       status = true,
     } = req.body ?? {};
 
-    if (!name || !email || !password || !branchName || !branchLocation) {
+    const usernameResult = validateUsername(username);
+    if (!usernameResult.ok) {
+      return res.status(400).json({ message: usernameResult.message });
+    }
+
+    if (!fullname || !email || !password || !branchName || !branchLocation) {
       return res.status(400).json({
         message:
-          "name, email, password, branchName, and branchLocation are required",
+          "fullname, email, password, branchName, and branchLocation are required",
       });
     }
 
@@ -190,7 +218,8 @@ export async function createCashier(req, res) {
     const user = await prisma.$transaction(async (tx) => {
       const created = await tx.user.create({
         data: {
-          name: String(name).trim(),
+          username: usernameResult.username,
+          fullname: String(fullname).trim(),
           email: String(email).toLowerCase().trim(),
           phone: normalizePhoneOrNull(phone),
           password: hashed,
@@ -224,11 +253,7 @@ export async function createCashier(req, res) {
 
     const cp = user.cashier_profile;
     const createdCashier = {
-      id: user.id,
-      name: user.name,
-      email: user.email,
-      phone: user.phone,
-      status: user.status,
+      ...mapStaffUser(user),
       branch: mapCashierBranch(cp),
       wallet: { id: cp.wallet.id, balance: Number(cp.wallet.balance) },
       agent: null,
@@ -248,9 +273,9 @@ export async function createCashier(req, res) {
     return res.status(201).json(createdCashier);
   } catch (error) {
     if (error?.code === "P2002") {
-      return res
-        .status(409)
-        .json({ message: "User with this email or phone already exists" });
+      return res.status(409).json({
+        message: "User with this username, email, or phone already exists",
+      });
     }
     console.error("createCashier error:", error);
     return res.status(500).json({ message: "Failed to create cashier" });
@@ -261,7 +286,7 @@ export async function createCashier(req, res) {
  * PUT /api/admin/agents-cashiers/cashiers/:id
  * Update cashier user info and branch text fields.
  * Body: {
- *   name?, email?, phone?, password?,
+ *   username?, fullname?, email?, phone?, password?,
  *   branchName?, branchLocation?, status?,
  *   wallet? (number - absolute balance, increase-only)
  * }
@@ -270,7 +295,8 @@ export async function updateCashier(req, res) {
   try {
     const userId = req.params.id;
     const {
-      name,
+      username,
+      fullname,
       email,
       phone,
       password,
@@ -294,7 +320,14 @@ export async function updateCashier(req, res) {
 
     await prisma.$transaction(async (tx) => {
       const userData = {};
-      if (name !== undefined) userData.name = String(name).trim();
+      if (username !== undefined) {
+        const usernameResult = validateUsername(username);
+        if (!usernameResult.ok) {
+          throw new Error(`USERNAME_INVALID:${usernameResult.message}`);
+        }
+        userData.username = usernameResult.username;
+      }
+      if (fullname !== undefined) userData.fullname = String(fullname).trim();
       if (email !== undefined)
         userData.email = String(email).toLowerCase().trim();
       if (phone !== undefined)
@@ -352,11 +385,7 @@ export async function updateCashier(req, res) {
     });
 
     const beforeSnapshot = {
-      id: existing.id,
-      name: existing.name,
-      email: existing.email,
-      phone: existing.phone,
-      status: existing.status,
+      ...mapStaffUser(existing),
       branch: mapCashierBranch(existing.cashier_profile),
       wallet: existing.cashier_profile?.wallet
         ? {
@@ -367,11 +396,7 @@ export async function updateCashier(req, res) {
     };
     const afterSnapshot = updated
       ? {
-          id: updated.id,
-          name: updated.name,
-          email: updated.email,
-          phone: updated.phone,
-          status: updated.status,
+          ...mapStaffUser(updated),
           branch: mapCashierBranch(updated.cashier_profile),
           wallet: updated.cashier_profile?.wallet
             ? {
@@ -394,6 +419,11 @@ export async function updateCashier(req, res) {
 
     return getCashier({ params: { id: userId } }, res);
   } catch (error) {
+    if (String(error?.message || "").startsWith("USERNAME_INVALID:")) {
+      return res
+        .status(400)
+        .json({ message: error.message.replace("USERNAME_INVALID:", "") });
+    }
     if (error?.message === "INVALID_WALLET_BALANCE") {
       return res.status(400).json({ message: "Wallet must be a valid amount" });
     }
@@ -403,9 +433,9 @@ export async function updateCashier(req, res) {
         .json({ message: "Wallet top up can only increase balance" });
     }
     if (error?.code === "P2002") {
-      return res
-        .status(409)
-        .json({ message: "User with this email or phone already exists" });
+      return res.status(409).json({
+        message: "User with this username, email, or phone already exists",
+      });
     }
     console.error("updateCashier error:", error);
     return res.status(500).json({ message: "Failed to update cashier" });
@@ -447,13 +477,7 @@ export async function deleteCashier(req, res) {
       module: "AGENTS_CASHIERS",
       entityType: "CASHIER",
       entityId: userId,
-      before: {
-        id: existing.id,
-        name: existing.name,
-        email: existing.email,
-        phone: existing.phone,
-        status: existing.status,
-      },
+      before: mapStaffUser(existing),
       after: null,
     });
 
@@ -469,12 +493,13 @@ export async function deleteCashier(req, res) {
 /**
  * POST /api/admin/agents-cashiers/agents
  * Creates an AGENT user.
- * Body: { name, email, phone, password, status?, agentCashierIds?[] }
+ * Body: { username, fullname, email, phone, password, status?, agentCashierIds?[] }
  */
 export async function createAgent(req, res) {
   try {
     const {
-      name,
+      username,
+      fullname,
       email,
       phone,
       password,
@@ -482,10 +507,15 @@ export async function createAgent(req, res) {
       agentCashierIds = [],
     } = req.body ?? {};
 
-    if (!name || !email || !password) {
+    const usernameResult = validateUsername(username);
+    if (!usernameResult.ok) {
+      return res.status(400).json({ message: usernameResult.message });
+    }
+
+    if (!fullname || !email || !password) {
       return res
         .status(400)
-        .json({ message: "name, email, and password are required" });
+        .json({ message: "fullname, email, and password are required" });
     }
 
     const agentRole = await prisma.role.findUnique({
@@ -500,7 +530,8 @@ export async function createAgent(req, res) {
     await prisma.$transaction(async (tx) => {
       const user = await tx.user.create({
         data: {
-          name: String(name).trim(),
+          username: usernameResult.username,
+          fullname: String(fullname).trim(),
           email: String(email).toLowerCase().trim(),
           phone: normalizePhoneOrNull(phone),
           password: hashed,
@@ -534,7 +565,8 @@ export async function createAgent(req, res) {
         before: null,
         after: {
           id: createdAgentId,
-          name: String(name).trim(),
+          username: usernameResult.username,
+          fullname: String(fullname).trim(),
           email: String(email).toLowerCase().trim(),
           phone: normalizePhoneOrNull(phone),
           status: Boolean(status),
@@ -545,9 +577,9 @@ export async function createAgent(req, res) {
     return res.status(201).json({ message: "Agent created" });
   } catch (error) {
     if (error?.code === "P2002") {
-      return res
-        .status(409)
-        .json({ message: "User with this email or phone already exists" });
+      return res.status(409).json({
+        message: "User with this username, email, or phone already exists",
+      });
     }
     console.error("createAgent error:", error);
     return res.status(500).json({ message: "Failed to create agent" });
@@ -557,12 +589,13 @@ export async function createAgent(req, res) {
 /**
  * PUT /api/admin/agents-cashiers/agents/:id
  * Update agent user info.
- * Body: { name?, email?, phone?, password?, status? }
+ * Body: { username?, fullname?, email?, phone?, password?, status? }
  */
 export async function updateAgent(req, res) {
   try {
     const userId = req.params.id;
-    const { name, email, phone, password, status } = req.body ?? {};
+    const { username, fullname, email, phone, password, status } =
+      req.body ?? {};
 
     const existing = await prisma.user.findUnique({
       where: { id: userId },
@@ -574,7 +607,14 @@ export async function updateAgent(req, res) {
     }
 
     const data = {};
-    if (name !== undefined) data.name = String(name).trim();
+    if (username !== undefined) {
+      const usernameResult = validateUsername(username);
+      if (!usernameResult.ok) {
+        return res.status(400).json({ message: usernameResult.message });
+      }
+      data.username = usernameResult.username;
+    }
+    if (fullname !== undefined) data.fullname = String(fullname).trim();
     if (email !== undefined) data.email = String(email).toLowerCase().trim();
     if (phone !== undefined) data.phone = normalizePhoneOrNull(phone);
     if (status !== undefined) data.status = Boolean(status);
@@ -586,7 +626,14 @@ export async function updateAgent(req, res) {
 
     const after = await prisma.user.findUnique({
       where: { id: userId },
-      select: { id: true, name: true, email: true, phone: true, status: true },
+      select: {
+        id: true,
+        username: true,
+        fullname: true,
+        email: true,
+        phone: true,
+        status: true,
+      },
     });
     await logAuditEvent({
       req,
@@ -594,22 +641,16 @@ export async function updateAgent(req, res) {
       module: "AGENTS_CASHIERS",
       entityType: "AGENT",
       entityId: userId,
-      before: {
-        id: existing.id,
-        name: existing.name,
-        email: existing.email,
-        phone: existing.phone,
-        status: existing.status,
-      },
+      before: mapStaffUser(existing),
       after,
     });
 
     return res.json({ message: "Agent updated" });
   } catch (error) {
     if (error?.code === "P2002") {
-      return res
-        .status(409)
-        .json({ message: "User with this email or phone already exists" });
+      return res.status(409).json({
+        message: "User with this username, email, or phone already exists",
+      });
     }
     console.error("updateAgent error:", error);
     return res.status(500).json({ message: "Failed to update agent" });
@@ -644,13 +685,7 @@ export async function deleteAgent(req, res) {
       module: "AGENTS_CASHIERS",
       entityType: "AGENT",
       entityId: userId,
-      before: {
-        id: existing.id,
-        name: existing.name,
-        email: existing.email,
-        phone: existing.phone,
-        status: existing.status,
-      },
+      before: mapStaffUser(existing),
       after: null,
     });
 
@@ -674,11 +709,7 @@ export async function listAgents(req, res) {
 
     const where = { role: { name: "AGENT" } };
     if (search) {
-      where.OR = [
-        { name: { contains: search, mode: "insensitive" } },
-        { phone: { contains: search, mode: "insensitive" } },
-        { email: { contains: search, mode: "insensitive" } },
-      ];
+      where.OR = userSearchOr(search);
     }
 
     const [users, total] = await Promise.all([
@@ -693,7 +724,14 @@ export async function listAgents(req, res) {
             include: {
               cashier: {
                 include: {
-                  user: { select: { id: true, name: true, phone: true } },
+                  user: {
+                    select: {
+                      id: true,
+                      username: true,
+                      fullname: true,
+                      phone: true,
+                    },
+                  },
                   wallet: { select: { id: true, balance: true } },
                 },
               },
@@ -705,17 +743,14 @@ export async function listAgents(req, res) {
     ]);
 
     const items = users.map((u) => ({
-      id: u.id,
-      name: u.name,
-      email: u.email,
-      phone: u.phone,
-      status: u.status,
+      ...mapStaffUser(u),
       createdAt: u.created_at,
       cashiers: u.agent_assignments.map((ac) => ({
         assignmentId: ac.id,
         cashierProfileId: ac.cashier.id,
         userId: ac.cashier.user.id,
-        name: ac.cashier.user.name,
+        username: ac.cashier.user.username ?? null,
+        fullname: ac.cashier.user.fullname,
         phone: ac.cashier.user.phone,
         branchName: ac.cashier.branch_name,
         branchLocation: ac.cashier.branch_location,
@@ -834,10 +869,14 @@ export async function listAssignableCashiers(_req, res) {
     const cashiers = await prisma.cashier.findMany({
       orderBy: { branch_name: "asc" },
       include: {
-        user: { select: { id: true, name: true, phone: true } },
+        user: {
+          select: { id: true, username: true, fullname: true, phone: true },
+        },
         wallet: { select: { id: true, balance: true } },
         agent_assignments: {
-          include: { agent: { select: { id: true, name: true } } },
+          include: {
+            agent: { select: { id: true, username: true, fullname: true } },
+          },
         },
       },
     });
@@ -845,17 +884,13 @@ export async function listAssignableCashiers(_req, res) {
     const items = cashiers.map((c) => ({
       cashierProfileId: c.id,
       userId: c.user.id,
-      name: c.user.name,
+      username: c.user.username ?? null,
+      fullname: c.user.fullname,
       phone: c.user.phone,
       branchName: c.branch_name,
       branchLocation: c.branch_location,
       walletBalance: Number(c.wallet?.balance ?? 0),
-      agent: c.agent_assignments[0]
-        ? {
-            id: c.agent_assignments[0].agent.id,
-            name: c.agent_assignments[0].agent.name,
-          }
-        : null,
+      agent: mapAgentBrief(c.agent_assignments[0]?.agent),
     }));
 
     return res.json(items);

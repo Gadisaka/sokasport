@@ -74,7 +74,7 @@ export async function fetchProfile() {
 }
 
 /**
- * PATCH /api/auth/profile — name and/or phone (phone: players only). May return new accessToken.
+ * PATCH /api/auth/profile — fullname and/or phone (phone: players only). May return new accessToken.
  */
 export async function updateProfile(payload) {
   const token = getToken();

@@ -27,6 +27,7 @@ import {
   digestShopWithdrawCode,
   generateSixDigitCode,
 } from "../lib/shopWithdraw.js";
+import { toMoney } from "../lib/moneyDecimal.js";
 import {
   creditBonusIfNew,
   computeWelcomeFlatAmount,
@@ -53,16 +54,16 @@ function toPositiveInt(value, fallback) {
 /**
  * POST /api/auth/register
  * Public — creates a PLAYER user + wallet.
- * Body: { name, phone, password }
+ * Body: { fullname, phone, password }
  */
 export async function register(req, res) {
   try {
-    const { name, phone, password } = req.body ?? {};
+    const { fullname, phone, password } = req.body ?? {};
 
-    if (!name || !phone || !password) {
+    if (!fullname || !phone || !password) {
       return res
         .status(400)
-        .json({ message: "name, phone and password are required" });
+        .json({ message: "fullname, phone and password are required" });
     }
 
     if (String(password).length < 6) {
@@ -87,7 +88,8 @@ export async function register(req, res) {
     const user = await prisma.$transaction(async (tx) => {
       const newUser = await tx.user.create({
         data: {
-          name: String(name).trim(),
+          username: null,
+          fullname: String(fullname).trim(),
           phone: phoneNorm,
           email: `${phoneNorm}@player.local`,
           password: hashedPassword,
@@ -119,7 +121,12 @@ export async function register(req, res) {
     });
 
     const accessToken = jwt.sign(
-      { sub: user.id, phone: user.phone, role: user.role.name },
+      {
+        sub: user.id,
+        phone: user.phone,
+        username: null,
+        role: user.role.name,
+      },
       JWT_SECRET,
       { expiresIn: JWT_EXPIRES_IN },
     );
@@ -128,7 +135,8 @@ export async function register(req, res) {
       accessToken,
       user: {
         id: user.id,
-        name: user.name,
+        username: null,
+        fullname: user.fullname,
         phone: user.phone,
         role: user.role.name,
       },
@@ -239,6 +247,7 @@ export async function getWallet(req, res) {
     return res.json({
       id: wallet.id,
       balance: wallet.balance,
+      withdrawable: wallet.withdrawable ?? 0,
       walletType: wallet.wallet_type,
     });
   } catch (error) {
@@ -333,9 +342,15 @@ export async function createShopWithdraw(req, res) {
       });
     }
 
-    const balance = Number(wallet.balance);
+    const balance = toMoney(wallet.balance);
+    const withdrawable = toMoney(wallet.withdrawable ?? 0);
     if (balance < numericAmount) {
       return res.status(400).json({ message: "Insufficient balance" });
+    }
+    if (withdrawable < numericAmount) {
+      return res.status(400).json({
+        message: `Withdrawable balance is ${withdrawable} ETB. Deposits must be used for betting before withdrawal.`,
+      });
     }
 
     const intentId = crypto.randomUUID();

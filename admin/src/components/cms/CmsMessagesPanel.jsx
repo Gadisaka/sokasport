@@ -13,7 +13,7 @@ const AUDIENCE_OPTIONS = [
 
 function formatUserLabel(u) {
   const phone = u.phone ? ` · ${u.phone}` : "";
-  return `${u.name || u.email}${phone}`;
+  return `${u.fullname || u.email}${phone}`;
 }
 
 export default function CmsMessagesPanel({ canWrite }) {

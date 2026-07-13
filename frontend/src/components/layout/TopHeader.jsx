@@ -169,7 +169,7 @@ function TopHeader() {
     [setLanguage],
   );
 
-  const displayName = user?.name || user?.phone || user?.username || "";
+  const displayName = user?.fullname || user?.phone || "";
   const displayBalance =
     walletBalance === null ? "—" : Number(walletBalance).toLocaleString();
 

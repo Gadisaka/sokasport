@@ -174,11 +174,11 @@ export async function getAdminSalesReports(req, res) {
       cashierIds.length > 0
         ? await prisma.cashier.findMany({
             where: { id: { in: cashierIds } },
-            include: { user: { select: { name: true } } },
+            include: { user: { select: { fullname: true } } },
           })
         : [];
     const cashierNameById = new Map(
-      cashierRows.map((c) => [c.id, c.user?.name || "Cashier"]),
+      cashierRows.map((c) => [c.id, c.user?.fullname || "Cashier"]),
     );
 
     const dailyMap = new Map();

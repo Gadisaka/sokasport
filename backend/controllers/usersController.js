@@ -13,6 +13,7 @@ import bcrypt from "bcrypt";
 import { prisma } from "../Config/db.js";
 import { logAuditEvent } from "../lib/auditLog.js";
 import { normalizePhoneOrNull } from "../lib/phone.js";
+import { validateUsername } from "../lib/username.js";
 
 /** Parse query param as positive integer; invalid values fall back to `fallback`. */
 function toPositiveInt(value, fallback) {
@@ -27,7 +28,8 @@ function toPositiveInt(value, fallback) {
 function mapUser(user) {
   return {
     id: user.id,
-    name: user.name,
+    username: user.username ?? null,
+    fullname: user.fullname,
     email: user.email,
     phone: user.phone,
     status: user.status,
@@ -52,7 +54,7 @@ function mapUser(user) {
 
 /**
  * GET /api/admin/users
- * Query: page, limit, search (name/phone/email), role (RoleName), status (active|disabled)
+ * Query: page, limit, search (fullname/username/phone/email), role (RoleName), status (active|disabled)
  */
 export async function listUsers(req, res) {
   try {
@@ -68,7 +70,8 @@ export async function listUsers(req, res) {
     // Case-insensitive partial match on any of these fields
     if (search) {
       where.OR = [
-        { name: { contains: search, mode: "insensitive" } },
+        { fullname: { contains: search, mode: "insensitive" } },
+        { username: { contains: search, mode: "insensitive" } },
         { phone: { contains: search, mode: "insensitive" } },
         { email: { contains: search, mode: "insensitive" } },
       ];
@@ -123,7 +126,7 @@ export async function getUsersMeta(_req, res) {
       prisma.cashier.findMany({
         orderBy: { branch_name: "asc" },
         include: {
-          user: { select: { id: true, name: true } },
+          user: { select: { id: true, fullname: true, username: true } },
         },
       }),
     ]);
@@ -132,7 +135,9 @@ export async function getUsersMeta(_req, res) {
       roles: roles.map((role) => ({ id: role.id, name: role.name })),
       cashiers: cashiers.map((c) => ({
         cashierProfileId: c.id,
-        name: c.user?.name ?? "",
+        fullname: c.user?.fullname ?? "",
+        name: c.user?.fullname ?? "",
+        username: c.user?.username ?? null,
         branchName: c.branch_name,
         branchLocation: c.branch_location,
       })),
@@ -147,11 +152,13 @@ export async function getUsersMeta(_req, res) {
  * POST /api/admin/users
  * Creates user; CASHIER requires branchName + branchLocation (wallet auto-created);
  * PLAYER gets auto-wallet; AGENT accepts optional agentCashierIds[] (cashier profile ids).
+ * Staff require username; players must not have username.
  */
 export async function createUser(req, res) {
   try {
     const {
-      name,
+      username,
+      fullname,
       email,
       phone,
       password,
@@ -162,9 +169,9 @@ export async function createUser(req, res) {
       agentCashierIds = [],
     } = req.body ?? {};
 
-    if (!name || !email || !password || !roleId) {
+    if (!fullname || !email || !password || !roleId) {
       return res.status(400).json({
-        message: "name, email, password and roleId are required",
+        message: "fullname, email, password and roleId are required",
       });
     }
 
@@ -179,12 +186,28 @@ export async function createUser(req, res) {
       });
     }
 
+    let staffUsername = null;
+    if (role.name === "PLAYER") {
+      if (username != null && String(username).trim()) {
+        return res.status(400).json({
+          message: "Players cannot have a username",
+        });
+      }
+    } else {
+      const validated = validateUsername(username);
+      if (!validated.ok) {
+        return res.status(400).json({ message: validated.message });
+      }
+      staffUsername = validated.username;
+    }
+
     const hashedPassword = await bcrypt.hash(password, 10);
 
     const created = await prisma.$transaction(async (tx) => {
       const user = await tx.user.create({
         data: {
-          name: String(name).trim(),
+          username: staffUsername,
+          fullname: String(fullname).trim(),
           email: String(email).toLowerCase().trim(),
           phone: normalizePhoneOrNull(phone),
           password: hashedPassword,
@@ -266,9 +289,9 @@ export async function createUser(req, res) {
     return res.status(201).json(createdUser);
   } catch (error) {
     if (error?.code === "P2002") {
-      return res
-        .status(409)
-        .json({ message: "User with this email or phone already exists" });
+      return res.status(409).json({
+        message: "User with this email, phone, or username already exists",
+      });
     }
 
     console.error("createUser error:", error);
@@ -285,7 +308,8 @@ export async function updateUser(req, res) {
   try {
     const userId = req.params.id;
     const {
-      name,
+      username,
+      fullname,
       email,
       phone,
       password,
@@ -322,16 +346,37 @@ export async function updateUser(req, res) {
       }
     }
 
+    let nextUsername;
+    if (nextRole.name === "PLAYER") {
+      nextUsername = null;
+      if (username != null && String(username).trim()) {
+        return res.status(400).json({
+          message: "Players cannot have a username",
+        });
+      }
+    } else if (username !== undefined) {
+      const validated = validateUsername(username);
+      if (!validated.ok) {
+        return res.status(400).json({ message: validated.message });
+      }
+      nextUsername = validated.username;
+    } else if (!existingUser.username || existingUser.role.name === "PLAYER") {
+      return res.status(400).json({
+        message: "Username is required for staff users",
+      });
+    }
+
     const updated = await prisma.$transaction(async (tx) => {
       const updateData = {};
 
-      if (name !== undefined) updateData.name = String(name).trim();
+      if (fullname !== undefined) updateData.fullname = String(fullname).trim();
       if (email !== undefined)
         updateData.email = String(email).toLowerCase().trim();
       if (phone !== undefined)
         updateData.phone = normalizePhoneOrNull(phone);
       if (status !== undefined) updateData.status = Boolean(status);
       if (roleId !== undefined) updateData.role_id = String(roleId);
+      if (nextUsername !== undefined) updateData.username = nextUsername;
       if (password) {
         updateData.password = await bcrypt.hash(password, 10);
       }
@@ -442,9 +487,9 @@ export async function updateUser(req, res) {
     return res.json(updatedUser);
   } catch (error) {
     if (error?.code === "P2002") {
-      return res
-        .status(409)
-        .json({ message: "User with this email or phone already exists" });
+      return res.status(409).json({
+        message: "User with this email, phone, or username already exists",
+      });
     }
 
     console.error("updateUser error:", error);

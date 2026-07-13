@@ -17,7 +17,7 @@ import { getApiOrigin } from "../services/api";
 function Register() {
   const navigate = useNavigate();
   const [form, setForm] = useState({
-    username: "",
+    displayName: "",
     phone: "",
     password: "",
     confirmPassword: "",
@@ -45,7 +45,7 @@ function Register() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          name: form.username.trim(),
+          fullname: form.displayName.trim(),
           phone: form.phone.trim(),
           password: form.password,
         }),
@@ -107,14 +107,14 @@ function Register() {
           <form onSubmit={handleSubmit} className="flex flex-col gap-4">
             <label className="block">
               <span className="mb-2 block text-xs font-semibold text-[rgba(255,255,255,0.72)]">
-                Username
+                Display name
               </span>
               <input
                 type="text"
-                value={form.username}
-                onChange={(e) => update("username", e.target.value)}
+                value={form.displayName}
+                onChange={(e) => update("displayName", e.target.value)}
                 required
-                autoComplete="username"
+                autoComplete="name"
                 className={accountInputCls}
               />
             </label>

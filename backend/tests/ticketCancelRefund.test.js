@@ -101,7 +101,15 @@ test("refundTicketStakeInTx credits cashier wallet for ticket-print BET", async 
 
 test("refundTicketStakeInTx credits player wallet for online BET", async () => {
   const tx = createMockTx({
-    wallets: [{ id: "pw1", user_id: "player-1", wallet_type: "PLAYER", balance: 50 }],
+    wallets: [
+      {
+        id: "pw1",
+        user_id: "player-1",
+        wallet_type: "PLAYER",
+        balance: 50,
+        withdrawable: 10,
+      },
+    ],
     transactions: [
       {
         id: "bet1",
@@ -124,6 +132,8 @@ test("refundTicketStakeInTx credits player wallet for online BET", async () => {
   assert.equal(refunds.length, 1);
   assert.equal(refunds[0].kind, "player");
   assert.equal(tx.wallets.get("pw1").balance, 65);
+  // Refund must not become withdrawable
+  assert.equal(tx.wallets.get("pw1").withdrawable, 10);
 });
 
 test("refundTicketStakeInTx refunds both player and cashier when both debited", async () => {
