@@ -12,7 +12,6 @@ import { useTranslation } from "../i18n/LanguageContext.jsx";
 import {
   fetchCasinoGames,
   fetchCasinoStatus,
-  fetchInoutDemoLaunchUrl,
   fetchInoutLaunchUrl,
   generateMrxSsoToken,
   hasAuthToken,
@@ -48,7 +47,7 @@ const MRX_GAMES = [
   },
 ];
 
-function GameCard({ game, onPlay, onDemo, t }) {
+function GameCard({ game, onPlay, t }) {
   return (
     <div className="group flex flex-col overflow-hidden rounded-2xl border border-white/8 bg-gradient-to-br from-[#111111]/92 to-[#000000]/92 transition-all hover:ring-1 hover:ring-(--sb-accent-fill)/40">
       <div className="relative aspect-[3/4] w-full overflow-hidden bg-[#0a0a0a]">
@@ -66,20 +65,13 @@ function GameCard({ game, onPlay, onDemo, t }) {
         )}
 
         <div className="pointer-events-none absolute inset-x-2 bottom-2">
-          <div className="pointer-events-auto grid grid-cols-2 gap-1.5 rounded-xl border border-white/25 bg-white/12 p-1.5 backdrop-blur-md">
+          <div className="pointer-events-auto rounded-xl border border-white/25 bg-white/12 p-1.5 backdrop-blur-md">
             <button
               type="button"
               onClick={() => onPlay(game)}
-              className="cursor-pointer rounded-lg border-0 bg-(--sb-accent-fill) px-2 py-1.5 text-[12px] font-bold text-[#000000] transition-all hover:brightness-110"
+              className="w-full cursor-pointer rounded-lg border-0 bg-(--sb-accent-fill) px-2 py-1.5 text-[12px] font-bold text-[#000000] transition-all hover:brightness-110"
             >
               {t("casino.play")}
-            </button>
-            <button
-              type="button"
-              onClick={() => onDemo(game)}
-              className="cursor-pointer rounded-lg border border-white/20 bg-black/20 px-2 py-1.5 text-[12px] font-semibold text-[#ffffff] transition-all hover:bg-black/35"
-            >
-              {t("casino.demo")}
             </button>
           </div>
         </div>
@@ -231,22 +223,6 @@ function Casino() {
     [launching, language, navigate],
   );
 
-  const handleDemo = useCallback(
-    async (game) => {
-      if (launching) return;
-      setLaunching(true);
-      try {
-        const url = await fetchInoutDemoLaunchUrl(game.gameMode, language);
-        setFrame({ url, title: game.title });
-      } catch (err) {
-        setError(err.message || "Failed to launch demo");
-      } finally {
-        setLaunching(false);
-      }
-    },
-    [launching, language],
-  );
-
   return (
     <PageContainer>
       <div className="sticky top-0 z-50">
@@ -287,7 +263,6 @@ function Casino() {
                   key={game.gameMode}
                   game={game}
                   onPlay={handlePlay}
-                  onDemo={handleDemo}
                   t={t}
                 />
               ))
