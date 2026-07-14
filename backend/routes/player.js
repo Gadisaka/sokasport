@@ -12,9 +12,13 @@ import {
   cancelOwnPlayerTicket,
   listOwnTickets,
 } from "../controllers/playerController.js";
+import { generateSsoToken } from "../controllers/playerSsoController.js";
 import { authorizePermission } from "../middleware/auth.js";
 
 const router = express.Router();
+
+// MRX Instant Games SSO — PLAYER role enforced in controller (same as InOut launch).
+router.post("/generate-sso-token", generateSsoToken);
 
 router.get("/wallet", authorizePermission("wallet:history"), getWallet);
 router.get("/wallet/history", authorizePermission("wallet:history"), getWalletHistory);

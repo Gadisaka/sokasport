@@ -830,3 +830,25 @@ export async function fetchInoutDemoLaunchUrl(gameMode, lang) {
   return data.launchUrl;
 }
 
+/**
+ * POST /api/player/generate-sso-token — MRX Instant Games SSO (requires player auth).
+ * @returns {Promise<string>} encrypted ssoToken (iv:ciphertext)
+ */
+export async function generateMrxSsoToken() {
+  const token = getToken();
+  if (!token) throw new Error("NOT_LOGGED_IN");
+
+  const res = await fetch(`${API_URL}/api/player/generate-sso-token`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.success) {
+    throw new Error(data.message || "Failed to get SSO token");
+  }
+  return data.ssoToken;
+}
+

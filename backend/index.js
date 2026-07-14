@@ -34,6 +34,7 @@ import inoutRoutes from "./routes/inout.js";
 import casinoRoutes from "./routes/casino.js";
 import casinoPublicRoutes from "./routes/casinoPublic.js";
 import casinoAdminRoutes from "./routes/casinoAdmin.js";
+import internalWalletRoutes from "./routes/internalWallet.js";
 import { startCronJobs } from "./jobs/index.js";
 import { runBootstrap } from "./jobs/bootstrap.js";
 import { authenticateToken } from "./middleware/auth.js";
@@ -55,6 +56,9 @@ app.use("/api/integrations/inout", inoutRoutes);
 app.use(compression());
 app.use(express.json());
 app.use(perfTimingMiddleware);
+
+// MRX wallet bridge — API-key auth only (no player JWT).
+app.use("/api/internal/wallet", internalWalletRoutes);
 
 app.get("/health", async (_req, res) => {
   const redis = await pingRedis();

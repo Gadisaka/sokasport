@@ -3,7 +3,11 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { normalizeEthiopiaPhone, normalizePhoneOrNull } from "../lib/phone.js";
+import {
+  normalizeEthiopiaPhone,
+  normalizePhoneOrNull,
+  toLocalEthiopiaPhone,
+} from "../lib/phone.js";
 
 const CANON_9 = "251911223344";
 const CANON_7 = "251700112233";
@@ -59,4 +63,11 @@ test("normalizePhoneOrNull returns null for empty/blank input", () => {
 test("normalizePhoneOrNull returns canonical digits for a valid value", () => {
   assert.equal(normalizePhoneOrNull("0911223344"), CANON_9);
   assert.equal(normalizePhoneOrNull("+251700112233"), CANON_7);
+});
+
+test("toLocalEthiopiaPhone converts canonical 251… to 0…", () => {
+  assert.equal(toLocalEthiopiaPhone("251911223344"), "0911223344");
+  assert.equal(toLocalEthiopiaPhone("251700112233"), "0700112233");
+  assert.equal(toLocalEthiopiaPhone("0911223344"), "0911223344");
+  assert.equal(toLocalEthiopiaPhone("+251911223344"), "0911223344");
 });

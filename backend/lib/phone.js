@@ -35,3 +35,19 @@ export function normalizePhoneOrNull(input) {
   const normalized = normalizeEthiopiaPhone(input);
   return normalized ? normalized : null;
 }
+
+/**
+ * Convert a stored/canonical Ethiopian phone (`251XXXXXXXXX`) to the local
+ * `0XXXXXXXXX` form used by external partners (e.g. MRX SSO payloads).
+ *
+ * @param {unknown} input
+ * @returns {string}
+ */
+export function toLocalEthiopiaPhone(input) {
+  const canonical = normalizeEthiopiaPhone(input);
+  if (canonical.startsWith("251") && canonical.length === 12) {
+    return `0${canonical.slice(3)}`;
+  }
+  if (canonical.startsWith("0")) return canonical;
+  return canonical;
+}
