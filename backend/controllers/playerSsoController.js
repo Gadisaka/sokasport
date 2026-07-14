@@ -26,13 +26,6 @@ export async function generateSsoToken(req, res) {
       return res.status(401).json({ success: false, message: "Unauthorized" });
     }
 
-    if (!process.env.MRX_ENCRYPTION_KEY) {
-      return res.status(503).json({
-        success: false,
-        message: "MRX SSO is not configured",
-      });
-    }
-
     const player = await prisma.user.findUnique({
       where: { id: userId },
       select: { id: true, phone: true, fullname: true, status: true },
@@ -50,6 +43,7 @@ export async function generateSsoToken(req, res) {
       });
     }
 
+    // Same shape as MRX playerSso.js: phone as stored, name, timestamp
     const ssoToken = encryptMrxSsoToken({
       phone: player.phone,
       name: player.fullname || player.phone,

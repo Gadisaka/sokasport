@@ -1,5 +1,5 @@
 /**
- * Unit tests for MRX SSO encrypt/decrypt.
+ * Unit tests for MRX SSO encrypt/decrypt (matches MRX playerSso.js).
  * Run: node --test backend/tests/mrxSso.test.js
  */
 import { test, before, after } from "node:test";
@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import {
   encryptMrxSsoToken,
   decryptMrxSsoToken,
+  getMrxEncryptionKeyBuffer,
 } from "../lib/mrxSso.js";
 
 const TEST_KEY =
@@ -20,6 +21,12 @@ after(() => {
   delete process.env.MRX_ENCRYPTION_KEY;
 });
 
+test("key derivation matches playerSso.js (slice 0,64 as hex)", () => {
+  const expected = Buffer.from(TEST_KEY.slice(0, 64), "hex");
+  assert.deepEqual(getMrxEncryptionKeyBuffer(), expected);
+  assert.equal(getMrxEncryptionKeyBuffer().length, 32);
+});
+
 test("encryptMrxSsoToken returns iv:ciphertext hex format", () => {
   const token = encryptMrxSsoToken({
     phone: "251911223344",
@@ -28,11 +35,11 @@ test("encryptMrxSsoToken returns iv:ciphertext hex format", () => {
   });
   assert.match(token, /^[0-9a-f]+:[0-9a-f]+$/i);
   const [iv, cipher] = token.split(":");
-  assert.equal(iv.length, 32); // 16 bytes
+  assert.equal(iv.length, 32);
   assert.ok(cipher.length > 0);
 });
 
-test("round-trip decrypt yields local phone + name + timestamp", () => {
+test("round-trip preserves phone as passed (no reformatting)", () => {
   const timestamp = 1_700_000_000_000;
   const token = encryptMrxSsoToken({
     phone: "251911223344",
@@ -40,27 +47,31 @@ test("round-trip decrypt yields local phone + name + timestamp", () => {
     timestamp,
   });
   const payload = decryptMrxSsoToken(token);
-  assert.equal(payload.phone, "0911223344");
+  assert.equal(payload.phone, "251911223344");
   assert.equal(payload.name, "Abebe Kebede");
   assert.equal(payload.timestamp, timestamp);
 });
 
-test("local 09 phone is left in local form in payload", () => {
+test("payload uses name fallback to phone when name empty", () => {
   const token = encryptMrxSsoToken({
     phone: "0911223344",
-    name: "Player",
+    name: "",
     timestamp: 1,
   });
   const payload = decryptMrxSsoToken(token);
   assert.equal(payload.phone, "0911223344");
+  assert.equal(payload.name, "0911223344");
 });
 
-test("missing key throws", () => {
-  const prev = process.env.MRX_ENCRYPTION_KEY;
+test("falls back to default key when env unset", () => {
   delete process.env.MRX_ENCRYPTION_KEY;
-  assert.throws(
-    () => encryptMrxSsoToken({ phone: "0911", name: "x" }),
-    /MRX_ENCRYPTION_KEY/,
-  );
-  process.env.MRX_ENCRYPTION_KEY = prev;
+  const token = encryptMrxSsoToken({
+    phone: "0911223344",
+    name: "Player",
+    timestamp: 42,
+  });
+  const payload = decryptMrxSsoToken(token);
+  assert.equal(payload.phone, "0911223344");
+  assert.equal(payload.timestamp, 42);
+  process.env.MRX_ENCRYPTION_KEY = TEST_KEY;
 });

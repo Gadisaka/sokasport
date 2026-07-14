@@ -1,27 +1,36 @@
 /**
  * MRX SSO token encryption helpers.
  *
- * Token format: "<iv_hex>:<ciphertext_hex>" (AES-256-CBC).
- * Payload: { phone, name, timestamp } — phone in local 0XXXXXXXXX form.
+ * Matches MRX playerSso reference:
+ *   - AES-256-CBC
+ *   - key = Buffer.from(MRX_ENCRYPTION_KEY.slice(0, 64), "hex")
+ *   - token = "<iv_hex>:<ciphertext_hex>"
+ *   - payload = { phone, name, timestamp } (phone as stored / passed in)
  *
  * @module lib/mrxSso
  */
 import crypto from "node:crypto";
-import { toLocalEthiopiaPhone } from "./phone.js";
+
+/** Guide / local-dev default — must match MRX when used. Prefer env in production. */
+const DEFAULT_MRX_ENCRYPTION_KEY =
+  "a1b6783d4e5f6789012345901234567890123456789901234567890123456782";
 
 /**
- * @returns {Buffer} 32-byte AES key from MRX_ENCRYPTION_KEY
+ * Resolve encryption key string (env, else reference default).
+ * @returns {string}
+ */
+export function getMrxEncryptionKey() {
+  return (
+    process.env.MRX_ENCRYPTION_KEY || DEFAULT_MRX_ENCRYPTION_KEY
+  ).trim();
+}
+
+/**
+ * @returns {Buffer} 32-byte AES key — same derivation as MRX playerSso.js
  */
 export function getMrxEncryptionKeyBuffer() {
-  const key = process.env.MRX_ENCRYPTION_KEY;
-  if (!key || typeof key !== "string") {
-    throw new Error("MRX_ENCRYPTION_KEY is not set");
-  }
-  const hex = key.trim().slice(0, 64);
-  if (!/^[0-9a-fA-F]{64}$/.test(hex)) {
-    throw new Error("MRX_ENCRYPTION_KEY must be at least 64 hex characters");
-  }
-  return Buffer.from(hex, "hex");
+  const key = getMrxEncryptionKey();
+  return Buffer.from(key.slice(0, 64), "hex");
 }
 
 /**
@@ -32,8 +41,8 @@ export function getMrxEncryptionKeyBuffer() {
  */
 export function encryptMrxSsoToken({ phone, name, timestamp = Date.now() }) {
   const payload = JSON.stringify({
-    phone: toLocalEthiopiaPhone(phone),
-    name: name || toLocalEthiopiaPhone(phone),
+    phone,
+    name: name || phone,
     timestamp,
   });
 
@@ -45,7 +54,7 @@ export function encryptMrxSsoToken({ phone, name, timestamp = Date.now() }) {
     cipher.final(),
   ]);
 
-  return `${iv.toString("hex")}:${encrypted.toString("hex")}`;
+  return iv.toString("hex") + ":" + encrypted.toString("hex");
 }
 
 /**
