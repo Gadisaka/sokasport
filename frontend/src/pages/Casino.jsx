@@ -104,7 +104,7 @@ function InstantGameCard({ game, launching, onPlay, t }) {
           src={game.iconUrl}
           alt={title}
           loading="lazy"
-          className="h-full w-full object-contain p-1"
+          className="h-full w-full object-cover"
         />
 
         <div className="pointer-events-none absolute inset-x-2 bottom-2">
