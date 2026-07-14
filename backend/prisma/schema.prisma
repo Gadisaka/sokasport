@@ -660,6 +660,43 @@ model CashierLoginAttempt {
   @@map("cashier_login_attempts")
 }
 
+// InOut Games session. Maps the authToken we put in the launch URL (and that
+// InOut echoes back as `token` on every webhook) to a Sokasport user.
+model InoutGameSession {
+  id         String    @id @default(uuid()) @map("_id")
+  token      String    @unique
+  user_id    String
+  currency   String    @default("ETB")
+  game_mode  String?
+  created_at DateTime  @default(now())
+  expires_at DateTime?
+
+  @@index([user_id])
+  @@map("inout_game_sessions")
+}
+
+// InOut Games catalog. Synced from the provider's gameModesList endpoint.
+// Provider fields (title/description/icon/rtp/multiplayer) are refreshed on
+// every sync; the admin-controlled `enabled` and `sort_order` are set only on
+// create and preserved across re-syncs so curation is not clobbered.
+model InoutGame {
+  id          String   @id @default(uuid()) @map("_id")
+  game_mode   String   @unique
+  title       String
+  description String?
+  icon_url    String?
+  multiplayer Boolean  @default(false)
+  rtp         String?
+  enabled     Boolean  @default(true)
+  sort_order  Int      @default(0)
+  raw         Json?
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  @@index([enabled])
+  @@map("inout_games")
+}
+
 // Key-value platform settings (e.g. ticket cancel window) — updated by admin via API
 model Setting {
   id         String   @id @default(uuid()) @map("_id")

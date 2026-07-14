@@ -17,7 +17,7 @@ import { useTranslation } from "../../i18n/LanguageContext.jsx";
 
 const navItems = [
   { id: "home", icon: "home", path: "/" },
-  { id: "virtual", icon: "gamepad", disabled: true },
+  { id: "games", icon: "gamepad", path: "/casino" },
   { id: "slip", icon: "ticket", action: "slip" },
   { id: "promotion", icon: "gift", action: "promotion" },
   { id: "contact", icon: "send", path: "/info/contact-us" },
@@ -137,6 +137,9 @@ function MobileBottomBar({
     (item) => {
       if (item.id === "home") {
         return location.pathname === "/";
+      }
+      if (item.id === "games") {
+        return location.pathname === "/casino";
       }
       if (item.id === "contact") {
         return location.pathname === "/info/contact-us";

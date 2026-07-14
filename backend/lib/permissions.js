@@ -7,6 +7,10 @@
  *
  * SUPER_ADMIN and ADMIN receive a wildcard ("*") — they pass every check.
  *
+ * Casino catalog management uses `casino:read` and `casino:manage`. These are
+ * intentionally admin-only, so they are covered by the ADMIN/SUPER_ADMIN
+ * wildcard and are not granted to any narrower role here.
+ *
  * @module lib/permissions
  */
 

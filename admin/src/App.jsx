@@ -23,6 +23,7 @@ import AdminReportsPage from "./pages/admin/ReportsPage";
 import AgentDepositWithdrawPage from "./pages/agent/DepositWithdrawPage";
 import PlaceholderPage from "./pages/PlaceholderPage";
 import CmsPage from "./pages/admin/CmsPage";
+import CasinoPage from "./pages/admin/CasinoPage";
 import ValidationOpsPage from "./pages/admin/ValidationOpsPage";
 import FixtureOpsPage from "./pages/admin/FixtureOpsPage";
 import CashierDevicesPage from "./pages/admin/CashierDevicesPage";
@@ -175,6 +176,14 @@ export default function App() {
             element={
               <ProtectedRoute allowedRoles={ADMIN_ALLOWED_ROLES}>
                 <RoleTicketsPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/casino"
+            element={
+              <ProtectedRoute allowedRoles={ADMIN_UP}>
+                <CasinoPage />
               </ProtectedRoute>
             }
           />

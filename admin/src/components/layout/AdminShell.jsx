@@ -58,6 +58,12 @@ const NAV_SECTIONS = [
         permission: "tickets:read",
       },
       {
+        to: "/casino",
+        label: "Casino Games",
+        icon: GamesIcon,
+        permission: "casino:read",
+      },
+      {
         to: "/withdraw-deposit",
         label: "Deposit/Withdraw",
         icon: WalletsIcon,

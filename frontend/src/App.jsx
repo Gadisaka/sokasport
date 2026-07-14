@@ -5,6 +5,7 @@ import Home from './pages/Home'
 import { LanguageProvider } from './i18n/LanguageContext.jsx'
 
 const Live = lazy(() => import('./pages/Live'))
+const Casino = lazy(() => import('./pages/Casino'))
 const Login = lazy(() => import('./pages/Login'))
 const Register = lazy(() => import('./pages/Register'))
 const BetHistory = lazy(() => import('./pages/BetHistory'))
@@ -38,6 +39,7 @@ function App() {
     <Routes>
       <Route path="/" element={<Home />} />
       <Route path="/live" element={<Live />} />
+      <Route path="/casino" element={<Casino />} />
       <Route path="/matchdetail/:id" element={<Home />} />
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />

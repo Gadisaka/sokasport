@@ -15,6 +15,8 @@ const ROLE_PERMISSIONS = {
     "agents-cashiers:read",
     "games:read",
     "games:write",
+    "casino:read",
+    "casino:manage",
     "tickets:read",
     "tickets:void",
     "wallets:read",

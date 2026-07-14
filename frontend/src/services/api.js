@@ -751,3 +751,82 @@ export async function markAllNotificationsRead() {
   }
   return data;
 }
+
+/**
+ * GET /api/casino/status — public master switch for the casino lobby.
+ * Returns { enabled }. Fails open (enabled: true) on network error.
+ */
+export async function fetchCasinoStatus(options = {}) {
+  const { signal } = options;
+  try {
+    const res = await fetch(`${API_URL}/api/casino/status`, { signal });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return { enabled: true };
+    return { enabled: data.enabled !== false };
+  } catch (err) {
+    if (err?.name === "AbortError") throw err;
+    return { enabled: true };
+  }
+}
+
+/**
+ * GET /api/casino/games — public list of enabled InOut games (ordered).
+ * Returns an array of { gameMode, title, description, iconUrl, multiplayer, rtp }.
+ */
+export async function fetchCasinoGames(options = {}) {
+  const { signal } = options;
+  const res = await fetch(`${API_URL}/api/casino/games`, { signal });
+  const data = await res.json().catch(() => []);
+  if (!res.ok) {
+    throw new Error(
+      (data && data.message) || `Failed to load casino games: ${res.status}`,
+    );
+  }
+  return Array.isArray(data) ? data : [];
+}
+
+/**
+ * POST /api/casino/inout/launch — real-money launch URL (requires player auth).
+ * @param {string} gameMode
+ * @param {{ lang?: string, userCountryCode?: string, lobbyUrl?: string }} opts
+ * @returns {Promise<string>} launch URL for the iframe.
+ */
+export async function fetchInoutLaunchUrl(gameMode, opts = {}) {
+  const token = getToken();
+  if (!token) throw new Error("NOT_LOGGED_IN");
+
+  const res = await fetch(`${API_URL}/api/casino/inout/launch`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ gameMode, ...opts }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data.message || data.error || "Failed to launch game");
+  }
+  return data.launchUrl;
+}
+
+/**
+ * GET /api/casino/inout/demo-launch — public demo launch URL for the iframe.
+ * @param {string} gameMode
+ * @param {string} [lang]
+ * @returns {Promise<string>} launch URL for the iframe.
+ */
+export async function fetchInoutDemoLaunchUrl(gameMode, lang) {
+  const params = new URLSearchParams({ gameMode });
+  if (lang) params.set("lang", lang);
+
+  const res = await fetch(
+    `${API_URL}/api/casino/inout/demo-launch?${params.toString()}`,
+  );
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data.message || data.error || "Failed to launch demo");
+  }
+  return data.launchUrl;
+}
+
