@@ -19,10 +19,7 @@ import {
 } from "../services/api";
 
 const GAME_BASE_URL =
-  import.meta.env.VITE_GAME_BASE_URL || "http://localhost:4505";
-const AVIATOR_URL =
-  import.meta.env.VITE_AVIATOR_URL || "http://localhost:4402";
-const BINGO_URL = import.meta.env.VITE_BINGO_URL || "http://localhost:4404";
+  import.meta.env.VITE_GAME_BASE_URL || "https://games.sokasports.com";
 
 const MRX_GAMES = [
   {
@@ -38,16 +35,16 @@ const MRX_GAMES = [
     nameKey: "casino.aviatorName",
     descKey: "casino.aviatorDesc",
     accent: "#0ea5e9",
-    ssoTarget: AVIATOR_URL,
-    path: "",
+    ssoTarget: GAME_BASE_URL,
+    path: "/game/aviator",
   },
   {
     id: "bingo",
     nameKey: "casino.bingoName",
     descKey: "casino.bingoDesc",
     accent: "#f59e0b",
-    ssoTarget: BINGO_URL,
-    path: "",
+    ssoTarget: GAME_BASE_URL,
+    path: "/game/bingo",
   },
 ];
 
