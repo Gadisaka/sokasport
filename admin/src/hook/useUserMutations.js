@@ -26,3 +26,15 @@ export function useUpdateUserMutation() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["admin", "users"] }),
   });
 }
+
+export function useDeleteUserMutation() {
+  const qc = useQueryClient();
+
+  return useMutation({
+    mutationFn: (id) =>
+      apiRequest(`/admin/users/${id}`, {
+        method: "DELETE",
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["admin", "users"] }),
+  });
+}

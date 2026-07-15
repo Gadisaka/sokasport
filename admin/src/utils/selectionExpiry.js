@@ -50,6 +50,58 @@ export function slipHasExpiredSelection(selections, now = Date.now()) {
   return selections.some((s) => isSelectionExpired(s, now));
 }
 
+function selectionExpiryInput(selection) {
+  return {
+    kickoffAt: selection?.kickoffAt ?? selection?.match?.startTime,
+    matchStatus:
+      selection?.matchStatus ?? selection?.status ?? selection?.match?.status,
+    status: selection?.match?.status ?? selection?.status,
+    fromLive: selection?.fromLive,
+  };
+}
+
+/**
+ * Kickoff / terminal expiry only (not locked/suspended blocking legs).
+ * @returns {string[]}
+ */
+export function collectExpiredSelectionIds(selections, now = Date.now()) {
+  const ids = [];
+  for (const selection of selections || []) {
+    const id = String(selection?.id || "").trim();
+    if (!id) continue;
+    if (isSelectionExpired(selectionExpiryInput(selection), now)) {
+      ids.push(id);
+    }
+  }
+  return ids;
+}
+
+/**
+ * Expired ids that can be removed while leaving at least one selection.
+ * Prefers keeping a non-expired leg when any exist.
+ * @returns {string[]}
+ */
+export function removableExpiredSelectionIds(selections, now = Date.now()) {
+  const all = Array.isArray(selections) ? selections : [];
+  if (all.length <= 1) return [];
+
+  const expiredIds = new Set(collectExpiredSelectionIds(all, now));
+  if (expiredIds.size === 0) return [];
+
+  const hasNonExpired = all.some(
+    (s) => !expiredIds.has(String(s?.id || "").trim()),
+  );
+  if (hasNonExpired) {
+    return [...expiredIds];
+  }
+
+  // All expired — keep the first, remove the rest.
+  const keepId = String(all[0]?.id || "").trim();
+  return all
+    .map((s) => String(s?.id || "").trim())
+    .filter((id) => id && id !== keepId && expiredIds.has(id));
+}
+
 /** Merge server blocking ids with client kickoff expiry. */
 export function isSelectionInvalid(selection, blockingSelectionIds, now = Date.now()) {
   const id = String(selection?.id || "");

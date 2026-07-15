@@ -496,3 +496,53 @@ export async function updateUser(req, res) {
     return res.status(500).json({ message: "Failed to update user" });
   }
 }
+
+/**
+ * DELETE /api/admin/users/:id
+ * Hard-deletes a PLAYER only. Staff must be deleted via Agents/Cashiers.
+ */
+export async function deleteUser(req, res) {
+  try {
+    const userId = req.params.id;
+
+    const existing = await prisma.user.findUnique({
+      where: { id: userId },
+      include: {
+        role: true,
+        cashier_profile: true,
+        agent_assignments: true,
+      },
+    });
+
+    if (!existing || existing.role?.name !== "PLAYER") {
+      return res.status(404).json({ message: "Player not found" });
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.shopWithdrawIntent.deleteMany({ where: { user_id: userId } });
+
+      const wallets = await tx.wallet.findMany({ where: { user_id: userId } });
+      for (const wallet of wallets) {
+        await tx.transaction.deleteMany({ where: { wallet_id: wallet.id } });
+      }
+      await tx.wallet.deleteMany({ where: { user_id: userId } });
+
+      await tx.user.delete({ where: { id: userId } });
+    });
+
+    await logAuditEvent({
+      req,
+      action: "PLAYER_DELETED",
+      module: "USERS",
+      entityType: "USER",
+      entityId: userId,
+      before: mapUser(existing),
+      after: null,
+    });
+
+    return res.json({ message: "Player deleted" });
+  } catch (error) {
+    console.error("deleteUser error:", error);
+    return res.status(500).json({ message: "Failed to delete player" });
+  }
+}

@@ -1,6 +1,7 @@
 import express from "express";
 import {
   createUser,
+  deleteUser,
   getUsersMeta,
   listUsers,
   updateUser,
@@ -13,5 +14,6 @@ router.get("/", authorizePermission("users:read"), listUsers);
 router.get("/meta", authorizePermission("users:read"), getUsersMeta);
 router.post("/", authorizePermission("users:create"), createUser);
 router.put("/:id", authorizePermission("users:update"), updateUser);
+router.delete("/:id", authorizePermission("users:update"), deleteUser);
 
 export default router;

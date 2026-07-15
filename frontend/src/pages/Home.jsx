@@ -35,7 +35,15 @@ import {
   persistBetSlipState,
   BET_SLIP_STATE_EVENT,
 } from "../utils/betSlipPersistence";
+import { pruneExpiredFromSlipsWithCount } from "../utils/selectionExpiry";
 import { usePlayerSiteBranding } from "../hooks/usePlayerSiteBranding";
+
+function expiredRemovedNotice(removedCount) {
+  if (removedCount <= 0) return null;
+  return removedCount === 1
+    ? "Expired match was removed from your bet slip."
+    : `${removedCount} expired matches were removed from your bet slip.`;
+}
 
 /** History keys for SPA back handling on Home (fixture expand + scroll). */
 const HISTORY_HOME_FIXTURE = "__home_fixture_drop";
@@ -185,9 +193,35 @@ function Home() {
   }, []);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- enrich persisted slips when fixture metadata refreshes
-    setSlips((prev) => enrichSlipsFromMatches(prev, allMatches));
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- enrich + prune persisted slips when fixture metadata refreshes
+    setSlips((prev) => {
+      const enriched = enrichSlipsFromMatches(prev, allMatches);
+      const { slips: pruned, removedCount } =
+        pruneExpiredFromSlipsWithCount(enriched);
+      if (removedCount > 0) {
+        const notice = expiredRemovedNotice(removedCount);
+        if (notice) queueMicrotask(() => setSlipLimitNotice(notice));
+      }
+      return pruned;
+    });
   }, [allMatches]);
+
+  useEffect(() => {
+    const run = () => {
+      setSlips((prev) => {
+        const { slips: pruned, removedCount } =
+          pruneExpiredFromSlipsWithCount(prev);
+        if (removedCount > 0) {
+          const notice = expiredRemovedNotice(removedCount);
+          if (notice) queueMicrotask(() => setSlipLimitNotice(notice));
+        }
+        return pruned;
+      });
+    };
+    run();
+    const id = window.setInterval(run, 30_000);
+    return () => window.clearInterval(id);
+  }, []);
 
   useEffect(() => {
     persistBetSlipState(slips, activeSlip);
@@ -459,6 +493,7 @@ function Home() {
                 expandedMatchId={expandedMatchId}
                 oddsDetailByFixtureId={oddsDetailByFixtureId}
                 onPageMetaChange={setMatchPageMeta}
+                paginationResetKey={`${selectedSportId}|${resolvedTimeId}|${selectedLeagueId}|${clubSearch}`}
               />
               {!loading && !String(clubSearch).trim() ? (
                 <NextCalendarDayFooter

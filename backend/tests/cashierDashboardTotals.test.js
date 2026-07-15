@@ -6,29 +6,26 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-/** Mirrors active-sold + grandNet logic in cashierDashboardController. */
+/** Mirrors gross-sold + grandNet logic in cashierDashboardController. */
 function computeDashboardTotals({
   soldBets,
-  cancelledIds,
+  cancelledStake = 0,
   totalPaidAmount = 0,
   totalDepositAmount = 0,
   totalWithdrawAmount = 0,
 }) {
-  const cancelledIdSet = new Set(cancelledIds);
-  const activeSoldBets = soldBets.filter(
-    (row) => row.ticketId && !cancelledIdSet.has(row.ticketId),
-  );
-  const totalTicketsSold = activeSoldBets.length;
-  const totalSoldPrice = activeSoldBets.reduce((s, row) => s + row.amount, 0);
+  const totalTicketsSold = soldBets.length;
+  const totalSoldPrice = soldBets.reduce((s, row) => s + row.amount, 0);
   const grandNet =
     totalSoldPrice -
+    cancelledStake -
     totalPaidAmount +
     totalDepositAmount -
     totalWithdrawAmount;
   return { totalTicketsSold, totalSoldPrice, grandNet };
 }
 
-test("excludes cancelled tickets from sold totals and grand net", () => {
+test("keeps cancelled tickets in sold totals and subtracts stake in grand net", () => {
   const soldBets = [
     { ticketId: "t1", amount: 20 },
     { ticketId: "t2", amount: 20 },
@@ -38,21 +35,21 @@ test("excludes cancelled tickets from sold totals and grand net", () => {
 
   const result = computeDashboardTotals({
     soldBets,
-    cancelledIds: ["t4"],
+    cancelledStake: 100,
   });
 
-  assert.equal(result.totalTicketsSold, 3);
-  assert.equal(result.totalSoldPrice, 60);
+  assert.equal(result.totalTicketsSold, 4);
+  assert.equal(result.totalSoldPrice, 160);
   assert.equal(result.grandNet, 60);
 });
 
-test("grand net adds deposits and subtracts payouts/withdrawals from active sold", () => {
+test("grand net adds deposits and subtracts payouts/withdrawals from gross sold", () => {
   const result = computeDashboardTotals({
     soldBets: [
       { ticketId: "t1", amount: 60 },
       { ticketId: "t2", amount: 60 },
     ],
-    cancelledIds: [],
+    cancelledStake: 0,
     totalPaidAmount: 20,
     totalDepositAmount: 10,
     totalWithdrawAmount: 5,

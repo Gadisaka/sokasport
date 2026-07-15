@@ -305,13 +305,15 @@ export default function AdminShell({ user, onLogout, children }) {
                       {ROLE_LABELS[user?.role] || user?.role}
                     </p>
                   </div>
-                  <Link
-                    to="/profile"
-                    onClick={() => setProfileOpen(false)}
-                    className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-[var(--surfaceMuted)]"
-                  >
-                    Profile
-                  </Link>
+                  {user?.role !== "CASHIER" && user?.role !== "AGENT" && (
+                    <Link
+                      to="/profile"
+                      onClick={() => setProfileOpen(false)}
+                      className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-[var(--surfaceMuted)]"
+                    >
+                      Profile
+                    </Link>
+                  )}
                   <button
                     type="button"
                     onClick={() => {

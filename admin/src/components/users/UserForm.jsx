@@ -104,7 +104,9 @@ export default function UserForm({ meta, initialValues, onSubmit, isPending, sub
         required={!isEdit}
       />
 
-      <SelectInput label="Role" value={roleId} onChange={(e) => setRoleId(e.target.value)} options={roleOptions} required />
+      {!isPlayerRole && (
+        <SelectInput label="Role" value={roleId} onChange={(e) => setRoleId(e.target.value)} options={roleOptions} required />
+      )}
 
       <SelectInput
         label="Status"

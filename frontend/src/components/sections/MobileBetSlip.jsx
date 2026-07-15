@@ -658,11 +658,6 @@ function MobileBetSlip({
         <div
           className={`shrink-0 border-t bg-(--sb-accent-surface-deep)/30 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3 backdrop-blur-sm ${slipDivider}`}
         >
-          {selections.length > 0 && hasExpiredSelection ? (
-            <div className="mb-3 rounded border border-[#3f1d1d] bg-[#1f0a0a] px-3 py-2 text-center text-[11px] font-bold text-[#fecaca]">
-              Remove expired matches to place this bet.
-            </div>
-          ) : null}
           {betResult && (
             <div
               className={`mb-3 rounded px-3 py-2 text-center text-xs font-bold ${

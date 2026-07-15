@@ -41,6 +41,7 @@ import { getSelectionRowClass } from "../../utils/legResultStatus";
 import {
   collectInvalidSelectionIds,
   invalidSelectionLabel,
+  removableExpiredSelectionIds,
 } from "../../utils/selectionExpiry";
 
 const LEFT_TABS = [
@@ -409,6 +410,9 @@ export default function CashierTicketsPage() {
   const [bettingLimits, setBettingLimits] = useState(null);
   const [driftPrompt, setDriftPrompt] = useState(null);
   const driftPromptResolveRef = useRef(null);
+  const printInFlightRef = useRef(false);
+  const autoRemoveExpiredInFlightRef = useRef(false);
+  const [expiryTick, setExpiryTick] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -475,7 +479,12 @@ export default function CashierTicketsPage() {
   const sellBlockingQuery = useSellBlockingQuery(sellTicket?.id, {
     enabled: Boolean(sellTicket?.id && leftTab === "sell"),
   });
-  const printInFlightRef = useRef(false);
+
+  useEffect(() => {
+    if (leftTab !== "sell") return undefined;
+    const id = window.setInterval(() => setExpiryTick((t) => t + 1), 30_000);
+    return () => window.clearInterval(id);
+  }, [leftTab]);
 
   const invalidSelectionIds = useMemo(() => {
     if (!sellTicket?.selections) return new Set();
@@ -696,6 +705,69 @@ export default function CashierTicketsPage() {
       setSellError(error?.message || "Failed to remove selection");
     }
   };
+
+  useEffect(() => {
+    if (leftTab !== "sell" || !sellTicket?.id || sellConfirmed) return undefined;
+    if (removeSelection.isPending || autoRemoveExpiredInFlightRef.current) {
+      return undefined;
+    }
+
+    const ids = removableExpiredSelectionIds(sellTicket.selections);
+    if (ids.length === 0) return undefined;
+
+    let cancelled = false;
+    autoRemoveExpiredInFlightRef.current = true;
+
+    (async () => {
+      try {
+        let updated = sellTicket;
+        let removed = 0;
+        for (const selectionId of ids) {
+          if (cancelled) break;
+          const stillOnTicket = (updated.selections || []).some(
+            (s) => String(s.id) === String(selectionId),
+          );
+          if (!stillOnTicket) continue;
+          try {
+            updated = await removeSelection.mutateAsync({
+              ticketId: updated.id,
+              selectionId,
+            });
+            removed += 1;
+          } catch (err) {
+            const msg = String(err?.message || "").toLowerCase();
+            if (msg.includes("not found")) continue;
+            throw err;
+          }
+        }
+        if (cancelled || removed === 0) return;
+        setSellTicket(updated);
+        setSellStakeInput(String(toNumber(updated?.stake)));
+        setSellConfirmed(false);
+        setActionSuccess(
+          removed === 1
+            ? "Removed 1 expired selection."
+            : `Removed ${removed} expired selections.`,
+        );
+      } catch (error) {
+        if (!cancelled) {
+          setSellError(error?.message || "Failed to remove expired selections");
+        }
+      } finally {
+        autoRemoveExpiredInFlightRef.current = false;
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    leftTab,
+    sellTicket,
+    sellConfirmed,
+    expiryTick,
+    removeSelection,
+  ]);
 
   const handlePrint = async () => {
     if (!sellTicket || printInFlightRef.current) return;

@@ -852,11 +852,6 @@ function BetSlipPanel({
           </>
         )}
 
-        {selections.length > 0 && hasExpiredSelection ? (
-          <div className="border-t border-[#5f3030]/40 bg-[#2a1515]/40 px-3 py-2.5 text-center text-[11px] font-bold text-[#fecaca]">
-            Remove expired matches to enable placing this bet.
-          </div>
-        ) : null}
         {selections.length > 0 && hasLockedSelection ? (
           <div className="border-t border-[#5f3030]/40 bg-[#2a1515]/40 px-3 py-2.5 text-center text-[11px] font-bold text-[#fecaca]">
             One or more markets are LOCKED. Placement is temporarily disabled.

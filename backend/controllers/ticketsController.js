@@ -3094,13 +3094,6 @@ export async function confirmPrintTicket(req, res) {
   }
 }
 
-const SELECTION_REMOVAL_BUFFER_MS = 5 * 60 * 1000;
-
-function isSelectionWithinRemovalBuffer(startTime, now = Date.now()) {
-  const kickoff = startTime ? new Date(startTime).getTime() : NaN;
-  return Number.isFinite(kickoff) && now + SELECTION_REMOVAL_BUFFER_MS >= kickoff;
-}
-
 function cloneSelectionRowsForRepeat(selections = []) {
   return selections.map((sel) => ({
     match_id: sel.match_id,
@@ -3196,7 +3189,7 @@ export async function repeatTicket(req, res) {
 
 /**
  * DELETE /api/tickets/:id/selections/:selectionId
- * Removes an expired/near-expiry leg from an OPEN ticket before print.
+ * Removes a leg from an OPEN ticket before print (cashier can remove any selection).
  */
 export async function removeTicketSelection(req, res) {
   try {
@@ -3254,13 +3247,6 @@ export async function removeTicketSelection(req, res) {
     }
 
     const targetSelection = selections[selectionIndex];
-    const kickoff = selectionKickoffTime(targetSelection);
-    if (!isSelectionWithinRemovalBuffer(kickoff)) {
-      return res.status(400).json({
-        message:
-          "Selection can only be removed when kickoff is within 5 minutes or already passed",
-      });
-    }
 
     const snapshot = Array.isArray(ticket.selection_snapshot)
       ? [...ticket.selection_snapshot]

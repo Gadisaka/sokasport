@@ -265,27 +265,23 @@ export async function getCashierDashboardStats(req, res) {
       0,
     );
 
-    const cancelledIdSet = new Set(cancelledNonJackpot.map((t) => t.id));
-    const activeSoldBets = soldBets.filter((tx) => {
-      const ref = String(tx.reference || "");
-      const tid = ref.startsWith("ticket-print:")
-        ? ref.slice("ticket-print:".length)
-        : "";
-      return tid && !cancelledIdSet.has(tid);
-    });
-    const totalTicketsSold = activeSoldBets.length;
-    const totalSoldPrice = activeSoldBets.reduce(
+    // Gross sold totals include tickets later cancelled; cancelled stake
+    // is listed separately and subtracted only in Grand Net.
+    const totalTicketsSold = soldBets.length;
+    const totalSoldPrice = soldBets.reduce(
       (s, tx) => s + Number(tx.amount),
       0,
     );
 
     // Grand Net = physical cash on hand for this cashier
-    // + Sales (cash in)
+    // + Sales (cash in, gross)
+    // - Cancelled stake (cash returned)
     // - Payouts (cash out for winning tickets)
     // + Deposits (player gives cash to deposit into their wallet)
     // - Withdrawals (cashier pays cash for player withdrawal)
     const grandNet =
       totalSoldPrice -
+      totalCancelledStake -
       totalPaidAmount +
       totalDepositAmount -
       totalWithdrawAmount;

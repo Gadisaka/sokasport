@@ -9,7 +9,11 @@ import PrimaryButton from "../components/ui/PrimaryButton";
 import Modal from "../components/ui/Modal";
 import UserForm from "../components/users/UserForm";
 import { useUsersQuery, useUsersMetaQuery } from "../hook/useUsersQuery";
-import { useCreateUserMutation, useUpdateUserMutation } from "../hook/useUserMutations";
+import {
+  useCreateUserMutation,
+  useDeleteUserMutation,
+  useUpdateUserMutation,
+} from "../hook/useUserMutations";
 import { ROLE_LABELS } from "../constants/auth";
 
 export default function UsersPage() {
@@ -34,6 +38,7 @@ export default function UsersPage() {
 
   const createMutation = useCreateUserMutation();
   const updateMutation = useUpdateUserMutation();
+  const deleteMutation = useDeleteUserMutation();
 
   const [modalMode, setModalMode] = useState(null); // "create" | "edit" | null
   const [editingUser, setEditingUser] = useState(null);
@@ -61,6 +66,17 @@ export default function UsersPage() {
   async function handleUpdate(body) {
     await updateMutation.mutateAsync({ id: editingUser.id, ...body });
     closeModal();
+  }
+
+  async function handleDeletePlayer(u) {
+    if (
+      !window.confirm(
+        `Delete player "${u.fullname}"? This cannot be undone.`,
+      )
+    ) {
+      return;
+    }
+    await deleteMutation.mutateAsync(u.id);
   }
 
   const { items = [], total = 0, totalPages = 1 } = usersQuery.data ?? {};
@@ -205,13 +221,25 @@ export default function UsersPage() {
                     </span>
                   </td>
                   <td className="px-4 py-3 text-right">
-                    <button
-                      type="button"
-                      onClick={() => openEdit(u)}
-                      className="rounded-sm border border-[var(--border)] bg-[var(--surface)] px-2.5 py-1 text-xs font-semibold text-[var(--accent)]"
-                    >
-                      Edit
-                    </button>
+                    <div className="flex items-center justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => openEdit(u)}
+                        className="rounded-sm border border-[var(--border)] bg-[var(--surface)] px-2.5 py-1 text-xs font-semibold text-[var(--accent)]"
+                      >
+                        Edit
+                      </button>
+                      {activeTab === "players" && (
+                        <button
+                          type="button"
+                          onClick={() => handleDeletePlayer(u)}
+                          disabled={deleteMutation.isPending}
+                          className="rounded-sm border border-[var(--border)] bg-[var(--surface)] px-2.5 py-1 text-xs font-semibold text-[var(--danger)] disabled:opacity-40"
+                        >
+                          Delete
+                        </button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}

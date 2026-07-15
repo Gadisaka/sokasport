@@ -13,8 +13,9 @@ import {
 import { groupMatchesByLeague } from "../../utils/matchDisplaySort";
 import { resolveCompactMarketToken } from "../../utils/compactMarketToken";
 
+/* Compact by default so the 3-column shell fits ~1024–1440; full tracks from 2xl. */
 const TABLE_GRID_COLS =
-  "grid-cols-[64px_minmax(220px,1fr)_repeat(6,82px)_58px_22px]";
+  "grid-cols-[48px_minmax(96px,1.2fr)_repeat(6,minmax(44px,1fr))_40px_18px] 2xl:grid-cols-[64px_minmax(220px,1fr)_repeat(6,82px)_58px_22px]";
 const MATCH_MARKETS = ["1", "x", "2", "1x", "x2", "12"];
 
 function parseDate(date) {
@@ -153,7 +154,7 @@ function MatchRow({
             onToggle();
           }
         }}
-        className={`hidden md:grid ${TABLE_GRID_COLS} min-h-[46px] min-w-[860px] cursor-pointer items-stretch border-b border-white/8 px-2 py-1 hover:bg-(--sb-accent-surface-deep)/35`}
+        className={`hidden md:grid ${TABLE_GRID_COLS} min-h-[46px] w-full min-w-0 cursor-pointer items-stretch border-b border-white/8 px-2 py-1 hover:bg-(--sb-accent-surface-deep)/35`}
       >
         <div className="flex flex-col justify-center border-r border-white/8 pr-2 text-center text-[10px]">
           <span className="font-medium text-[#5a8a7a]">{datePart}</span>
@@ -475,6 +476,8 @@ function MatchesTable({
   expandedMatchId,
   oddsDetailByFixtureId,
   onPageMetaChange,
+  /** When this changes (filters), jump back to page 0. Do not pass matches — refreshes would reset pagination. */
+  paginationResetKey = "",
 }) {
   const { t } = useTranslation();
   const [pageIndex, setPageIndex] = useState(0);
@@ -490,7 +493,13 @@ function MatchesTable({
 
   useEffect(() => {
     setPageIndex(0);
-  }, [matches]);
+  }, [paginationResetKey]);
+
+  // Keep page in range when fixture count shrinks (poll / filter side-effects).
+  useEffect(() => {
+    const max = Math.max(0, pagination.totalPages - 1);
+    setPageIndex((p) => (p > max ? max : p));
+  }, [pagination.totalPages]);
 
   useEffect(() => {
     onPageMetaChange?.({
@@ -584,7 +593,7 @@ function MatchesTable({
                 </div>
                 <div className="overflow-x-auto">
                   <div
-                    className={`hidden md:grid ${TABLE_GRID_COLS} min-w-[860px] px-2 py-1 text-[11px] font-bold text-(--sb-text-muted)`}
+                    className={`hidden md:grid ${TABLE_GRID_COLS} w-full min-w-0 px-2 py-1 text-[11px] font-bold text-(--sb-text-muted)`}
                   >
                     <span />
                     <span />

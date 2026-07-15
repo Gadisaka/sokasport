@@ -35,9 +35,17 @@ import {
   persistBetSlipState,
   BET_SLIP_STATE_EVENT,
 } from "../utils/betSlipPersistence";
+import { pruneExpiredFromSlipsWithCount } from "../utils/selectionExpiry";
 
 const LIVE_REFRESH_MS = 10_000;
 const LIVE_MARKETS = ["1", "x", "2"];
+
+function expiredRemovedNotice(removedCount) {
+  if (removedCount <= 0) return null;
+  return removedCount === 1
+    ? "Expired match was removed from your bet slip."
+    : `${removedCount} expired matches were removed from your bet slip.`;
+}
 
 /** Interval / clock-slice markets (not full-match 1X2). */
 function isLiveOddsWindowOrIntervalMarket(nameRaw) {
@@ -718,8 +726,34 @@ function Live() {
   const { catalogItems } = useFootballSidebarCatalog();
 
   useEffect(() => {
-    setSlips((prev) => enrichSlipsFromMatches(prev, allMatches));
+    setSlips((prev) => {
+      const enriched = enrichSlipsFromMatches(prev, allMatches);
+      const { slips: pruned, removedCount } =
+        pruneExpiredFromSlipsWithCount(enriched);
+      if (removedCount > 0) {
+        const notice = expiredRemovedNotice(removedCount);
+        if (notice) queueMicrotask(() => setSlipLimitNotice(notice));
+      }
+      return pruned;
+    });
   }, [allMatches]);
+
+  useEffect(() => {
+    const run = () => {
+      setSlips((prev) => {
+        const { slips: pruned, removedCount } =
+          pruneExpiredFromSlipsWithCount(prev);
+        if (removedCount > 0) {
+          const notice = expiredRemovedNotice(removedCount);
+          if (notice) queueMicrotask(() => setSlipLimitNotice(notice));
+        }
+        return pruned;
+      });
+    };
+    run();
+    const id = window.setInterval(run, 30_000);
+    return () => window.clearInterval(id);
+  }, []);
 
   useEffect(() => {
     persistBetSlipState(slips, activeSlip);
