@@ -41,25 +41,6 @@ const PLAYER_HISTORY_REFERENCE_PREFIXES = [
  * Flow: cashier balance ↓, player balance ↑
  */
 export async function cashierDeposit(req, res) {
-  // #region agent log
-  const _dbg = (message, data, hypothesisId) => {
-    fetch("http://127.0.0.1:7553/ingest/fdb5a07a-d55c-4b28-8481-7c9114d086ce", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Debug-Session-Id": "58d819",
-      },
-      body: JSON.stringify({
-        sessionId: "58d819",
-        location: "cashierWalletController.js:cashierDeposit",
-        message,
-        data,
-        timestamp: Date.now(),
-        hypothesisId,
-      }),
-    }).catch(() => {});
-  };
-  // #endregion
   try {
     const { phone, amount } = req.body ?? {};
     const numericAmount = Number(amount);
@@ -69,9 +50,6 @@ export async function cashierDeposit(req, res) {
     }
 
     const normalizedPhone = normalizeEthiopiaPhone(phone);
-    // #region agent log
-    _dbg("deposit_start", { hasPhone: !!normalizedPhone, amount: numericAmount, cashierSub: req.user?.sub }, "E");
-    // #endregion
 
     // Find player by phone
     const player = await prisma.user.findUnique({
@@ -96,20 +74,6 @@ export async function cashierDeposit(req, res) {
     if (!cashierWallet) {
       return res.status(404).json({ message: "Cashier wallet not found" });
     }
-
-    // #region agent log
-    _dbg(
-      "wallets_resolved",
-      {
-        playerId: player.id,
-        playerWalletId: playerWallet.id,
-        cashierWalletId: cashierWallet.id,
-        cashierBalance: Number(cashierWallet.balance),
-        playerHasWithdrawable: playerWallet.withdrawable != null,
-      },
-      "B",
-    );
-    // #endregion
 
     const result = await prisma.$transaction(async (tx) => {
       // Re-fetch wallets inside transaction for consistency
@@ -137,9 +101,6 @@ export async function cashierDeposit(req, res) {
       });
 
       // Add to player — deposit is not withdrawable until played through
-      // #region agent log
-      _dbg("before_creditWallet", { pWalletId: pWallet?.id, walletType: pWallet?.wallet_type }, "B");
-      // #endregion
       const playerCredit = await creditWallet(tx, pWallet, numericAmount, {
         withdrawable: false,
       });
@@ -149,19 +110,6 @@ export async function cashierDeposit(req, res) {
       const depositId = randomUUID();
       const cashierRef = `cashier-deposit:${req.user.sub}:to:${player.id}:${depositId}:cashier`;
       const playerRef = `cashier-deposit:${req.user.sub}:to:${player.id}:${depositId}:player`;
-      // #region agent log
-      _dbg(
-        "before_ledger_creates",
-        {
-          cashierRef,
-          playerRef,
-          refsDiffer: cashierRef !== playerRef,
-          cashierAfter,
-          playerBalanceAfter: playerCredit.balanceAfter,
-        },
-        "A",
-      );
-      // #endregion
 
       // Record on cashier wallet (WITHDRAW — money leaving cashier)
       const cashierTx = await tx.transaction.create({
@@ -174,9 +122,6 @@ export async function cashierDeposit(req, res) {
           reference: cashierRef,
         },
       });
-      // #region agent log
-      _dbg("cashier_tx_created", { cashierTxId: cashierTx.id, reference: cashierRef }, "A");
-      // #endregion
 
       // Record on player wallet (DEPOSIT — money entering player)
       const playerTx = await tx.transaction.create({
@@ -189,13 +134,7 @@ export async function cashierDeposit(req, res) {
           reference: playerRef,
         },
       });
-      // #region agent log
-      _dbg("player_tx_created", { playerTxId: playerTx.id, reference: playerRef }, "A");
-      // #endregion
 
-      // #region agent log
-      _dbg("before_bonuses", { hadFirst: !!hadFirst, playerTxId: playerTx.id }, "C");
-      // #endregion
       await applyDepositBonusesInTx(tx, {
         walletId: pWallet.id,
         depositAmount: numericAmount,
@@ -204,9 +143,6 @@ export async function cashierDeposit(req, res) {
       });
 
       if (!hadFirst) {
-        // #region agent log
-        _dbg("setting_first_deposit_at", { playerId: player.id }, "D");
-        // #endregion
         await tx.user.update({
           where: { id: player.id },
           data: { first_deposit_at: new Date() },
@@ -241,10 +177,6 @@ export async function cashierDeposit(req, res) {
     const depMsg = depositNotification({ amount: numericAmount, source: "cashier" });
     void notifyUserSafe({ userId: player.id, ...depMsg });
 
-    // #region agent log
-    _dbg("deposit_success", { playerTxId: result.playerTxId, cashierTxId: result.cashierTxId }, "A");
-    // #endregion
-
     return res.json({
       message: "Deposit successful",
       playerName: player.fullname,
@@ -252,19 +184,6 @@ export async function cashierDeposit(req, res) {
       cashierBalance: result.cashierBalance,
     });
   } catch (error) {
-    // #region agent log
-    _dbg(
-      "deposit_error",
-      {
-        message: error?.message,
-        code: error?.code,
-        meta: error?.meta,
-        name: error?.name,
-        stack: String(error?.stack || "").split("\n").slice(0, 6),
-      },
-      "A",
-    );
-    // #endregion
     if (error.message === "INSUFFICIENT_BALANCE") {
       return res.status(400).json({ message: "Insufficient cashier balance" });
     }
