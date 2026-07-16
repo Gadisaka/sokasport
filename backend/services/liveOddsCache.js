@@ -1,8 +1,13 @@
 import { getRedisClient } from "./cacheService.js";
 import { bumpMarketVersion } from "./odds-engine/versioning.js";
 
+// Single canonical snapshot TTL, shared by the pollers (via liveFixtureRefresh)
+// and the resolver's API fallback. Set comfortably above the 60s slow poll and
+// well above the resolver's freshness max-age (LIVE_ODDS_MAX_AGE_MS, ~15s) so a
+// still-fresh snapshot is never evicted early — freshness is governed by the
+// explicit age check in resolveLiveOdds, NOT by this TTL.
 export const LIVE_ODDS_SNAPSHOT_TTL_SECONDS = Number(
-  process.env.LIVE_ODDS_SNAPSHOT_TTL_SECONDS || 60,
+  process.env.LIVE_ODDS_SNAPSHOT_TTL_SECONDS || 90,
 );
 
 /**
@@ -56,50 +61,4 @@ export async function writeLiveOddsSnapshot(apiFixtureId, parsed) {
   await redis.expire(stateKey, LIVE_ODDS_SNAPSHOT_TTL_SECONDS);
   await redis.expire(versionKey, LIVE_ODDS_SNAPSHOT_TTL_SECONDS);
   await redis.expire(updatedAtKey, LIVE_ODDS_SNAPSHOT_TTL_SECONDS);
-}
-
-/**
- * Write live odds from raw API-Sports /odds/live response format.
- * This is the format returned directly by getLiveOdds().
- *
- * @param {Array} rawLiveOdds - Array of API-Sports live odds entries
- */
-export async function writeLiveOddsFromApiResponse(rawLiveOdds) {
-  if (!Array.isArray(rawLiveOdds) || rawLiveOdds.length === 0) return;
-
-  const writes = [];
-  for (const entry of rawLiveOdds) {
-    const fixtureId = entry.fixture?.id;
-    if (!Number.isFinite(fixtureId)) continue;
-
-    const odds = entry.odds || [];
-    if (!odds.length) continue;
-
-    const parsed = {
-      bookmakers: [
-        {
-          markets: odds
-            .filter(
-              (o) => o.name && Array.isArray(o.values) && o.values.length > 0,
-            )
-            .map((o) => ({
-              name: o.name,
-              values: o.values
-                .filter((v) => !v.suspended && v.odd)
-                .map((v) => ({
-                  value: v.handicap ? `${v.value} ${v.handicap}` : v.value,
-                  odd: Number.parseFloat(v.odd),
-                })),
-            }))
-            .filter((m) => m.values.length > 0),
-        },
-      ],
-    };
-
-    if (parsed.bookmakers[0].markets.length > 0) {
-      writes.push(writeLiveOddsSnapshot(fixtureId, parsed));
-    }
-  }
-
-  await Promise.all(writes);
 }

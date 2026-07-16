@@ -138,14 +138,16 @@ export function mapFixtureToMatch(fixture, oddsPayload = null) {
   const markets = oddsPayload?.markets || fixture?.markets || [];
   const detailedOdds = toDetailedOdds(markets);
 
-  // "sideBets" is the badge on the row — it's the number of non-main markets
-  // that actually have priced odds. Using normalized length keeps it honest
-  // even when the upstream returned an empty market (which we filter out).
-  // List responses may omit full markets but set `extra_markets_count` from DB.
+  // "sideBets" is the +N badge — total unique priced odd cells across all
+  // markets (main + extra). List responses omit full markets but set
+  // `extra_markets_count` from DB (priced-selection count despite the name).
   const rawExtraCount = fixture?.extra_markets_count;
   const sideBets = Number.isFinite(rawExtraCount)
     ? rawExtraCount
-    : detailedOdds.extra.length;
+    : [...detailedOdds.main, ...detailedOdds.extra].reduce(
+        (sum, market) => sum + (market.odds?.length || 0),
+        0,
+      );
 
   const kickoffAt = fixture?.start_time
     ? new Date(fixture.start_time).toISOString()

@@ -1,20 +1,19 @@
 import prisma from "../Config/db.js";
+import { countUniquePricedSelections } from "./lib/pricedOddsCount.js";
 
-/** Matches list summary + frontend `MAIN_MARKET_NAMES` (non–“extra” markets). */
-export const EXTRA_MARKETS_SUMMARY_NAMES = ["Match Winner", "Double Chance"];
+export { countUniquePricedSelections } from "./lib/pricedOddsCount.js";
 
 /**
- * Count of fixture markets other than MW/DC that have at least one odd line
- * (any bookmaker). Updated whenever odds rows change for that fixture.
+ * Persist total unique priced odd-cell count for a fixture into
+ * `extra_markets_count` (column name kept for API compatibility; value is no
+ * longer “extra market count”). Called whenever odds rows change for that fixture.
  */
 export async function recomputeExtraMarketsCountForFixture(fixtureId) {
-  const n = await prisma.fixtureMarket.count({
-    where: {
-      fixture_id: fixtureId,
-      name: { notIn: EXTRA_MARKETS_SUMMARY_NAMES },
-      odd_lines: { some: {} },
-    },
+  const lines = await prisma.fixtureOddLine.findMany({
+    where: { market: { fixture_id: fixtureId } },
+    select: { market_id: true, value: true, odd: true },
   });
+  const n = countUniquePricedSelections(lines);
   await prisma.fixture.update({
     where: { id: fixtureId },
     data: { extra_markets_count: n },

@@ -302,7 +302,7 @@ model Fixture {
   /** Per-market manual winning selections for admin settlement override. */
   market_result_overrides Json?
 
-  /** Non–MW/DC markets with ≥1 odd line (any bookmaker); kept in sync when odds ingest runs. */
+  /** Unique priced odd selections across all markets (market × value, any bookmaker deduped); kept in sync when odds ingest runs. Column name kept for API compat. */
   extra_markets_count Int @default(0)
 
   league    League @relation(fields: [league_id], references: [id], onDelete: Restrict)

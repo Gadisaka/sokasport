@@ -6,10 +6,21 @@ function PrimaryNav({ items }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();
+  const launchParam = new URLSearchParams(location.search).get("launch");
+
   return (
     <nav className="flex w-full items-center justify-center overflow-x-auto border-b border-white/8 bg-(--sb-bg-page) px-1 md:gap-2 max-sm:justify-start">
       {items.map((item) => {
-        const isActive = item.path && location.pathname === item.path;
+        let isActive = false;
+        if (item.launch) {
+          isActive =
+            location.pathname === "/casino" && launchParam === item.launch;
+        } else if (item.id === "games") {
+          isActive = location.pathname === "/casino" && !launchParam;
+        } else {
+          isActive = Boolean(item.path) && location.pathname === item.path;
+        }
+
         return (
           <button
             key={item.id}
@@ -25,7 +36,9 @@ function PrimaryNav({ items }) {
           >
             <span
               className={`inline-flex items-center justify-center ${
-                isActive ? "text-(--sb-accent-fill)" : "text-[rgba(255,255,255,0.72)]"
+                isActive
+                  ? "text-(--sb-accent-fill)"
+                  : "text-[rgba(255,255,255,0.72)]"
               }`}
             >
               <AppIcon name={item.icon} size={14} />

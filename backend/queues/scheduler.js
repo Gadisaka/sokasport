@@ -6,9 +6,6 @@ import {
   getFixturesDaysAhead,
   getFixturesDaysBehind,
   getLookbackIntervalHours,
-  isOddsBulkByDateEnabled,
-  getOddsBulkIntervalHours,
-  getOddsHorizonDays,
 } from "../Config/ingestionConfig.js";
 
 /**
@@ -19,10 +16,10 @@ import {
  * worker) overlapping ticks queue up instead of stampeding upstream.
  *
  * Cadence rationale (target ≤ API_SPORTS_DAILY_LIMIT upstream calls/day):
- *   - Live poll: 30s ≈ 2,880/day
+ *   - Live odds poll: 60s ≈ 1,440/day (backstop; relaxed from 30s)
+ *   - Live score poll: 5s ≈ 17,280/day (one bulk {live:all} call per tick)
  *   - Near fixtures: cadence × FIXTURES_NEAR_WINDOW_DAYS calendar dates×sports upstream calls/tick
  *   - Deep fixtures: FIXTURES_DEEP_INTERVAL_HOURS × FIXTURES_DAYS_AHEAD span
- *   - Bulk odds-by-date: ODDS_BULK_INTERVAL_HOURS × ~pages across horizon
  *   - Leagues metadata: weekly ≈ negligible
  *   - Odds tick: capped by API_SPORTS_DAILY_LIMIT and the negative cache
  *
@@ -60,14 +57,29 @@ function toJobId(name) {
 }
 
 function buildRepeatables() {
-  const jobs = [
+  return [
     {
       queue: QUEUE_NAMES.LIVE,
       name: REPEATABLE_JOB_NAMES.LIVE_TICK,
       data: {},
       opts: {
-        repeat: { every: envSeconds("LIVE_POLL_SECONDS", 30 * SECONDS) },
+        // Relaxed to 60s: goal detection + the fixture lock are now driven by
+        // the dedicated fast score poller below. This poller is the backstop
+        // (NS→LIVE / zero-market backfill / Mongo correctness).
+        repeat: { every: envSeconds("LIVE_POLL_SECONDS", 60 * SECONDS) },
         jobId: toJobId(REPEATABLE_JOB_NAMES.LIVE_TICK),
+      },
+    },
+    {
+      // Fast score-only poll: detects score/state changes within ~5s and drives
+      // lockFixture + a targeted odds refresh, on its OWN queue/worker so the
+      // heavier odds poll above can never block detection.
+      queue: QUEUE_NAMES.LIVE_SCORES,
+      name: REPEATABLE_JOB_NAMES.LIVE_SCORES_TICK,
+      data: {},
+      opts: {
+        repeat: { every: envSeconds("LIVE_SCORE_POLL_SECONDS", 5 * SECONDS) },
+        jobId: toJobId(REPEATABLE_JOB_NAMES.LIVE_SCORES_TICK),
       },
     },
     {
@@ -163,25 +175,6 @@ function buildRepeatables() {
       },
     },
   ];
-
-  if (isOddsBulkByDateEnabled()) {
-    const bulkHours = getOddsBulkIntervalHours();
-    jobs.push({
-      queue: QUEUE_NAMES.ODDS,
-      name: REPEATABLE_JOB_NAMES.ODDS_BULK_BY_DATE,
-      data: {
-        horizonDays: getOddsHorizonDays(),
-        label: "scheduled",
-      },
-      opts: {
-        repeat: { every: bulkHours * HOURS },
-        // Suffix so changing ODDS_BULK_INTERVAL_HOURS replaces the stale repeatable.
-        jobId: `${toJobId(REPEATABLE_JOB_NAMES.ODDS_BULK_BY_DATE)}-h${bulkHours}`,
-      },
-    });
-  }
-
-  return jobs;
 }
 
 function isSameRepeatable(job, spec) {
@@ -238,25 +231,26 @@ async function ensureRepeatable(q, spec) {
 }
 
 /**
- * When the bulk-by-date kill switch is off, remove any leftover repeatable
- * so a previous enablement doesn't keep firing after restart.
+ * The bulk `/odds?date=` pipeline was removed; its repeatable persists in
+ * Redis across deploys, so drop any leftover on startup or it keeps firing.
  */
-async function removeDisabledBulkOddsRepeatable() {
-  if (isOddsBulkByDateEnabled()) return;
+const LEGACY_BULK_ODDS_JOB_NAME = "odds:bulk-by-date";
+
+async function removeLegacyBulkOddsRepeatable() {
   const q = getQueue(QUEUE_NAMES.ODDS);
   const list = await q.getRepeatableJobs();
   for (const job of list) {
-    if (job.name === REPEATABLE_JOB_NAMES.ODDS_BULK_BY_DATE) {
+    if (job.name === LEGACY_BULK_ODDS_JOB_NAME) {
       await q.removeRepeatableByKey(job.key);
       console.log(
-        `[scheduler] removed disabled repeatable "${job.name}" on "${q.name}"`,
+        `[scheduler] removed legacy repeatable "${job.name}" on "${q.name}"`,
       );
     }
   }
 }
 
 export async function startScheduler() {
-  await removeDisabledBulkOddsRepeatable();
+  await removeLegacyBulkOddsRepeatable();
   const repeatables = buildRepeatables();
   for (const r of repeatables) {
     const q = getQueue(r.queue);
@@ -273,7 +267,7 @@ export async function clearAllRepeatables() {
   const repeatables = buildRepeatables();
   const managedNames = new Set([
     ...repeatables.map((r) => r.name),
-    REPEATABLE_JOB_NAMES.ODDS_BULK_BY_DATE,
+    LEGACY_BULK_ODDS_JOB_NAME,
   ]);
   const queuesSeen = new Set();
   for (const r of [...repeatables, { queue: QUEUE_NAMES.ODDS }]) {

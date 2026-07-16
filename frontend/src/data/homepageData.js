@@ -9,6 +9,15 @@ export const topNavItems = [
   { id: "home", icon: "home", path: "/" },
   { id: "live", icon: "radio", path: "/live" },
   { id: "games", icon: "gamepad", path: "/casino" },
+  { id: "aviator", icon: "rocket", path: "/casino?launch=aviator", launch: "aviator" },
+  { id: "fastKeno", icon: "hash", path: "/casino?launch=keno", launch: "keno" },
+  { id: "bingo", icon: "grid", path: "/casino?launch=bingo", launch: "bingo" },
+  {
+    id: "chickenRoad",
+    icon: "bird",
+    path: "/casino?launch=chicken-road",
+    launch: "chicken-road",
+  },
 ];
 
 export const topLeagues = [

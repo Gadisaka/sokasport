@@ -8,17 +8,6 @@ function envPositiveInt(name, fallback) {
   return Number.isFinite(v) && v > 0 ? Math.floor(v) : fallback;
 }
 
-function envBool(name, fallback) {
-  const raw = process.env[name];
-  if (raw === undefined || raw === null || String(raw).trim() === "") {
-    return fallback;
-  }
-  const v = String(raw).trim().toLowerCase();
-  if (v === "1" || v === "true" || v === "yes") return true;
-  if (v === "0" || v === "false" || v === "no") return false;
-  return fallback;
-}
-
 /** Maximum fixture ingest horizon (UTC calendar days starting today). */
 export function getFixturesDaysAhead() {
   return envPositiveInt("FIXTURES_DAYS_AHEAD", 14);
@@ -96,29 +85,6 @@ export function getOddsNearPriorityEndUtc(nearDays) {
   end.setUTCDate(end.getUTCDate() + safe - 1);
   end.setUTCHours(23, 59, 59, 999);
   return end;
-}
-
-/**
- * Bulk `/odds?date=` sweep kill switch. Default true — set
- * ODDS_BULK_BY_DATE_ENABLED=false to revert to per-fixture backfill passes.
- */
-export function isOddsBulkByDateEnabled() {
-  return envBool("ODDS_BULK_BY_DATE_ENABLED", true);
-}
-
-/** Hours between bulk odds-by-date sweeps (matches upstream ~3h refresh). */
-export function getOddsBulkIntervalHours() {
-  return envPositiveInt("ODDS_BULK_INTERVAL_HOURS", 3);
-}
-
-/** Cap pages walked per date on `/odds?date=` (10 fixtures/page upstream). */
-export function getOddsBulkMaxPagesPerDate() {
-  return envPositiveInt("ODDS_BULK_MAX_PAGES_PER_DATE", 100);
-}
-
-/** Delay between bulk odds pages to avoid rate-limit bursts. */
-export function getOddsBulkPageDelayMs() {
-  return envPositiveInt("ODDS_BULK_PAGE_DELAY_MS", 400);
 }
 
 /**

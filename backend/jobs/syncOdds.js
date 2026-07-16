@@ -7,6 +7,7 @@ import {
   setCache,
   TTL,
 } from "../services/cacheService.js";
+import { refreshFixturesByDateCaches } from "../services/fixturesListService.js";
 import { parseMarkets } from "../utils/oddsParser.js";
 import { getEnabledSports } from "../services/sportsRegistry.js";
 import { getPreferredBookmakerApiId } from "../services/settingsService.js";
@@ -19,7 +20,6 @@ import {
   getOddsNearPriorityDays,
   getOddsNearPriorityEndUtc,
 } from "../Config/ingestionConfig.js";
-import { refreshFixturesByDateCaches } from "../services/fixturesListService.js";
 import { sortFixturesForOddsIngest } from "../Config/leagueTiers.js";
 import { recomputeExtraMarketsCountForFixture } from "../services/extraMarketsCount.js";
 
@@ -40,7 +40,7 @@ import { recomputeExtraMarketsCountForFixture } from "../services/extraMarketsCo
  */
 
 const ODDS_CALL_DELAY_MS = 500;
-export const RAW_ODDS_CACHE_VERSION = 2;
+const RAW_ODDS_CACHE_VERSION = 2;
 const NO_ODDS_NEGATIVE_CACHE_TTL = 300;
 
 const DEFAULT_MAX_FIXTURES_PER_RUN = Number(
@@ -70,77 +70,6 @@ function startEndUtcWindow(days) {
   end.setUTCDate(end.getUTCDate() + safeDays - 1);
   end.setUTCHours(23, 59, 59, 999);
   return { start, end };
-}
-
-/**
- * Persist parsed bookmaker markets for one fixture and warm the raw-odds cache.
- * Shared by the per-fixture tick and the bulk `/odds?date=` sweep.
- *
- * @returns {Promise<number>} number of odd-line upserts performed
- */
-export async function persistParsedOddsForFixture(fixture, parsed) {
-  let total = 0;
-
-  // PERF: The block below issues O(bookmakers × markets × values)
-  // round-trips to MongoDB. With many bookmakers per fixture this is
-  // the single largest contributor to high Mongo CPU during odds
-  // backfills. Recommended next step (out of scope for this safe
-  // pass): collect upserts per fixture and flush via native
-  // `bulkWrite({ ordered: false })` in chunks of ~500 ops. Doing it
-  // here would change the persistence semantics (atomicity boundary,
-  // P2002 fallback path) and is best handled in a dedicated PR with
-  // tests around the existing `/odds/:apiFixtureId` reader.
-  for (const bk of parsed.bookmakers) {
-    const bookmaker = await upsertNoTx(prisma.bookmaker, {
-      where: { api_bookmaker_id: bk.apiBookmakerId },
-      update: { name: bk.name },
-      create: { api_bookmaker_id: bk.apiBookmakerId, name: bk.name },
-    });
-
-    for (const mkt of bk.markets) {
-      const market = await upsertNoTx(prisma.fixtureMarket, {
-        where: {
-          fixture_id_name: {
-            fixture_id: fixture.id,
-            name: mkt.name,
-          },
-        },
-        update: {},
-        create: { name: mkt.name, fixture_id: fixture.id },
-      });
-
-      for (const v of mkt.values) {
-        await upsertNoTx(prisma.fixtureOddLine, {
-          where: {
-            market_id_bookmaker_id_value: {
-              market_id: market.id,
-              bookmaker_id: bookmaker.id,
-              value: v.value,
-            },
-          },
-          update: { odd: v.odd },
-          create: {
-            value: v.value,
-            odd: v.odd,
-            market_id: market.id,
-            bookmaker_id: bookmaker.id,
-          },
-        });
-        total++;
-      }
-    }
-  }
-
-  await recomputeExtraMarketsCountForFixture(fixture.id);
-
-  const cacheKey = `odds:fixture:${fixture.api_fixture_id}:raw:v${RAW_ODDS_CACHE_VERSION}`;
-  await setCache(
-    cacheKey,
-    { ...parsed, _cacheVersion: RAW_ODDS_CACHE_VERSION },
-    TTL.ODDS,
-  );
-
-  return total;
 }
 
 /**
@@ -376,7 +305,63 @@ export default async function syncOdds(options = {}) {
         );
       }
 
-      total += await persistParsedOddsForFixture(fixture, parsed);
+      // PERF: The block below issues O(bookmakers × markets × values)
+      // round-trips to MongoDB. With many bookmakers per fixture this is
+      // the single largest contributor to high Mongo CPU during odds
+      // backfills. Recommended next step (out of scope for this safe
+      // pass): collect upserts per fixture and flush via native
+      // `bulkWrite({ ordered: false })` in chunks of ~500 ops. Doing it
+      // here would change the persistence semantics (atomicity boundary,
+      // P2002 fallback path) and is best handled in a dedicated PR with
+      // tests around the existing `/odds/:apiFixtureId` reader.
+      for (const bk of parsed.bookmakers) {
+        const bookmaker = await upsertNoTx(prisma.bookmaker, {
+          where: { api_bookmaker_id: bk.apiBookmakerId },
+          update: { name: bk.name },
+          create: { api_bookmaker_id: bk.apiBookmakerId, name: bk.name },
+        });
+
+        for (const mkt of bk.markets) {
+          const market = await upsertNoTx(prisma.fixtureMarket, {
+            where: {
+              fixture_id_name: {
+                fixture_id: fixture.id,
+                name: mkt.name,
+              },
+            },
+            update: {},
+            create: { name: mkt.name, fixture_id: fixture.id },
+          });
+
+          for (const v of mkt.values) {
+            await upsertNoTx(prisma.fixtureOddLine, {
+              where: {
+                market_id_bookmaker_id_value: {
+                  market_id: market.id,
+                  bookmaker_id: bookmaker.id,
+                  value: v.value,
+                },
+              },
+              update: { odd: v.odd },
+              create: {
+                value: v.value,
+                odd: v.odd,
+                market_id: market.id,
+                bookmaker_id: bookmaker.id,
+              },
+            });
+            total++;
+          }
+        }
+      }
+
+      await recomputeExtraMarketsCountForFixture(fixture.id);
+
+      await setCache(
+        cacheKey,
+        { ...parsed, _cacheVersion: RAW_ODDS_CACHE_VERSION },
+        TTL.ODDS,
+      );
       if (checked % 50 === 0 || checked === fixtures.length) {
         console.log(
           `[syncOdds] progress ${checked}/${fixtures.length} – cached=${skippedCached}, noOdds=${skippedNoOdds}, upserts=${total}`,

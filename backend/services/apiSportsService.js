@@ -248,19 +248,6 @@ export function api(sport) {
     getOdds: (fixtureId, opts) =>
       request(sport, "/odds", { fixture: fixtureId }, 0, opts),
     /**
-     * Bulk pre-match odds for one UTC calendar date (paginated, 10/page).
-     * Returns `{ response, paging }` so callers can walk every page.
-     * Never Redis-cached — paging must stay fresh across the loop.
-     */
-    getOddsByDate: (date, page = 1, opts = {}) =>
-      request(
-        sport,
-        "/odds",
-        { date, page },
-        0,
-        { skipCache: true, includePaging: true, ...opts },
-      ),
-    /**
      * Fetch the event timeline (goals, cards, substitutions…) for a
      * finalized fixture. Required by `GOALSCORER_*`, `PLAYER_CARDS`,
      * and any market that requires the normalized event stream. Cached

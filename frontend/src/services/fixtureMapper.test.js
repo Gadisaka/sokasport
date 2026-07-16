@@ -124,7 +124,9 @@ describe("mapFixtureToMatch summary strip", () => {
     const dc1x = dcMain?.odds?.find((o) => String(o.id).toLowerCase() === "1x");
     expect(dc1x?.value).toBe("1.11");
 
-    expect(merged.sideBets).not.toEqual(listMatch.sideBets);
+    // List had 6 cells (MW+DC); detail adds Goals O/U (1) → 7 priced cells.
+    expect(listMatch.sideBets).toBe(6);
+    expect(merged.sideBets).toBe(7);
   });
 
   it("uses extra_markets_count from list API when full markets are not included", () => {
@@ -153,5 +155,38 @@ describe("mapFixtureToMatch summary strip", () => {
 
     expect(match.sideBets).toBe(98);
     expect(match.detailedOdds.extra).toHaveLength(0);
+  });
+
+  it("falls back to total priced odd cells when extra_markets_count is absent", () => {
+    const match = mapFixtureToMatch({
+      ...baseFx(),
+      markets: [
+        {
+          name: "Match Winner",
+          odd_lines: [
+            { value: "1", odd: 2.1 },
+            { value: "Draw", odd: 3.2 },
+            { value: "2", odd: 4.3 },
+          ],
+        },
+        {
+          name: "Double Chance",
+          odd_lines: [
+            { value: "1X", odd: 1.4 },
+            { value: "X2", odd: 1.5 },
+            { value: "12", odd: 1.6 },
+          ],
+        },
+        {
+          name: "Goals Over/Under",
+          odd_lines: [
+            { value: "Over 2.5", odd: 1.9 },
+            { value: "Under 2.5", odd: 1.85 },
+          ],
+        },
+      ],
+    });
+
+    expect(match.sideBets).toBe(8);
   });
 });

@@ -1,20 +1,18 @@
 import prisma from "../Config/db.js";
-import { upsertNoTx } from "../utils/upsertNoTx.js";
 import { api } from "../services/apiSportsService.js";
-import { deleteByPattern, getRedisClient } from "../services/cacheService.js";
+import { deleteByPattern } from "../services/cacheService.js";
 import { refreshFixturesByDateCaches } from "../services/fixturesListService.js";
-import { parseMarkets } from "../utils/oddsParser.js";
 import { getEnabledSports } from "../services/sportsRegistry.js";
 import { getPreferredBookmakerApiId } from "../services/settingsService.js";
 import { buildOddsParseOptions } from "../Config/oddsFilters.js";
-import { recomputeExtraMarketsCountForFixture } from "../services/extraMarketsCount.js";
-import { publishMarketEvent } from "../lib/socketHub.js";
-import { isFixtureResultLocked, buildFixtureSyncData } from "../lib/fixtureResultLock.js";
-import { resolveFixtureScores } from "./lib/fixtureScores.js";
+import { lockFixture } from "../services/odds-engine/liveFixtureLock.js";
+import { STATUS_MAP, MAJOR_LIVE_STATES } from "./lib/liveStatus.js";
 import {
-  writeLiveOddsSnapshot,
-  LIVE_ODDS_SNAPSHOT_TTL_SECONDS,
-} from "../services/liveOddsCache.js";
+  LIVE_MARKET_LOCK_MS,
+  updateFixtureScore,
+  refreshFixtureOdds,
+} from "./lib/liveFixtureRefresh.js";
+import { resolveFixtureScores } from "./lib/fixtureScores.js";
 import {
   isTerminalFixtureStatus,
   settleFixture,
@@ -22,82 +20,26 @@ import {
 import { enrichFixtureResult } from "./enrichFixtureResult.js";
 
 /**
- * Live fixtures poller.
+ * Live fixtures poller (the "slow" / authoritative poll).
  *
- * Concurrency is owned by the BullMQ queue (`sync-live`, concurrency=1)
- * after Phase 4. The previous in-process / Redis run-lock has been removed
- * – two ticks of the live poller can never overlap because the queue
- * processes them strictly in series.
+ * Owns Mongo score/status correctness and the per-fixture odds refresh. Goal
+ * detection + the fixture lock are now driven within ~5s by the dedicated fast
+ * score poller (`syncLiveScores`), so this poller runs at a relaxed cadence
+ * (LIVE_POLL_SECONDS, default 60s) and acts as the backstop: NS→LIVE odds
+ * backfill, zero-market backfill, and Mongo correctness for anything the fast
+ * poll missed.
+ *
+ * Concurrency is owned by the BullMQ queue (`sync-live`, concurrency=1) – two
+ * ticks can never overlap because the queue processes them strictly in series.
  */
 
-const STATUS_MAP = {
-  "1H": "LIVE",
-  HT: "HT",
-  "2H": "LIVE",
-  ET: "LIVE",
-  BT: "LIVE",
-  P: "PEN",
-  LIVE: "LIVE",
-};
-const LIVE_MARKET_LOCK_MS = Math.max(
-  1000,
-  Number(process.env.LIVE_MARKET_LOCK_MS || 5000),
-);
 const LIVE_EVENT_FREEZE_MS = Math.max(
   1000,
   Number(process.env.LIVE_EVENT_FREEZE_MS || 3000),
 );
-const MAJOR_LIVE_STATES = new Set(["HT", "LIVE", "PEN"]);
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function lockFixtureMarkets(apiFixtureId, reason, lockMs) {
-  const redis = getRedisClient();
-  const stateKey = `live-market-state:${apiFixtureId}`;
-  const lockUntilKey = `live-market-lock-until:${apiFixtureId}`;
-  const stateMap = await redis.hgetall(stateKey);
-  const entries = Object.keys(stateMap || {});
-  if (!entries.length) return;
-  const lockUntil = Date.now() + lockMs;
-  const lockFields = {};
-  const lockUntilFields = {};
-  for (const field of entries) {
-    lockFields[field] = "LOCKED";
-    lockUntilFields[field] = lockUntil;
-  }
-  await redis.hset(stateKey, lockFields);
-  await redis.hset(lockUntilKey, lockUntilFields);
-  await redis.expire(stateKey, LIVE_ODDS_SNAPSHOT_TTL_SECONDS);
-  await redis.expire(lockUntilKey, LIVE_ODDS_SNAPSHOT_TTL_SECONDS);
-  await publishMarketEvent({
-    event: "market:locked",
-    apiFixtureId,
-    reason,
-    lockUntil,
-  });
-}
-
-async function unlockFixtureMarkets(apiFixtureId, reason) {
-  const redis = getRedisClient();
-  const stateKey = `live-market-state:${apiFixtureId}`;
-  const lockUntilKey = `live-market-lock-until:${apiFixtureId}`;
-  const stateMap = await redis.hgetall(stateKey);
-  const entries = Object.keys(stateMap || {});
-  if (!entries.length) return;
-  const openFields = {};
-  for (const field of entries) {
-    openFields[field] = "OPEN";
-  }
-  await redis.hset(stateKey, openFields);
-  await redis.del(lockUntilKey);
-  await redis.expire(stateKey, LIVE_ODDS_SNAPSHOT_TTL_SECONDS);
-  await publishMarketEvent({
-    event: "market:unlocked",
-    apiFixtureId,
-    reason,
-  });
 }
 
 export default async function syncLiveFixtures() {
@@ -105,9 +47,7 @@ export default async function syncLiveFixtures() {
     const enabled = getEnabledSports();
     if (!enabled.length) return;
 
-    // Resolve the single-bookmaker policy once per tick. Same rationale
-    // as `syncOdds.js`: drops non-preferred bookmakers / non-allowlisted
-    // markets before they ever reach the upsert loop.
+    // Resolve the single-bookmaker policy once per tick.
     const preferredApiId = await getPreferredBookmakerApiId();
     const parseOptions = buildOddsParseOptions(preferredApiId);
 
@@ -119,6 +59,7 @@ export default async function syncLiveFixtures() {
 
       for (const entry of liveData) {
         const f = entry.fixture ?? entry;
+        const goals = entry.goals ?? entry.scores ?? {};
         if (!f?.id) continue;
 
         const existing = await prisma.fixture.findUnique({
@@ -142,36 +83,41 @@ export default async function syncLiveFixtures() {
         const statusBecameLive = existing.status === "NS" && status === "LIVE";
         const majorStateChanged =
           statusChanged &&
-          (MAJOR_LIVE_STATES.has(existing.status) || MAJOR_LIVE_STATES.has(status));
+          (MAJOR_LIVE_STATES.has(existing.status) ||
+            MAJOR_LIVE_STATES.has(status));
         const shouldFreeze = scoreChanged || majorStateChanged;
+        let freezeOk = true;
         if (shouldFreeze) {
-          await lockFixtureMarkets(
-            f.id,
-            scoreChanged ? "score_change" : "state_change",
-            LIVE_MARKET_LOCK_MS,
-          );
-          await sleep(LIVE_EVENT_FREEZE_MS);
+          // Plane-1 fixture-level event lock (snapshot-independent global
+          // override). Self-expiring; refreshFixtureOdds re-arms it just before
+          // the snapshot reveal. No explicit unlock.
+          const locked = await lockFixture(f.id, {
+            reason: scoreChanged ? "score_change" : "state_change",
+            lockMs: LIVE_MARKET_LOCK_MS,
+          });
+          freezeOk = Boolean(locked);
+          if (freezeOk) {
+            await sleep(LIVE_EVENT_FREEZE_MS);
+          } else {
+            // Fail-closed: the freeze could not be guaranteed (Redis write
+            // failed). Skip the refresh so we never publish a fresh OPEN
+            // snapshot on an unfrozen fixture. The next tick / fast poll retries.
+            console.warn(
+              `[syncLive] lockFixture failed for fixture ${f.id}; skipping odds refresh this tick (fail-closed)`,
+            );
+          }
         }
 
-        // Only write when something actually changed. The live poller runs
-        // every ~30s; without this guard each tick rewrites every in-play
-        // fixture even when scores/status are identical.
+        // Persist score/status (honours admin result lock internally).
         if (scoreChanged || statusChanged) {
-          await prisma.fixture.update({
-            where: { api_fixture_id: f.id },
-            data: buildFixtureSyncData(existing, {
-              start_time: existing.start_time,
-              status,
-              home_score: homeScore,
-              away_score: awayScore,
-              et_home_score: etHome,
-              et_away_score: etAway,
-              pen_home_score: penHome,
-              pen_away_score: penAway,
-              league_id: existing.league_id,
-              home_team_id: existing.home_team_id,
-              away_team_id: existing.away_team_id,
-            }),
+          await updateFixtureScore(existing, {
+            status,
+            homeScore,
+            awayScore,
+            etHome,
+            etAway,
+            penHome,
+            penAway,
           });
         }
 
@@ -198,9 +144,7 @@ export default async function syncLiveFixtures() {
           }
         }
 
-        // Defer the markets `count` query until we actually need it –
-        // when scores/status already prove a refresh is required, we can
-        // skip the extra read.
+        // Defer the markets `count` query until we actually need it.
         let needsOddsRefresh = scoreChanged || statusBecameLive;
         if (!needsOddsRefresh) {
           const marketCount = await prisma.fixtureMarket.count({
@@ -209,77 +153,18 @@ export default async function syncLiveFixtures() {
           needsOddsRefresh = marketCount === 0;
         }
 
-        if (needsOddsRefresh) {
-          await deleteByPattern(`odds:fixture:${f.id}:*`);
-
-          const rawOdds = await api(sportSlug).getOdds(f.id);
-          if (rawOdds.length) {
-            const parsed = parseMarkets(rawOdds, parseOptions);
-
-            // PERF: This nested loop emits 1+ Mongo round-trips per odd-line
-            // (bookmaker × market × value). For the live poller this can be
-            // hundreds of writes per fixture per refresh and is a known
-            // MongoDB CPU hotspot. Migrating to native `bulkWrite` (with
-            // ordered: false) is the next major optimization but is out of
-            // scope for this safe pass – leaving the original behavior so
-            // existing reads (`/odds/:apiFixtureId`) keep working unchanged.
-            for (const bk of parsed.bookmakers) {
-              const bookmaker = await upsertNoTx(prisma.bookmaker, {
-                where: { api_bookmaker_id: bk.apiBookmakerId },
-                update: { name: bk.name },
-                create: {
-                  api_bookmaker_id: bk.apiBookmakerId,
-                  name: bk.name,
-                },
-              });
-
-              for (const mkt of bk.markets) {
-                const market = await upsertNoTx(prisma.fixtureMarket, {
-                  where: {
-                    fixture_id_name: {
-                      fixture_id: existing.id,
-                      name: mkt.name,
-                    },
-                  },
-                  update: {},
-                  create: { name: mkt.name, fixture_id: existing.id },
-                });
-
-                for (const v of mkt.values) {
-                  await upsertNoTx(prisma.fixtureOddLine, {
-                    where: {
-                      market_id_bookmaker_id_value: {
-                        market_id: market.id,
-                        bookmaker_id: bookmaker.id,
-                        value: v.value,
-                      },
-                    },
-                    update: { odd: v.odd },
-                    create: {
-                      value: v.value,
-                      odd: v.odd,
-                      market_id: market.id,
-                      bookmaker_id: bookmaker.id,
-                    },
-                  });
-                }
-              }
-            }
-
-            await recomputeExtraMarketsCountForFixture(existing.id);
-            await writeLiveOddsSnapshot(f.id, parsed);
-            await unlockFixtureMarkets(f.id, "refresh_completed");
-          }
-          if (shouldFreeze && !rawOdds.length) {
-            await unlockFixtureMarkets(f.id, "refresh_empty");
-          }
-        } else if (shouldFreeze) {
-          await unlockFixtureMarkets(f.id, "no_refresh_needed");
+        // Gate on freezeOk: when a freeze was required but the lock write
+        // failed, do NOT publish a fresh OPEN snapshot this tick (fail-closed).
+        if (needsOddsRefresh && freezeOk) {
+          await refreshFixtureOdds({
+            sportSlug,
+            existing,
+            apiFixtureId: f.id,
+            parseOptions,
+            lockReason: scoreChanged ? "score_change" : "state_change",
+          });
         }
 
-        // Only count this row as "updated" when we actually wrote something
-        // so the public-cache invalidation below doesn't run for ticks that
-        // were complete no-ops.
         if (scoreChanged || statusChanged || needsOddsRefresh) {
           updated++;
         }

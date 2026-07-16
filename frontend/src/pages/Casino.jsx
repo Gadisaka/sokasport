@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import PageContainer from "../components/layout/PageContainer";
 import PrimaryNav from "../components/layout/PrimaryNav";
 import SiteFooter from "../components/layout/SiteFooter";
@@ -47,10 +47,14 @@ const MRX_GAMES = [
   },
 ];
 
-function GameCard({ game, onPlay, t }) {
+function GameCard({ game, onPlay }) {
   return (
-    <div className="group flex flex-col overflow-hidden rounded-2xl border border-white/8 bg-gradient-to-br from-[#111111]/92 to-[#000000]/92 transition-all hover:ring-1 hover:ring-(--sb-accent-fill)/40">
-      <div className="relative aspect-[3/4] w-full overflow-hidden bg-[#0a0a0a]">
+    <button
+      type="button"
+      onClick={() => onPlay(game)}
+      className="group flex w-full cursor-pointer flex-col overflow-hidden rounded-2xl border border-(--sb-accent-border) bg-gradient-to-br from-[#111111]/92 to-[#000000]/92 p-0 text-left transition-all hover:ring-1 hover:ring-(--sb-accent-fill)/60"
+    >
+      <div className="relative aspect-square w-full overflow-hidden bg-[#0a0a0a]">
         {game.iconUrl ? (
           <img
             src={game.iconUrl}
@@ -63,26 +67,14 @@ function GameCard({ game, onPlay, t }) {
             <AppIcon name="gamepad" size={40} />
           </div>
         )}
-
-        <div className="pointer-events-none absolute inset-x-2 bottom-2">
-          <div className="pointer-events-auto rounded-xl border border-white/25 bg-white/12 p-1.5 backdrop-blur-md">
-            <button
-              type="button"
-              onClick={() => onPlay(game)}
-              className="w-full cursor-pointer rounded-lg border-0 bg-(--sb-accent-fill) px-2 py-1.5 text-[12px] font-bold text-[#000000] transition-all hover:brightness-110"
-            >
-              {t("casino.play")}
-            </button>
-          </div>
-        </div>
       </div>
 
-      <div className="flex flex-1 flex-col gap-2 p-2.5">
-        <h3 className="truncate text-[13px] font-semibold text-[#f6f9ff]">
+      <div className="flex flex-1 flex-col p-1.5">
+        <h3 className="truncate text-[12px] font-semibold text-[#f6f9ff]">
           {game.title}
         </h3>
       </div>
-    </div>
+    </button>
   );
 }
 
@@ -90,48 +82,41 @@ function InstantGameCard({ game, launching, onPlay, t }) {
   const isLaunching = launching === game.id;
   const title = t(game.nameKey);
   return (
-    <div className="group flex flex-col overflow-hidden rounded-2xl border border-white/8 bg-gradient-to-br from-[#111111]/92 to-[#000000]/92 transition-all hover:ring-1 hover:ring-(--sb-accent-fill)/40">
-      <div className="relative aspect-[3/4] w-full overflow-hidden bg-[#0a0a0a]">
+    <button
+      type="button"
+      disabled={isLaunching}
+      onClick={() => onPlay(game)}
+      className="group flex w-full cursor-pointer flex-col overflow-hidden rounded-2xl border border-(--sb-accent-border) bg-gradient-to-br from-[#111111]/92 to-[#000000]/92 p-0 text-left transition-all hover:ring-1 hover:ring-(--sb-accent-fill)/60 disabled:cursor-wait disabled:opacity-70"
+    >
+      <div className="relative aspect-square w-full overflow-hidden bg-[#0a0a0a]">
         <img
           src={game.iconUrl}
           alt={title}
           loading="lazy"
           className="h-full w-full object-cover"
         />
-
-        <div className="pointer-events-none absolute inset-x-2 bottom-2">
-          <div className="pointer-events-auto rounded-xl border border-white/25 bg-white/12 p-1.5 backdrop-blur-md">
-            <button
-              type="button"
-              disabled={isLaunching}
-              onClick={() => onPlay(game)}
-              className="flex w-full cursor-pointer items-center justify-center gap-1.5 rounded-lg border-0 bg-(--sb-accent-fill) px-2 py-1.5 text-[12px] font-bold text-[#000000] transition-all hover:brightness-110 disabled:cursor-wait disabled:opacity-70"
-            >
-              {isLaunching ? (
-                <>
-                  <span className="h-3 w-3 animate-spin rounded-full border-2 border-black/30 border-t-black" />
-                  {t("casino.launching")}
-                </>
-              ) : (
-                t("casino.play")
-              )}
-            </button>
+        {isLaunching ? (
+          <div className="absolute inset-0 flex items-center justify-center bg-black/50">
+            <span className="h-5 w-5 animate-spin rounded-full border-2 border-white/30 border-t-white" />
           </div>
-        </div>
+        ) : null}
       </div>
 
-      <div className="flex flex-1 flex-col gap-2 p-2.5">
-        <h3 className="truncate text-[13px] font-semibold text-[#f6f9ff]">
+      <div className="flex flex-1 flex-col p-1.5">
+        <h3 className="truncate text-[12px] font-semibold text-[#f6f9ff]">
           {title}
         </h3>
       </div>
-    </div>
+    </button>
   );
 }
 
 function Casino() {
   const { t, language } = useTranslation();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const launchId = searchParams.get("launch");
+  const handledLaunchRef = useRef(null);
 
   const [games, setGames] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -175,6 +160,17 @@ function Casino() {
       .finally(() => setLoading(false));
     return () => ac.abort();
   }, [casinoEnabled]);
+
+  const clearLaunchParam = useCallback(() => {
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete("launch");
+        return next;
+      },
+      { replace: true },
+    );
+  }, [setSearchParams]);
 
   const handleMrxPlay = useCallback(
     async (game) => {
@@ -223,6 +219,48 @@ function Casino() {
     [launching, language, navigate],
   );
 
+  useEffect(() => {
+    if (!launchId) {
+      handledLaunchRef.current = null;
+      return;
+    }
+    if (handledLaunchRef.current === launchId) return;
+
+    const mrxGame = MRX_GAMES.find((g) => g.id === launchId);
+    if (mrxGame) {
+      handledLaunchRef.current = launchId;
+      clearLaunchParam();
+      handleMrxPlay(mrxGame);
+      return;
+    }
+
+    if (launchId !== "chicken-road") {
+      handledLaunchRef.current = launchId;
+      clearLaunchParam();
+      return;
+    }
+
+    if (casinoEnabled === null) return;
+    if (casinoEnabled === true && loading) return;
+
+    handledLaunchRef.current = launchId;
+    clearLaunchParam();
+    const game = games.find((g) => g.gameMode === "chicken-road");
+    if (!game) {
+      setError("Chicken Road is not available right now.");
+      return;
+    }
+    handlePlay(game);
+  }, [
+    launchId,
+    casinoEnabled,
+    loading,
+    games,
+    clearLaunchParam,
+    handleMrxPlay,
+    handlePlay,
+  ]);
+
   return (
     <PageContainer>
       <div className="sticky top-0 z-50">
@@ -246,7 +284,7 @@ function Casino() {
           </div>
         ) : null}
 
-        <div className="mt-3 grid grid-cols-2 gap-3 pb-6 md:grid-cols-3 lg:grid-cols-4">
+        <div className="mt-3 grid grid-cols-3 gap-2 pb-6 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6">
           {MRX_GAMES.map((game) => (
             <InstantGameCard
               key={game.id}
@@ -263,7 +301,6 @@ function Casino() {
                   key={game.gameMode}
                   game={game}
                   onPlay={handlePlay}
-                  t={t}
                 />
               ))
             : null}

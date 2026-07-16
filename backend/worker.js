@@ -12,6 +12,7 @@ import { startScheduler, stopScheduler } from "./queues/scheduler.js";
 import { processFixturesBulk } from "./queues/processors/fixturesBulk.js";
 import { processOdds } from "./queues/processors/odds.js";
 import { processLive } from "./queues/processors/live.js";
+import { processLiveScores } from "./queues/processors/liveScores.js";
 import { processLeaguesMeta } from "./queues/processors/leaguesMeta.js";
 import { processSettlementRetry } from "./queues/processors/settlementRetry.js";
 import { processHoldReaper } from "./queues/processors/holdReaper.js";
@@ -32,6 +33,7 @@ const PROCESSOR_REGISTRY = {
   [QUEUE_NAMES.FIXTURES_BULK]: processFixturesBulk,
   [QUEUE_NAMES.ODDS]: processOdds,
   [QUEUE_NAMES.LIVE]: processLive,
+  [QUEUE_NAMES.LIVE_SCORES]: processLiveScores,
   [QUEUE_NAMES.LEAGUES_META]: processLeaguesMeta,
   [QUEUE_NAMES.SETTLEMENT_RETRY]: processSettlementRetry,
   [QUEUE_NAMES.HOLD_REAPER]: processHoldReaper,
