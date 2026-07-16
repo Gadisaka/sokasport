@@ -61,7 +61,7 @@ const UPCOMING_FIXTURES_DAYS = 14;
 const FIXTURES_FETCH_MAX_ATTEMPTS = 3;
 const FIXTURES_FETCH_RETRY_DELAYS_MS = [1500, 3000];
 
-const SESSION_FIXTURES_PREFIX = "sokasport:fixtures-by-date:";
+const SESSION_FIXTURES_PREFIX = "sokasport:fixtures-by-date:v2:";
 
 function sessionFixturesKey(dateStr) {
   return `${SESSION_FIXTURES_PREFIX}${dateStr}`;

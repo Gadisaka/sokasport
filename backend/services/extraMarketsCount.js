@@ -5,6 +5,7 @@ export { countUniquePricedSelections } from "./lib/pricedOddsCount.js";
 
 /**
  * Batch priced odd-cell counts for list responses (avoids stale DB column).
+ * Uses market_id lookups (not nested relation filters) for Mongo reliability.
  *
  * @param {string[]} fixtureIds
  * @param {{ bookmakerId?: string | null }} [opts]
@@ -18,22 +19,26 @@ export async function fetchPricedOddsCountsForFixtureIds(
   const counts = new Map(unique.map((id) => [id, 0]));
   if (!unique.length) return counts;
 
+  const markets = await prisma.fixtureMarket.findMany({
+    where: { fixture_id: { in: unique } },
+    select: { id: true, fixture_id: true },
+  });
+  if (!markets.length) return counts;
+
+  const marketToFixture = new Map(
+    markets.map((m) => [m.id, m.fixture_id]),
+  );
   const lines = await prisma.fixtureOddLine.findMany({
     where: {
-      market: { fixture_id: { in: unique } },
+      market_id: { in: markets.map((m) => m.id) },
       ...(bookmakerId ? { bookmaker_id: bookmakerId } : {}),
     },
-    select: {
-      market_id: true,
-      value: true,
-      odd: true,
-      market: { select: { fixture_id: true } },
-    },
+    select: { market_id: true, value: true, odd: true },
   });
 
   const buckets = new Map();
   for (const line of lines) {
-    const fixtureId = line.market?.fixture_id;
+    const fixtureId = marketToFixture.get(line.market_id);
     if (!fixtureId) continue;
     if (!buckets.has(fixtureId)) buckets.set(fixtureId, []);
     buckets.get(fixtureId).push({
@@ -55,11 +60,8 @@ export async function fetchPricedOddsCountsForFixtureIds(
  * longer “extra market count”). Called whenever odds rows change for that fixture.
  */
 export async function recomputeExtraMarketsCountForFixture(fixtureId) {
-  const lines = await prisma.fixtureOddLine.findMany({
-    where: { market: { fixture_id: fixtureId } },
-    select: { market_id: true, value: true, odd: true },
-  });
-  const n = countUniquePricedSelections(lines);
+  const counts = await fetchPricedOddsCountsForFixtureIds([fixtureId]);
+  const n = counts.get(fixtureId) ?? 0;
   await prisma.fixture.update({
     where: { id: fixtureId },
     data: { extra_markets_count: n },

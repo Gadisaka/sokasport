@@ -64,38 +64,9 @@ function diffUtcDaysInclusive(start, end) {
  * Query: from, to (YYYY-MM-DD), max ~93 days.
  */
 export async function getCasinoReports(req, res) {
-  // #region agent log
-  const _dbg = (hypothesisId, location, message, data = {}) => {
-    fetch("http://127.0.0.1:7553/ingest/fdb5a07a-d55c-4b28-8481-7c9114d086ce", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Debug-Session-Id": "d31d4b",
-      },
-      body: JSON.stringify({
-        sessionId: "d31d4b",
-        runId: "post-fix",
-        hypothesisId,
-        location,
-        message,
-        data,
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-  };
-  // #endregion
   try {
     const { start, end } = getDateRangeFromQuery(req.query);
     const daySpan = diffUtcDaysInclusive(start, end);
-    // #region agent log
-    _dbg("E", "casinoReportsController.js:entry", "getCasinoReports entry", {
-      from: req.query?.from,
-      to: req.query?.to,
-      start: start?.toISOString?.(),
-      end: end?.toISOString?.(),
-      daySpan,
-    });
-    // #endregion
     if (daySpan > MAX_REPORT_RANGE_DAYS) {
       return res.status(400).json({
         message: `Date range cannot exceed ${MAX_REPORT_RANGE_DAYS} days`,
@@ -103,45 +74,26 @@ export async function getCasinoReports(req, res) {
     }
 
     // Fetch all casino transactions in the date range
-    let transactions;
-    try {
-      transactions = await prisma.transaction.findMany({
-        where: {
-          created_at: { gte: start, lte: end },
-          reference: { startsWith: "inout:" },
-        },
-        select: {
-          id: true,
-          wallet_id: true,
-          type: true,
-          amount: true,
-          reference: true,
-          created_at: true,
-          wallet: {
-            select: {
-              user_id: true,
-              user: { select: { id: true, fullname: true, phone: true } },
-            },
+    const transactions = await prisma.transaction.findMany({
+      where: {
+        created_at: { gte: start, lte: end },
+        reference: { startsWith: "inout:" },
+      },
+      select: {
+        id: true,
+        wallet_id: true,
+        type: true,
+        amount: true,
+        reference: true,
+        created_at: true,
+        wallet: {
+          select: {
+            user_id: true,
+            user: { select: { id: true, fullname: true, phone: true } },
           },
         },
-      });
-      // #region agent log
-      _dbg("B", "casinoReportsController.js:prisma-ok", "Prisma findMany succeeded", {
-        count: transactions.length,
-      });
-      // #endregion
-    } catch (prismaError) {
-      // #region agent log
-      _dbg("A", "casinoReportsController.js:prisma-fail", "Prisma findMany failed", {
-        name: prismaError?.name,
-        code: prismaError?.code,
-        message: String(prismaError?.message || prismaError).slice(0, 500),
-        mentionsNameField: String(prismaError?.message || "").includes("name"),
-        mentionsFullname: String(prismaError?.message || "").includes("fullname"),
-      });
-      // #endregion
-      throw prismaError;
-    }
+      },
+    });
 
     // Categorize transactions
     const bets = transactions.filter((t) => t.reference?.startsWith("inout:bet:"));
@@ -256,15 +208,6 @@ export async function getCasinoReports(req, res) {
       .sort((a, b) => b.betAmount - a.betAmount)
       .slice(0, 20);
 
-    // #region agent log
-    _dbg("C", "casinoReportsController.js:pre-response", "About to send JSON response", {
-      txCount: transactions.length,
-      byDayLen: byDay.length,
-      topPlayersLen: topPlayers.length,
-      ggr,
-    });
-    // #endregion
-
     return res.json({
       generatedAt: new Date().toISOString(),
       range: { from: start, to: end },
@@ -282,32 +225,6 @@ export async function getCasinoReports(req, res) {
       topPlayers,
     });
   } catch (error) {
-    // #region agent log
-    fetch("http://127.0.0.1:7553/ingest/fdb5a07a-d55c-4b28-8481-7c9114d086ce", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Debug-Session-Id": "d31d4b",
-      },
-      body: JSON.stringify({
-        sessionId: "d31d4b",
-        runId: "post-fix",
-        hypothesisId: "D",
-        location: "casinoReportsController.js:catch",
-        message: "getCasinoReports caught error",
-        data: {
-          name: error?.name,
-          code: error?.code,
-          message: String(error?.message || error).slice(0, 500),
-          stackTop: String(error?.stack || "")
-            .split("\n")
-            .slice(0, 4)
-            .join(" | "),
-        },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-    // #endregion
     console.error("getCasinoReports error:", error);
     return res.status(500).json({ message: "Failed to load casino reports" });
   }

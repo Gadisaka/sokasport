@@ -7,7 +7,7 @@
  */
 import "dotenv/config";
 import { prisma } from "../Config/db.js";
-import { countUniquePricedSelections } from "../services/lib/pricedOddsCount.js";
+import { fetchPricedOddsCountsForFixtureIds } from "../services/extraMarketsCount.js";
 
 const dryRun = process.argv.includes("--dry-run");
 
@@ -22,23 +22,27 @@ async function run() {
       (dryRun ? " (dry-run)" : ""),
   );
 
+  const ids = fixtures.map((fx) => fx.id);
+  const BATCH = 100;
   let updated = 0;
-  for (const fx of fixtures) {
-    const lines = await prisma.fixtureOddLine.findMany({
-      where: { market: { fixture_id: fx.id } },
-      select: { market_id: true, value: true, odd: true },
-    });
-    const n = countUniquePricedSelections(lines);
+
+  for (let i = 0; i < ids.length; i += BATCH) {
+    const batchIds = ids.slice(i, i + BATCH);
+    const counts = await fetchPricedOddsCountsForFixtureIds(batchIds);
     if (!dryRun) {
-      await prisma.fixture.update({
-        where: { id: fx.id },
-        data: { extra_markets_count: n },
-      });
+      for (const id of batchIds) {
+        await prisma.fixture.update({
+          where: { id },
+          data: { extra_markets_count: counts.get(id) ?? 0 },
+        });
+      }
     }
-    updated++;
-    if (updated % 200 === 0) {
+    updated += batchIds.length;
+    const lastId = batchIds[batchIds.length - 1];
+    const lastFx = fixtures.find((fx) => fx.id === lastId);
+    if (updated % 200 === 0 || updated === ids.length) {
       console.log(
-        `[backfill-priced-odds-count] ${updated}/${fixtures.length} (last api=${fx.api_fixture_id} count=${n})`,
+        `[backfill-priced-odds-count] ${updated}/${ids.length} (last api=${lastFx?.api_fixture_id} count=${counts.get(lastId) ?? 0})`,
       );
     }
   }

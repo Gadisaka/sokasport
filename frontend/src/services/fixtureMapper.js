@@ -111,6 +111,20 @@ function toSummaryMarkets(markets = []) {
   }));
 }
 
+function countPricedOddCells(markets = []) {
+  const { main, extra } = toDetailedOdds(markets);
+  return [...main, ...extra].reduce(
+    (sum, market) => sum + (market.odds?.length || 0),
+    0,
+  );
+}
+
+function hasNonSummaryMarkets(markets = []) {
+  return markets.some(
+    (m) => m?.name && !MAIN_MARKET_NAMES.has(String(m.name)),
+  );
+}
+
 function leagueSportName(league) {
   const s = league?.sport;
   if (s && typeof s === "object") return s.name || s.slug || "Football";
@@ -139,15 +153,16 @@ export function mapFixtureToMatch(fixture, oddsPayload = null) {
   const detailedOdds = toDetailedOdds(markets);
 
   // "sideBets" is the +N badge — total unique priced odd cells across all
-  // markets (main + extra). List responses omit full markets but set
-  // `extra_markets_count` from DB (priced-selection count despite the name).
+  // markets. List responses only include MW/DC; the API attaches
+  // `extra_markets_count` as the live priced-cell total. When full markets
+  // are present (detail hydrate), count from those so list and expand agree.
   const rawExtraCount = fixture?.extra_markets_count;
-  const sideBets = Number.isFinite(rawExtraCount)
-    ? rawExtraCount
-    : [...detailedOdds.main, ...detailedOdds.extra].reduce(
-        (sum, market) => sum + (market.odds?.length || 0),
-        0,
-      );
+  const computedCount = countPricedOddCells(markets);
+  const sideBets = hasNonSummaryMarkets(markets)
+    ? computedCount
+    : Number.isFinite(rawExtraCount)
+      ? rawExtraCount
+      : computedCount;
 
   const kickoffAt = fixture?.start_time
     ? new Date(fixture.start_time).toISOString()

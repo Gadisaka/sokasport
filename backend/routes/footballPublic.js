@@ -40,6 +40,7 @@ import {
   stripEmptyMarkets,
   upcomingCutoffStart,
   utcTodayYmd,
+  withPricedOddsCounts,
 } from "../services/fixturesListService.js";
 
 const router = Router();
@@ -310,6 +311,7 @@ router.get("/fixtures", async (req, res) => {
     }
 
     let data = await getOrBuildFixturesByDate(parsed.ymd);
+    data = await withPricedOddsCounts(data);
 
     // For today, filter out fixtures that have already started (cache may be stale)
     if (parsed.ymd === utcTodayYmd()) {
@@ -466,7 +468,8 @@ router.get("/fixtures/today", async (_req, res) => {
       merged = merged.filter(fixtureHasPricedOdds);
       merged = sortFixturesByLeagueRank(merged);
 
-      data = attachLeagueRanksToList(merged);
+      data = await withPricedOddsCounts(merged, preferred);
+      data = attachLeagueRanksToList(data);
       await setCache(cacheKey, data, TTL.FIXTURES);
     }
     res.json(data);
@@ -517,7 +520,8 @@ router.get("/fixtures/upcoming", async (req, res) => {
       merged = merged.filter(fixtureHasPricedOdds);
       merged = sortFixturesByLeagueRank(merged, UPCOMING_FIXTURES_LIMIT);
 
-      data = attachLeagueRanksToList(merged);
+      data = await withPricedOddsCounts(merged, preferred);
+      data = attachLeagueRanksToList(data);
       await setCache(cacheKey, data, TTL.FIXTURES);
     }
     res.json(filterUpcomingByStartBuffer(data));
