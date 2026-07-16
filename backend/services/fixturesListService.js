@@ -3,6 +3,7 @@ import { getCache, setCache, TTL } from "./cacheService.js";
 import { getPreferredBookmakerRecord } from "./settingsService.js";
 import { isPublicFixturesStrictBookmaker } from "../Config/ingestionConfig.js";
 import { getLeagueRank } from "../Config/leagueRanks.js";
+import { fetchPricedOddsCountsForFixtureIds } from "./extraMarketsCount.js";
 
 /** Slim list endpoint GET /fixtures?date= — Match Winner + Double Chance only. */
 const FIXTURES_SUMMARY_ODD_LINES_PER_MARKET = Number(
@@ -18,8 +19,8 @@ const UPCOMING_FIXTURES_LIMIT = Number(
 const UPCOMING_MIN_START_BUFFER_MINUTES = 5;
 const UPCOMING_ALLOWED_STATUSES = new Set(["NS", "TBD"]);
 
-/** Bumped when list payload / query semantics change (slim select, no bookmaker join). */
-export const FIXTURES_BY_DATE_CACHE_VERSION = "v5";
+/** Bumped when list payload / query semantics change (priced odd-cell counts on list). */
+export const FIXTURES_BY_DATE_CACHE_VERSION = "v6";
 
 const MAIN_MARKET_NAMES = [
   "Match Winner",
@@ -342,6 +343,15 @@ export async function buildFixturesByDate(ymd, { preferred } = {}) {
 
   merged = merged.filter(fixtureHasPricedOdds);
   merged = sortFixturesByLeagueRank(merged, UPCOMING_FIXTURES_LIMIT);
+
+  const pricedCounts = await fetchPricedOddsCountsForFixtureIds(
+    merged.map((f) => f.id),
+    { bookmakerId },
+  );
+  merged = merged.map((f) => ({
+    ...f,
+    extra_markets_count: pricedCounts.get(f.id) ?? 0,
+  }));
 
   const data = attachLeagueRanksToList(merged);
   await setCache(cacheKey, data, TTL.FIXTURES);
