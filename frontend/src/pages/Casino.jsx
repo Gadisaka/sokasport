@@ -52,24 +52,22 @@ function GameCard({ game, onPlay }) {
     <button
       type="button"
       onClick={() => onPlay(game)}
-      className="group flex w-full cursor-pointer flex-col overflow-hidden rounded-2xl border border-(--sb-accent-border) bg-gradient-to-br from-[#111111]/92 to-[#000000]/92 p-0 text-left transition-all hover:ring-1 hover:ring-(--sb-accent-fill)/60"
+      className="group relative aspect-square w-full cursor-pointer overflow-hidden rounded-2xl border border-(--sb-accent-border) bg-[#0a0a0a] p-0 text-left transition-all hover:ring-1 hover:ring-(--sb-accent-fill)/60"
     >
-      <div className="relative aspect-square w-full overflow-hidden bg-[#0a0a0a]">
-        {game.iconUrl ? (
-          <img
-            src={game.iconUrl}
-            alt={game.title}
-            loading="lazy"
-            className="h-full w-full object-contain p-1"
-          />
-        ) : (
-          <div className="flex h-full w-full items-center justify-center text-[#3a3a3a]">
-            <AppIcon name="gamepad" size={40} />
-          </div>
-        )}
-      </div>
+      {game.iconUrl ? (
+        <img
+          src={game.iconUrl}
+          alt={game.title}
+          loading="lazy"
+          className="absolute inset-0 h-full w-full object-cover"
+        />
+      ) : (
+        <div className="absolute inset-0 flex items-center justify-center text-[#3a3a3a]">
+          <AppIcon name="gamepad" size={40} />
+        </div>
+      )}
 
-      <div className="flex flex-1 flex-col p-1.5">
+      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/40 to-transparent px-1.5 pb-1.5 pt-6">
         <h3 className="truncate text-[12px] font-semibold text-[#f6f9ff]">
           {game.title}
         </h3>
@@ -86,23 +84,21 @@ function InstantGameCard({ game, launching, onPlay, t }) {
       type="button"
       disabled={isLaunching}
       onClick={() => onPlay(game)}
-      className="group flex w-full cursor-pointer flex-col overflow-hidden rounded-2xl border border-(--sb-accent-border) bg-gradient-to-br from-[#111111]/92 to-[#000000]/92 p-0 text-left transition-all hover:ring-1 hover:ring-(--sb-accent-fill)/60 disabled:cursor-wait disabled:opacity-70"
+      className="group relative aspect-square w-full cursor-pointer overflow-hidden rounded-2xl border border-(--sb-accent-border) bg-[#0a0a0a] p-0 text-left transition-all hover:ring-1 hover:ring-(--sb-accent-fill)/60 disabled:cursor-wait disabled:opacity-70"
     >
-      <div className="relative aspect-square w-full overflow-hidden bg-[#0a0a0a]">
-        <img
-          src={game.iconUrl}
-          alt={title}
-          loading="lazy"
-          className="h-full w-full object-cover"
-        />
-        {isLaunching ? (
-          <div className="absolute inset-0 flex items-center justify-center bg-black/50">
-            <span className="h-5 w-5 animate-spin rounded-full border-2 border-white/30 border-t-white" />
-          </div>
-        ) : null}
-      </div>
+      <img
+        src={game.iconUrl}
+        alt={title}
+        loading="lazy"
+        className="absolute inset-0 h-full w-full object-cover"
+      />
+      {isLaunching ? (
+        <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/50">
+          <span className="h-5 w-5 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+        </div>
+      ) : null}
 
-      <div className="flex flex-1 flex-col p-1.5">
+      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/40 to-transparent px-1.5 pb-1.5 pt-6">
         <h3 className="truncate text-[12px] font-semibold text-[#f6f9ff]">
           {title}
         </h3>
