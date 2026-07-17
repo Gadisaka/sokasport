@@ -13,7 +13,10 @@ import SportsSidebar from "../components/sections/SportsSidebar";
 import TopLeaguesSidebar from "../components/sections/TopLeaguesSidebar";
 import { topHeaderData, topNavItems, sportsList } from "../data/homepageData";
 import { fetchFixturesLive, fetchLiveOdds } from "../services/api";
-import { mapFixtureToMatch } from "../services/fixtureMapper";
+import {
+  mapFixtureToMatch,
+  toCategoryOdds,
+} from "../services/fixtureMapper";
 import { sortMatchesForDisplay } from "../utils/matchDisplaySort";
 import {
   clampSelectionsToMax,
@@ -661,10 +664,7 @@ function Live() {
           const liveCategories = fx._liveMarkets
             .map((m) => ({
               category: m.name,
-              odds: m.odd_lines.map((ol) => ({
-                id: ol.value,
-                value: ol.odd,
-              })),
+              odds: toCategoryOdds(m.odd_lines || []),
             }))
             .filter((c) => c.odds.length > 0);
 

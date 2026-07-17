@@ -11,6 +11,43 @@ describe("mapFixtureToMatch summary strip", () => {
     league: { name: "Serie A", country: "Italy", sport: "Football" },
   });
 
+  it("orders Match Winner and Double Chance home-first in detailedOdds", () => {
+    const match = mapFixtureToMatch({
+      ...baseFx(),
+      markets: [
+        {
+          name: "Match Winner",
+          // Alphabetical Away/Draw/Home — same order the list API often returns.
+          odd_lines: [
+            { value: "Away", odd: 1.73 },
+            { value: "Draw", odd: 4.0 },
+            { value: "Home", odd: 4.1 },
+          ],
+        },
+        {
+          name: "Double Chance",
+          odd_lines: [
+            { value: "Draw/Away", odd: 1.22 },
+            { value: "Home/Away", odd: 1.22 },
+            { value: "Home/Draw", odd: 2.05 },
+          ],
+        },
+      ],
+    });
+
+    const mw = match.detailedOdds.main.find(
+      (m) => m.category === "Match Winner",
+    );
+    expect(mw?.odds.map((o) => o.id)).toEqual(["1", "x", "2"]);
+    expect(mw?.odds.map((o) => o.value)).toEqual(["4.10", "4.00", "1.73"]);
+
+    const dc = match.detailedOdds.main.find(
+      (m) => m.category === "Double Chance",
+    );
+    expect(dc?.odds.map((o) => o.id)).toEqual(["1x", "x2", "12"]);
+    expect(dc?.odds.map((o) => o.value)).toEqual(["2.05", "1.22", "1.22"]);
+  });
+
   it("uses first duplicate Double Chance label like expanded panel", () => {
     const match = mapFixtureToMatch({
       ...baseFx(),

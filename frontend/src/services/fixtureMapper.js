@@ -35,7 +35,31 @@ function normalizeSelectionLabel(value) {
   return String(value || "").trim();
 }
 
-function toCategoryOdds(lines = []) {
+/** Display order for 1X2 / Double Chance — home-side selections first. */
+const MATCH_WINNER_ORDER = ["1", "x", "2"];
+const DOUBLE_CHANCE_ORDER = ["1x", "x2", "12"];
+
+/**
+ * Providers / DB often return Away→Draw→Home (alphabetical on "Away"/"Draw"/"Home").
+ * Force the conventional home-first layout for known three-way markets.
+ */
+function sortCanonicalOutcomes(odds) {
+  for (const order of [MATCH_WINNER_ORDER, DOUBLE_CHANCE_ORDER]) {
+    const rank = new Map(order.map((id, i) => [id, i]));
+    if (!odds.every((o) => rank.has(String(o.id).toLowerCase()))) continue;
+    if (!order.some((id) => odds.some((o) => String(o.id).toLowerCase() === id))) {
+      continue;
+    }
+    return [...odds].sort(
+      (a, b) =>
+        rank.get(String(a.id).toLowerCase()) -
+        rank.get(String(b.id).toLowerCase()),
+    );
+  }
+  return odds;
+}
+
+export function toCategoryOdds(lines = []) {
   const seen = new Set();
   const out = [];
 
@@ -53,7 +77,7 @@ function toCategoryOdds(lines = []) {
     out.push({ id, value });
   }
 
-  return out;
+  return sortCanonicalOutcomes(out);
 }
 
 // Categories we consider "main" — they feed the compact summary row
