@@ -6,7 +6,7 @@ import { getLeagueRank } from "../Config/leagueRanks.js";
 
 /** Slim list endpoint GET /fixtures?date= — Match Winner + Double Chance only. */
 const FIXTURES_SUMMARY_ODD_LINES_PER_MARKET = Number(
-  process.env.FIXTURES_SUMMARY_ODD_LINES_PER_MARKET || 3,
+  process.env.FIXTURES_SUMMARY_ODD_LINES_PER_MARKET || 24,
 );
 const FIXTURES_SUMMARY_MARKET_LIMIT = Number(
   process.env.FIXTURES_SUMMARY_MARKET_LIMIT || 2,
@@ -19,7 +19,7 @@ const UPCOMING_MIN_START_BUFFER_MINUTES = 5;
 const UPCOMING_ALLOWED_STATUSES = new Set(["NS", "TBD"]);
 
 /** Bumped when list payload / query semantics change (slim select, no bookmaker join). */
-export const FIXTURES_BY_DATE_CACHE_VERSION = "v7";
+export const FIXTURES_BY_DATE_CACHE_VERSION = "v8";
 
 const MAIN_MARKET_NAMES = [
   "Match Winner",
@@ -84,6 +84,45 @@ export function stripEmptyMarkets(fixture) {
   return fixture;
 }
 
+/**
+ * Keep one odd line per selection `value`. When several bookmakers price the
+ * same label, prefer `preferredBookmakerId` if present; otherwise keep first.
+ * Prevents A→Z `take` from dropping Home / Home/Draw when duplicates exist.
+ */
+export function dedupeOddLinesByValue(fixture, preferredBookmakerId = null) {
+  if (!fixture || !Array.isArray(fixture.markets)) return fixture;
+  const preferredId =
+    preferredBookmakerId != null ? String(preferredBookmakerId) : null;
+
+  fixture.markets = fixture.markets.map((market) => {
+    const lines = market?.odd_lines;
+    if (!Array.isArray(lines) || lines.length <= 1) return market;
+
+    /** @type {Map<string, object>} */
+    const byValue = new Map();
+    for (const line of lines) {
+      const key = String(line?.value ?? "");
+      if (!key) continue;
+      const existing = byValue.get(key);
+      if (!existing) {
+        byValue.set(key, line);
+        continue;
+      }
+      if (
+        preferredId &&
+        String(line?.bookmaker_id ?? "") === preferredId &&
+        String(existing?.bookmaker_id ?? "") !== preferredId
+      ) {
+        byValue.set(key, line);
+      }
+    }
+
+    return { ...market, odd_lines: [...byValue.values()] };
+  });
+
+  return fixture;
+}
+
 export function fixtureHasPricedOdds(fixture) {
   const markets = fixture?.markets;
   if (!Array.isArray(markets) || markets.length === 0) return false;
@@ -132,8 +171,6 @@ export function attachLeagueRanksToList(fixtures) {
 /**
  * Preferred-bookmaker rows first; when relaxed mode and preferred is set,
  * fill fixtures missing markets using any bookmaker (same caps).
- * Prefer calling with bookmakerFilterId=null in relaxed mode so the first
- * query already includes fallback markets and this second pass is a no-op.
  */
 export async function mergeMarketsFallbackForList(rows, preferred, caps) {
   if (!preferred?.id || isPublicFixturesStrictBookmaker()) {
@@ -221,15 +258,13 @@ export function fixturesByDateStaleCacheKey(ymd, preferred) {
 
 /**
  * Bookmaker id to use in the first list query.
- * Relaxed mode: null (any persisted bookmaker) — odds sync stores one
- * bookmaker per fixture, so preferred filtering only forces a second query.
- * Strict mode: preferred id when set.
+ * Always prefer the admin preferred bookmaker when set so summary `take`
+ * covers full 1X2 / DC (Away/Draw/Home) instead of truncating across
+ * multi-bookmaker duplicates. Relaxed mode still falls back via
+ * mergeMarketsFallbackForList for fixtures with no preferred lines.
  */
 function listQueryBookmakerId(preferred) {
-  if (isPublicFixturesStrictBookmaker()) {
-    return preferred?.id ?? null;
-  }
-  return null;
+  return preferred?.id ?? null;
 }
 
 function rememberFixtures(cacheKey, data) {
@@ -268,13 +303,18 @@ export async function buildFixturesByDate(ymd, { preferred } = {}) {
   }
 
   const bookmakerId = listQueryBookmakerId(preferredRecord);
+  // Strict mode: only list fixtures that have preferred-bookmaker lines.
+  // Relaxed: include any priced fixture; odd_lines still prefer preferred,
+  // then mergeMarketsFallbackForList fills rows with empty preferred markets.
+  const whereBookmakerId =
+    bookmakerId && isPublicFixturesStrictBookmaker() ? bookmakerId : null;
   const t0 = Date.now();
 
   const oddLinesQuery = {
     where: bookmakerId ? { bookmaker_id: bookmakerId } : undefined,
     take: FIXTURES_SUMMARY_ODD_LINES_PER_MARKET,
     orderBy: { value: "asc" },
-    select: { id: true, value: true, odd: true },
+    select: { id: true, value: true, odd: true, bookmaker_id: true },
   };
 
   const rows = await prisma.fixture.findMany({
@@ -285,8 +325,8 @@ export async function buildFixturesByDate(ymd, { preferred } = {}) {
       markets: {
         some: {
           name: { in: SUMMARY_MARKET_NAMES },
-          odd_lines: bookmakerId
-            ? { some: { bookmaker_id: bookmakerId } }
+          odd_lines: whereBookmakerId
+            ? { some: { bookmaker_id: whereBookmakerId } }
             : { some: {} },
         },
       },
@@ -330,8 +370,8 @@ export async function buildFixturesByDate(ymd, { preferred } = {}) {
   });
 
   let merged = rows.map(stripEmptyMarkets);
-  // Strict mode may still need a fallback pass when preferred filter was used.
-  if (bookmakerId) {
+  // Relaxed mode fills fixtures that have no preferred-bookmaker lines.
+  if (bookmakerId && !isPublicFixturesStrictBookmaker()) {
     merged = await mergeMarketsFallbackForList(merged, preferredRecord, {
       marketLimit: FIXTURES_SUMMARY_MARKET_LIMIT,
       oddLineLimit: FIXTURES_SUMMARY_ODD_LINES_PER_MARKET,
@@ -339,7 +379,10 @@ export async function buildFixturesByDate(ymd, { preferred } = {}) {
       includeBookmaker: false,
     });
   }
-
+  const preferredBkId = preferredRecord?.id ?? null;
+  merged = merged.map((fx) =>
+    dedupeOddLinesByValue(stripEmptyMarkets(fx), preferredBkId),
+  );
   merged = merged.filter(fixtureHasPricedOdds);
   merged = sortFixturesByLeagueRank(merged, UPCOMING_FIXTURES_LIMIT);
 
