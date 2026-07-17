@@ -19,6 +19,7 @@
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:push": "prisma db push",
+    "db:ensure-indexes": "node scripts/ensureMongoIndexes.mjs",
     "db:verify-transaction-reference-index": "node scripts/verifyTransactionReferenceIndex.mjs",
     "db:dedupe-transaction-references": "node scripts/dedupeTransactionReferences.mjs",
     "db:seed": "node prisma/seed.js",

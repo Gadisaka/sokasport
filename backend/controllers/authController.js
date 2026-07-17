@@ -82,11 +82,11 @@ export async function login(req, res) {
 
   const user =
     resolved.mode === "username"
-      ? await prisma.user.findUnique({
+      ? await prisma.user.findFirst({
           where: { username: resolved.username },
           include: { role: true },
         })
-      : await prisma.user.findUnique({
+      : await prisma.user.findFirst({
           where: { phone: resolved.phone },
           include: { role: true },
         });

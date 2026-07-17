@@ -98,10 +98,16 @@ model Role {
 model User {
   id         String   @id @default(uuid()) @map("_id")
   role_id    String
-  username   String?  @unique
+  // Staff login identifier. Optional because players must not have a username
+  // (many nulls). Prisma @unique cannot create a Mongo unique index that
+  // allows multiple missing values — uniqueness is enforced by a sparse
+  // unique index created in scripts/ensureMongoIndexes.mjs.
+  username   String?
   fullname   String
   email      String   @unique
-  phone      String?  @unique
+  // Player login identifier. Optional for staff. Same sparse-unique story
+  // as username — see scripts/ensureMongoIndexes.mjs.
+  phone      String?
   password   String
   status     Boolean  @default(true)
   created_at DateTime @default(now())

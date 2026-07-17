@@ -7,8 +7,14 @@
 #
 #   docker compose -f docker-compose.prod.yml up -d --build
 #
-# First-time DB schema sync (Mongo):
+# First-time / post-deploy DB schema sync (Mongo):
+#   1) prisma db push  — sync schema (optional unique fields are NOT in schema)
+#   2) ensureMongoIndexes — sparse unique username/phone + odds/InOut indexes
+#   3) restart worker
+#
 #   docker compose -f docker-compose.prod.yml exec backend npx prisma db push
+#   docker compose -f docker-compose.prod.yml exec backend npm run db:ensure-indexes
+#   docker compose -f docker-compose.prod.yml restart worker
 
 services:
   mongo:

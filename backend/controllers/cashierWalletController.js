@@ -51,8 +51,8 @@ export async function cashierDeposit(req, res) {
 
     const normalizedPhone = normalizeEthiopiaPhone(phone);
 
-    // Find player by phone
-    const player = await prisma.user.findUnique({
+    // Find player by phone (sparse unique in Mongo; not Prisma @unique)
+    const player = await prisma.user.findFirst({
       where: { phone: normalizedPhone },
       include: { role: true, wallets: true },
     });
@@ -203,7 +203,7 @@ export async function getWithdrawRequest(req, res) {
     }
     const phone = normalizeEthiopiaPhone(req.query.phone);
 
-    const player = await prisma.user.findUnique({
+    const player = await prisma.user.findFirst({
       where: { phone },
       include: { role: true, wallets: true },
     });
