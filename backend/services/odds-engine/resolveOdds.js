@@ -1,5 +1,6 @@
 import { resolveMarketState } from "./marketState.js";
 import { buildPrematchMarketVersion } from "./versioning.js";
+import { expandCompoundSelectionCandidates } from "./comboSelectionAliases.js";
 import { perfTimed } from "../../lib/perfTiming.js";
 
 function kickoffInPast(startTime, now = new Date()) {
@@ -18,6 +19,19 @@ const MATCH_WINNER_MARKET_NAMES = [
 ];
 
 const DOUBLE_CHANCE_MARKET_NAMES = ["Double Chance"];
+
+const COMBO_MARKET_NAMES_BY_CODE = {
+  RESULT_BTTS_FT: [
+    "Results/Both Teams Score",
+    "Result / Both Teams To Score",
+    "Halftime Result/Both Teams Score",
+  ],
+  RESULT_TOTAL_FT: [
+    "Result/Total Goals",
+    "Halftime Result/Total Goals",
+  ],
+  TOTAL_GOALS_BTTS: ["Total Goals/Both Teams To Score"],
+};
 
 export function buildSelectionCandidates({
   selectionLabel,
@@ -106,6 +120,16 @@ export function buildSelectionCandidates({
     }
   }
 
+  // Combination markets (Result/BTTS, Result/Total, Total/BTTS): the UI
+  // uppercases labels on click while ingestion stores provider casing and
+  // abbreviated API-Sports strings. Without alias expansion every combo leg
+  // resolves to no odd line → market_suspended.
+  if (raw.includes("/")) {
+    for (const alias of expandCompoundSelectionCandidates(raw)) {
+      candidates.add(alias);
+    }
+  }
+
   return [...candidates].filter(Boolean);
 }
 
@@ -124,6 +148,20 @@ export function buildMarketNameCandidates({ marketLabel, marketCode }) {
   }
   if (code === "DOUBLE_CHANCE" || label.toLowerCase().includes("double chance")) {
     for (const n of DOUBLE_CHANCE_MARKET_NAMES) names.add(n);
+  }
+  const comboNames = COMBO_MARKET_NAMES_BY_CODE[code];
+  if (comboNames) {
+    for (const n of comboNames) names.add(n);
+  }
+  const labelLower = label.toLowerCase();
+  if (/result.*both teams.*score/i.test(labelLower)) {
+    for (const n of COMBO_MARKET_NAMES_BY_CODE.RESULT_BTTS_FT) names.add(n);
+  }
+  if (/result\/total goals/i.test(labelLower)) {
+    for (const n of COMBO_MARKET_NAMES_BY_CODE.RESULT_TOTAL_FT) names.add(n);
+  }
+  if (/total goals\/both teams/i.test(labelLower)) {
+    for (const n of COMBO_MARKET_NAMES_BY_CODE.TOTAL_GOALS_BTTS) names.add(n);
   }
   return [...names].filter(Boolean);
 }

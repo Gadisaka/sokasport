@@ -3,7 +3,6 @@ import { getCache, setCache, TTL } from "./cacheService.js";
 import { getPreferredBookmakerRecord } from "./settingsService.js";
 import { isPublicFixturesStrictBookmaker } from "../Config/ingestionConfig.js";
 import { getLeagueRank } from "../Config/leagueRanks.js";
-import { fetchPricedOddsCountsForFixtureIds } from "./extraMarketsCount.js";
 
 /** Slim list endpoint GET /fixtures?date= — Match Winner + Double Chance only. */
 const FIXTURES_SUMMARY_ODD_LINES_PER_MARKET = Number(
@@ -19,7 +18,7 @@ const UPCOMING_FIXTURES_LIMIT = Number(
 const UPCOMING_MIN_START_BUFFER_MINUTES = 5;
 const UPCOMING_ALLOWED_STATUSES = new Set(["NS", "TBD"]);
 
-/** Bumped when list payload / query semantics change (priced odd-cell counts on list). */
+/** Bumped when list payload / query semantics change (slim select, no bookmaker join). */
 export const FIXTURES_BY_DATE_CACHE_VERSION = "v7";
 
 const MAIN_MARKET_NAMES = [
@@ -231,24 +230,6 @@ function listQueryBookmakerId(preferred) {
     return preferred?.id ?? null;
   }
   return null;
-}
-
-/**
- * Attach live priced odd-cell counts to list fixtures (overrides stale DB column
- * and cached payloads). Safe to call on cache hits.
- */
-export async function withPricedOddsCounts(fixtures, preferred) {
-  if (!Array.isArray(fixtures) || fixtures.length === 0) return fixtures;
-  const preferredRecord =
-    preferred === undefined ? await getPreferredBookmakerRecord() : preferred;
-  const counts = await fetchPricedOddsCountsForFixtureIds(
-    fixtures.map((f) => f.id),
-    { bookmakerId: listQueryBookmakerId(preferredRecord) },
-  );
-  return fixtures.map((f) => ({
-    ...f,
-    extra_markets_count: counts.get(f.id) ?? 0,
-  }));
 }
 
 function rememberFixtures(cacheKey, data) {
