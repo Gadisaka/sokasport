@@ -33,6 +33,25 @@ function parseList(envValue) {
   return list.length > 0 ? new Set(list) : null;
 }
 
+function envBool(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === null || String(raw).trim() === "") {
+    return fallback;
+  }
+  const v = String(raw).trim().toLowerCase();
+  if (v === "1" || v === "true" || v === "yes") return true;
+  if (v === "0" || v === "false" || v === "no") return false;
+  return fallback;
+}
+
+/**
+ * After preferred + BOOKMAKER_FALLBACK_CHAIN yield no priced markets,
+ * take the first remaining bookmaker in the API response. Default on.
+ */
+export function isAnyBookmakerFallthroughEnabled() {
+  return envBool("BOOKMAKER_ANY_FALLTHROUGH", true);
+}
+
 /**
  * Optional market-name allowlist. `null` means "persist every market".
  */
@@ -89,5 +108,7 @@ export function buildOddsParseOptions(preferredApiId) {
     allowedMarketNames: ALLOWED_MARKETS,
     effectiveBookmakerApiId: effectiveSingle,
     legacyPersistAllBookmakers,
+    anyBookmakerFallthrough:
+      !legacyPersistAllBookmakers && isAnyBookmakerFallthroughEnabled(),
   };
 }

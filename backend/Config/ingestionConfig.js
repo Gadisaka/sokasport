@@ -8,6 +8,20 @@ function envPositiveInt(name, fallback) {
   return Number.isFinite(v) && v > 0 ? Math.floor(v) : fallback;
 }
 
+function envBool(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === null || String(raw).trim() === "") {
+    return fallback;
+  }
+  const v = String(raw).trim().toLowerCase();
+  if (v === "1" || v === "true" || v === "yes") return true;
+  if (v === "0" || v === "false" || v === "no") return false;
+  return fallback;
+}
+
+const MINUTE_MS = 60 * 1000;
+const HOUR_MS = 60 * MINUTE_MS;
+
 /** Maximum fixture ingest horizon (UTC calendar days starting today). */
 export function getFixturesDaysAhead() {
   return envPositiveInt("FIXTURES_DAYS_AHEAD", 14);
@@ -85,6 +99,72 @@ export function getOddsNearPriorityEndUtc(nearDays) {
   end.setUTCDate(end.getUTCDate() + safe - 1);
   end.setUTCHours(23, 59, 59, 999);
   return end;
+}
+
+/**
+ * Adaptive delay before the next odds recheck for a fixture, based on
+ * kickoff distance. Far-out unpriced fixtures must not be re-asked every
+ * few minutes — that wastes the daily API budget and selection slots.
+ *
+ * @param {Date|string|number|null|undefined} startTime
+ * @param {Date|number} [now]
+ * @returns {number} delay in milliseconds
+ */
+export function nextOddsRecheckDelayMs(startTime, now = Date.now()) {
+  const kickoffMs = new Date(startTime).getTime();
+  const nowMs = now instanceof Date ? now.getTime() : Number(now);
+  if (!Number.isFinite(kickoffMs) || !Number.isFinite(nowMs)) {
+    return 4 * HOUR_MS;
+  }
+  const msUntil = kickoffMs - nowMs;
+  if (msUntil <= 24 * HOUR_MS) return 15 * MINUTE_MS;
+  if (msUntil <= 3 * 24 * HOUR_MS) return 1 * HOUR_MS;
+  if (msUntil <= 7 * 24 * HOUR_MS) return 4 * HOUR_MS;
+  return 12 * HOUR_MS;
+}
+
+/** @returns {Date} */
+export function computeNextOddsCheckAt(startTime, now = Date.now()) {
+  const nowMs = now instanceof Date ? now.getTime() : Number(now);
+  return new Date(nowMs + nextOddsRecheckDelayMs(startTime, nowMs));
+}
+
+/**
+ * Daily upstream call budget for prematch odds jobs (tick + bulk + backfill).
+ * Default 70000 leaves headroom under a 150k API-Sports daily limit for
+ * live scores / fixtures. Set to 0 to disable enforcement.
+ */
+export function getOddsDailyCallBudget() {
+  const raw = process.env.ODDS_DAILY_CALL_BUDGET;
+  if (raw === undefined || raw === null || String(raw).trim() === "") {
+    return 70000;
+  }
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return 70000;
+  return Math.floor(n);
+}
+
+/**
+ * Bulk `/odds?date=` sweep across the full horizon.
+ * ODDS_BULK_BY_DATE_ENABLED=false to disable the scheduled job.
+ */
+export function isOddsBulkByDateEnabled() {
+  return envBool("ODDS_BULK_BY_DATE_ENABLED", true);
+}
+
+/** Hours between bulk odds-by-date sweeps (matches upstream ~3h refresh). */
+export function getOddsBulkIntervalHours() {
+  return envPositiveInt("ODDS_BULK_INTERVAL_HOURS", 3);
+}
+
+/** Cap pages walked per date on `/odds?date=` (10 fixtures/page upstream). */
+export function getOddsBulkMaxPagesPerDate() {
+  return envPositiveInt("ODDS_BULK_MAX_PAGES_PER_DATE", 100);
+}
+
+/** Delay between bulk odds pages to avoid rate-limit bursts. */
+export function getOddsBulkPageDelayMs() {
+  return envPositiveInt("ODDS_BULK_PAGE_DELAY_MS", 400);
 }
 
 /**

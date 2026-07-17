@@ -13,6 +13,7 @@ test("buildOddsParseOptions adds default fallback chain when preferred set and e
     assert.equal(opts.legacyPersistAllBookmakers, false);
     assert.deepEqual(opts.orderedBookmakerApiIds?.slice(0, 4), [8, 2, 11, 16]);
     assert.ok(opts.orderedBookmakerApiIds.length > 4);
+    assert.equal(opts.anyBookmakerFallthrough, true);
   } finally {
     if (prev === undefined) delete process.env.BOOKMAKER_FALLBACK_CHAIN;
     else process.env.BOOKMAKER_FALLBACK_CHAIN = prev;
@@ -25,4 +26,5 @@ test("buildOddsParseOptions keeps legacy all-bookmakers when no preferred", () =
   const opts = buildOddsParseOptions(null);
   assert.equal(opts.legacyPersistAllBookmakers, true);
   assert.equal(opts.orderedBookmakerApiIds, null);
+  assert.equal(opts.anyBookmakerFallthrough, false);
 });

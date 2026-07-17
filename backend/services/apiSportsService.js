@@ -248,6 +248,17 @@ export function api(sport) {
     getOdds: (fixtureId, opts) =>
       request(sport, "/odds", { fixture: fixtureId }, 0, opts),
     /**
+     * Bulk odds for a UTC calendar date (`GET /odds?date=&page=`).
+     * Returns `{ response, paging }` when `includePaging` is set so the
+     * bulk job can walk every page (upstream defaults to 10 fixtures/page).
+     */
+    getOddsByDate: (date, page = 1, opts = {}) =>
+      request(sport, "/odds", { date, page }, 0, {
+        skipCache: true,
+        includePaging: true,
+        ...opts,
+      }),
+    /**
      * Fetch the event timeline (goals, cards, substitutions…) for a
      * finalized fixture. Required by `GOALSCORER_*`, `PLAYER_CARDS`,
      * and any market that requires the normalized event stream. Cached

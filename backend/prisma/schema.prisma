@@ -305,6 +305,16 @@ model Fixture {
   /** Unique priced odd selections across all markets (market × value, any bookmaker deduped); kept in sync when odds ingest runs. Column name kept for API compat. */
   extra_markets_count Int @default(0)
 
+  /**
+   * Odds recheck eligibility. null = due now (never checked / legacy row).
+   * Set after each odds attempt (success or empty) using kickoff-distance
+   * adaptive delays so far-horizon unpriced fixtures do not starve the
+   * per-run selection slots.
+   */
+  next_odds_check_at DateTime?
+  /** Last time an upstream odds fetch was attempted for this fixture. */
+  odds_checked_at    DateTime?
+
   league    League @relation(fields: [league_id], references: [id], onDelete: Restrict)
   home_team Team   @relation("FixtureHomeTeam", fields: [home_team_id], references: [id], onDelete: Restrict)
   away_team Team   @relation("FixtureAwayTeam", fields: [away_team_id], references: [id], onDelete: Restrict)
@@ -321,6 +331,7 @@ model Fixture {
   // significant contributor to MongoDB CPU on horizons of 1000+ fixtures.
   // NOTE: Run `npx prisma db push` to materialize this index in MongoDB.
   @@index([start_time, status])
+  @@index([next_odds_check_at])
   @@map("fixtures")
 }
 

@@ -1,11 +1,8 @@
 import prisma from "../Config/db.js";
-import { upsertNoTx } from "../utils/upsertNoTx.js";
 import { api, sleep } from "../services/apiSportsService.js";
 import {
   deleteByPattern,
   getCache,
-  setCache,
-  TTL,
 } from "../services/cacheService.js";
 import { refreshFixturesByDateCaches } from "../services/fixturesListService.js";
 import { parseMarkets } from "../utils/oddsParser.js";
@@ -21,7 +18,12 @@ import {
   getOddsNearPriorityEndUtc,
 } from "../Config/ingestionConfig.js";
 import { sortFixturesForOddsIngest } from "../Config/leagueTiers.js";
-import { recomputeExtraMarketsCountForFixture } from "../services/extraMarketsCount.js";
+import { tryConsumeOddsApiBudget } from "../services/apiBudget.js";
+import {
+  markFixtureOddsChecked,
+  persistParsedOddsForFixture,
+  RAW_ODDS_CACHE_VERSION,
+} from "./lib/persistOdds.js";
 
 /**
  * Odds ingestion job.
@@ -33,24 +35,20 @@ import { recomputeExtraMarketsCountForFixture } from "../services/extraMarketsCo
  * Modes:
  *   - "missing_first" (default): prioritize NS fixtures with no markets,
  *     then fill remaining capacity with LIVE/HT or NS that already have
- *     markets (for refresh). Fixes starvation where fixtures beyond
- *     maxFixtures never receive odds.
+ *     markets (for refresh).
  *   - "all_in_horizon": process all fixtures in order (legacy behavior
  *     with the slice cap still applied as safety).
+ *
+ * Prematch selection only includes fixtures that are due
+ * (`next_odds_check_at` null or <= now) so adaptive recheck delays free
+ * the per-run slot budget for fixtures that can actually be priced.
  */
 
 const ODDS_CALL_DELAY_MS = 500;
-const RAW_ODDS_CACHE_VERSION = 2;
-const NO_ODDS_NEGATIVE_CACHE_TTL = 300;
 
 const DEFAULT_MAX_FIXTURES_PER_RUN = Number(
   process.env.ODDS_MAX_FIXTURES_PER_RUN || 250,
 );
-// Lowered the default cap from 2000 → 500 to avoid a single backfill run
-// stacking thousands of nested odds upserts on top of fixture ingestion,
-// which was a primary contributor to MongoDB CPU spikes. The env override
-// (`ODDS_HORIZON_BACKFILL_MAX`) is preserved for environments that need
-// a larger window – split the work into multiple smaller jobs instead.
 const BACKFILL_MAX_FIXTURES = Number(
   process.env.ODDS_HORIZON_BACKFILL_MAX || 500,
 );
@@ -70,6 +68,13 @@ function startEndUtcWindow(days) {
   end.setUTCDate(end.getUTCDate() + safeDays - 1);
   end.setUTCHours(23, 59, 59, 999);
   return { start, end };
+}
+
+/** Prematch fixtures due for an odds attempt (null = never checked / legacy). */
+function dueOddsCheckWhere(now = new Date()) {
+  return {
+    OR: [{ next_odds_check_at: null }, { next_odds_check_at: { lte: now } }],
+  };
 }
 
 /**
@@ -103,10 +108,6 @@ export default async function syncOdds(options = {}) {
       return { checked: 0, upserts: 0 };
     }
 
-    // Resolve the single-bookmaker policy once per run. The parser will
-    // drop everything outside this allowlist before we ever touch Mongo
-    // – this is the dominant write-volume reduction on systems that
-    // previously persisted every bookmaker × market × line.
     const preferredApiId = await getPreferredBookmakerApiId();
     const parseOptions = buildOddsParseOptions(preferredApiId);
     if (parseOptions.legacyPersistAllBookmakers) {
@@ -116,6 +117,7 @@ export default async function syncOdds(options = {}) {
     } else {
       console.log(
         `[syncOdds] bookmaker priority=${parseOptions.orderedBookmakerApiIds?.join(">") ?? "—"}` +
+          (parseOptions.anyBookmakerFallthrough ? ">+any" : "") +
           (ALLOWED_MARKETS
             ? `, markets=${[...ALLOWED_MARKETS].join("|")}`
             : ", markets=all"),
@@ -126,7 +128,9 @@ export default async function syncOdds(options = {}) {
     const nearPriorityEnd =
       nearDays != null ? getOddsNearPriorityEndUtc(nearDays) : null;
 
+    const now = new Date();
     const { start, end } = startEndUtcWindow(horizonDays);
+    const dueWhere = dueOddsCheckWhere(now);
     const baseWhere = {
       start_time: { gte: start, lte: end },
       league: { sport: { slug: { in: enabled } } },
@@ -156,6 +160,7 @@ export default async function syncOdds(options = {}) {
       const missingRaw = await prisma.fixture.findMany({
         where: {
           ...baseWhere,
+          ...dueWhere,
           status: "NS",
           markets: { none: {} },
         },
@@ -167,6 +172,7 @@ export default async function syncOdds(options = {}) {
 
       if (fixtures.length < maxFixtures) {
         const rem = maxFixtures - fixtures.length;
+        // LIVE/HT always refresh — eligibility gate does not apply.
         const liveHtRaw = await prisma.fixture.findMany({
           where: {
             ...baseWhere,
@@ -189,6 +195,7 @@ export default async function syncOdds(options = {}) {
         const nsWithRaw = await prisma.fixture.findMany({
           where: {
             ...baseWhere,
+            ...dueWhere,
             status: "NS",
             markets: { some: {} },
           },
@@ -210,7 +217,12 @@ export default async function syncOdds(options = {}) {
       const raw = await prisma.fixture.findMany({
         where: {
           ...baseWhere,
-          status: { in: ["NS", "LIVE", "HT"] },
+          OR: [
+            { status: { in: ["LIVE", "HT"] } },
+            {
+              AND: [{ status: "NS" }, dueWhere],
+            },
+          ],
         },
         orderBy: { start_time: "asc" },
         take: overshootTake(maxFixtures),
@@ -228,6 +240,8 @@ export default async function syncOdds(options = {}) {
     let skippedCached = 0;
     let skippedNoSport = 0;
     let skippedNoOdds = 0;
+    let skippedBudget = 0;
+    let stoppedForBudget = false;
 
     for (const fixture of fixtures) {
       checked++;
@@ -238,7 +252,6 @@ export default async function syncOdds(options = {}) {
       }
 
       const cacheKey = `odds:fixture:${fixture.api_fixture_id}:raw:v${RAW_ODDS_CACHE_VERSION}`;
-      const noOddsCacheKey = `odds:fixture:${fixture.api_fixture_id}:no_odds`;
 
       // For LIVE/HT, always refresh (skip cache check)
       const isLiveOrHt = fixture.status === "LIVE" || fixture.status === "HT";
@@ -250,6 +263,8 @@ export default async function syncOdds(options = {}) {
         );
         if (hasUsefulCachedOdds) {
           skippedCached++;
+          // Keep selection slots free until the next adaptive window.
+          await markFixtureOddsChecked(fixture).catch(() => {});
           if (checked % 50 === 0 || checked === fixtures.length) {
             console.log(
               `[syncOdds] progress ${checked}/${fixtures.length} – cached=${skippedCached}, upserts=${total}`,
@@ -257,45 +272,42 @@ export default async function syncOdds(options = {}) {
           }
           continue;
         }
+      }
 
-        const noOddsMarker = await getCache(noOddsCacheKey);
-        if (noOddsMarker) {
-          skippedCached++;
-          continue;
-        }
+      const budget = await tryConsumeOddsApiBudget(1);
+      if (!budget.allowed) {
+        skippedBudget++;
+        stoppedForBudget = true;
+        console.warn(
+          `[syncOdds] daily odds API budget exhausted (used=${budget.used}/${budget.budget}) – stopping run`,
+        );
+        break;
       }
 
       const rawOdds = await api(sportSlug).getOdds(fixture.api_fixture_id);
       if (!rawOdds.length) {
         skippedNoOdds++;
-        await setCache(
-          noOddsCacheKey,
-          { checked: Date.now() },
-          NO_ODDS_NEGATIVE_CACHE_TTL,
-        );
+        await markFixtureOddsChecked(fixture).catch(() => {});
         if (checked % 50 === 0 || checked === fixtures.length) {
           console.log(
             `[syncOdds] progress ${checked}/${fixtures.length} – noOdds=${skippedNoOdds}, upserts=${total}`,
           );
         }
+        await sleep(ODDS_CALL_DELAY_MS);
         continue;
       }
 
       const parsed = parseMarkets(rawOdds, parseOptions);
 
-      // Only negative-cache after fallback chain exhausted or legacy parse yielded nothing.
       if (!parsed.bookmakers.length) {
         skippedNoOdds++;
-        await setCache(
-          noOddsCacheKey,
-          { checked: Date.now() },
-          NO_ODDS_NEGATIVE_CACHE_TTL,
-        );
+        await markFixtureOddsChecked(fixture).catch(() => {});
         if (checked % 50 === 0 || checked === fixtures.length) {
           console.log(
             `[syncOdds] progress ${checked}/${fixtures.length} – noOdds=${skippedNoOdds}, upserts=${total}`,
           );
         }
+        await sleep(ODDS_CALL_DELAY_MS);
         continue;
       }
 
@@ -305,63 +317,8 @@ export default async function syncOdds(options = {}) {
         );
       }
 
-      // PERF: The block below issues O(bookmakers × markets × values)
-      // round-trips to MongoDB. With many bookmakers per fixture this is
-      // the single largest contributor to high Mongo CPU during odds
-      // backfills. Recommended next step (out of scope for this safe
-      // pass): collect upserts per fixture and flush via native
-      // `bulkWrite({ ordered: false })` in chunks of ~500 ops. Doing it
-      // here would change the persistence semantics (atomicity boundary,
-      // P2002 fallback path) and is best handled in a dedicated PR with
-      // tests around the existing `/odds/:apiFixtureId` reader.
-      for (const bk of parsed.bookmakers) {
-        const bookmaker = await upsertNoTx(prisma.bookmaker, {
-          where: { api_bookmaker_id: bk.apiBookmakerId },
-          update: { name: bk.name },
-          create: { api_bookmaker_id: bk.apiBookmakerId, name: bk.name },
-        });
+      total += await persistParsedOddsForFixture(fixture, parsed);
 
-        for (const mkt of bk.markets) {
-          const market = await upsertNoTx(prisma.fixtureMarket, {
-            where: {
-              fixture_id_name: {
-                fixture_id: fixture.id,
-                name: mkt.name,
-              },
-            },
-            update: {},
-            create: { name: mkt.name, fixture_id: fixture.id },
-          });
-
-          for (const v of mkt.values) {
-            await upsertNoTx(prisma.fixtureOddLine, {
-              where: {
-                market_id_bookmaker_id_value: {
-                  market_id: market.id,
-                  bookmaker_id: bookmaker.id,
-                  value: v.value,
-                },
-              },
-              update: { odd: v.odd },
-              create: {
-                value: v.value,
-                odd: v.odd,
-                market_id: market.id,
-                bookmaker_id: bookmaker.id,
-              },
-            });
-            total++;
-          }
-        }
-      }
-
-      await recomputeExtraMarketsCountForFixture(fixture.id);
-
-      await setCache(
-        cacheKey,
-        { ...parsed, _cacheVersion: RAW_ODDS_CACHE_VERSION },
-        TTL.ODDS,
-      );
       if (checked % 50 === 0 || checked === fixtures.length) {
         console.log(
           `[syncOdds] progress ${checked}/${fixtures.length} – cached=${skippedCached}, noOdds=${skippedNoOdds}, upserts=${total}`,
@@ -370,9 +327,6 @@ export default async function syncOdds(options = {}) {
       await sleep(ODDS_CALL_DELAY_MS);
     }
 
-    // Keep public list caches warm only when odds actually changed.
-    // Rebuilding every 2 minutes with 0 upserts was saturating Mongo and
-    // making even cache-hit /fixtures requests wait on the connection pool.
     await deleteByPattern("fixtures:today:*");
     await deleteByPattern("fixtures:upcoming:*");
     await deleteByPattern("live:fixtures:*");
@@ -389,7 +343,6 @@ export default async function syncOdds(options = {}) {
           "[syncOdds] fixtures by-date refresh failed:",
           err?.message || err,
         );
-        // Keep existing by-date keys — stale data beats a cold miss for visitors.
       }
     } else {
       console.log(
@@ -398,16 +351,18 @@ export default async function syncOdds(options = {}) {
     }
 
     console.log(
-      `[syncOdds] done (${label}) – checked=${fixtures.length}, upserts=${total}, cached=${skippedCached}, noSport=${skippedNoSport}, noOdds=${skippedNoOdds}`,
+      `[syncOdds] done (${label}) – checked=${checked}, upserts=${total}, cached=${skippedCached}, noSport=${skippedNoSport}, noOdds=${skippedNoOdds}, budgetSkip=${skippedBudget}${stoppedForBudget ? " (budget-stop)" : ""}`,
     );
 
     return {
       label,
-      checked: fixtures.length,
+      checked,
       upserts: total,
       skippedCached,
       skippedNoSport,
       skippedNoOdds,
+      skippedBudget,
+      stoppedForBudget,
     };
   } catch (err) {
     console.error("[syncOdds] error:", err);

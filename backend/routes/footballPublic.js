@@ -25,6 +25,7 @@ import {
   pickTopActiveLeagues,
 } from "../Config/leagueRanks.js";
 import { recomputeExtraMarketsCountForFixture } from "../services/extraMarketsCount.js";
+import { markFixtureOddsChecked } from "../jobs/lib/persistOdds.js";
 import {
   attachLeagueRanksToList,
   bookmakerCacheSuffix,
@@ -212,7 +213,8 @@ function isLegacyOnlyFixtureMarkets(markets) {
  * until the worker finishes), so it warrants a dedicated PR with a
  * frontend story for the loading state.
  */
-async function upsertParsedOddsForFixture(fixtureId, parsed) {
+async function upsertParsedOddsForFixture(fixture, parsed) {
+  const fixtureId = fixture.id;
   for (const bk of parsed.bookmakers || []) {
     const bookmaker = await prisma.bookmaker.upsert({
       where: { api_bookmaker_id: bk.apiBookmakerId },
@@ -254,6 +256,7 @@ async function upsertParsedOddsForFixture(fixtureId, parsed) {
   }
 
   await recomputeExtraMarketsCountForFixture(fixtureId);
+  await markFixtureOddsChecked(fixture).catch(() => {});
 }
 
 /**
@@ -656,7 +659,10 @@ router.get("/odds/:apiFixtureId", async (req, res) => {
           hydrationPromise = (async () => {
             const sportSlug = fixture.league?.sport?.slug || "football";
             const rawOdds = await api(sportSlug).getOdds(apiFixtureId);
-            if (!rawOdds.length) return;
+            if (!rawOdds.length) {
+              await markFixtureOddsChecked(fixture).catch(() => {});
+              return;
+            }
 
             // On-demand hydration must honor the same single-bookmaker /
             // market allowlist policy as the background sync jobs so we
@@ -665,7 +671,11 @@ router.get("/odds/:apiFixtureId", async (req, res) => {
               preferred?.api_bookmaker_id ?? null,
             );
             const parsed = parseMarkets(rawOdds, parseOptions);
-            await upsertParsedOddsForFixture(fixture.id, parsed);
+            if (!parsed.bookmakers.length) {
+              await markFixtureOddsChecked(fixture).catch(() => {});
+              return;
+            }
+            await upsertParsedOddsForFixture(fixture, parsed);
             await deleteByPattern("fixtures:today:*");
             await deleteByPattern("fixtures:upcoming:*");
             await deleteByPattern("live:fixtures:*");

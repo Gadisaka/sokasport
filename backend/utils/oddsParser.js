@@ -38,12 +38,23 @@ function mapBookmakerMarkets(bk, allowedMarketNames) {
     .filter((m) => m.values.length > 0);
 }
 
+function toBookmakerPayload(bk, markets) {
+  return {
+    apiBookmakerId: bk.id,
+    name: bk.name,
+    markets,
+  };
+}
+
 /**
  * @param {Array} apiOddsResponse
  * @param {object} [options]
  * @param {number[]|null} [options.orderedBookmakerApiIds]
  *   When non-empty, walk this list and return **only** the first bookmaker
  *   that survives market filtering (single-bookmaker MVP writes).
+ * @param {boolean} [options.anyBookmakerFallthrough]
+ *   When ordered chain yields nothing, take the first remaining bookmaker
+ *   in the API response that has priced markets.
  * @param {Set<number>|null} [options.allowedBookmakerApiIds]
  *   Legacy “subset” filter when orderedBookmakerApiIds is absent.
  * @param {Set<string>|null} [options.allowedMarketNames]
@@ -69,10 +80,16 @@ export function parseMarkets(apiOddsResponse, options = {}) {
       ? options.allowedMarketNames
       : null;
 
+  const anyBookmakerFallthrough = Boolean(options.anyBookmakerFallthrough);
+
   const entry = apiOddsResponse[0];
   const bookmakers = entry.bookmakers ?? [];
 
   if (orderedBookmakerApiIds) {
+    const tried = new Set(
+      orderedBookmakerApiIds.map((id) => Number(id)).filter(Number.isFinite),
+    );
+
     for (const bkId of orderedBookmakerApiIds) {
       const bk = bookmakers.find((b) => Number(b.id) === Number(bkId));
       if (!bk) continue;
@@ -80,16 +97,24 @@ export function parseMarkets(apiOddsResponse, options = {}) {
       if (markets.length > 0) {
         return {
           fixtureId: entry.fixture?.id,
-          bookmakers: [
-            {
-              apiBookmakerId: bk.id,
-              name: bk.name,
-              markets,
-            },
-          ],
+          bookmakers: [toBookmakerPayload(bk, markets)],
         };
       }
     }
+
+    if (anyBookmakerFallthrough) {
+      for (const bk of bookmakers) {
+        if (tried.has(Number(bk.id))) continue;
+        const markets = mapBookmakerMarkets(bk, allowedMarketNames);
+        if (markets.length > 0) {
+          return {
+            fixtureId: entry.fixture?.id,
+            bookmakers: [toBookmakerPayload(bk, markets)],
+          };
+        }
+      }
+    }
+
     return { fixtureId: entry.fixture?.id, bookmakers: [] };
   }
 

@@ -6,6 +6,9 @@ import {
   getFixturesDaysAhead,
   getFixturesDaysBehind,
   getLookbackIntervalHours,
+  isOddsBulkByDateEnabled,
+  getOddsBulkIntervalHours,
+  getOddsHorizonDays,
 } from "../Config/ingestionConfig.js";
 
 /**
@@ -20,8 +23,9 @@ import {
  *   - Live score poll: 5s ≈ 17,280/day (one bulk {live:all} call per tick)
  *   - Near fixtures: cadence × FIXTURES_NEAR_WINDOW_DAYS calendar dates×sports upstream calls/tick
  *   - Deep fixtures: FIXTURES_DEEP_INTERVAL_HOURS × FIXTURES_DAYS_AHEAD span
+ *   - Bulk odds-by-date: ODDS_BULK_INTERVAL_HOURS × ~pages across horizon
  *   - Leagues metadata: weekly ≈ negligible
- *   - Odds tick: capped by API_SPORTS_DAILY_LIMIT and the negative cache
+ *   - Odds tick: capped by ODDS_DAILY_CALL_BUDGET + adaptive next_odds_check_at
  *
  * Every interval can be overridden through env vars so dev environments
  * can dial things down without touching code.
@@ -57,7 +61,7 @@ function toJobId(name) {
 }
 
 function buildRepeatables() {
-  return [
+  const jobs = [
     {
       queue: QUEUE_NAMES.LIVE,
       name: REPEATABLE_JOB_NAMES.LIVE_TICK,
@@ -175,6 +179,25 @@ function buildRepeatables() {
       },
     },
   ];
+
+  if (isOddsBulkByDateEnabled()) {
+    const bulkHours = getOddsBulkIntervalHours();
+    jobs.push({
+      queue: QUEUE_NAMES.ODDS,
+      name: REPEATABLE_JOB_NAMES.ODDS_BULK_BY_DATE,
+      data: {
+        horizonDays: getOddsHorizonDays(),
+        label: "scheduled",
+      },
+      opts: {
+        repeat: { every: bulkHours * HOURS },
+        // Suffix so changing ODDS_BULK_INTERVAL_HOURS replaces the stale repeatable.
+        jobId: `${toJobId(REPEATABLE_JOB_NAMES.ODDS_BULK_BY_DATE)}-h${bulkHours}`,
+      },
+    });
+  }
+
+  return jobs;
 }
 
 function isSameRepeatable(job, spec) {
@@ -231,26 +254,25 @@ async function ensureRepeatable(q, spec) {
 }
 
 /**
- * The bulk `/odds?date=` pipeline was removed; its repeatable persists in
- * Redis across deploys, so drop any leftover on startup or it keeps firing.
+ * When the bulk-by-date kill switch is off, remove any leftover repeatable
+ * so a previous enablement doesn't keep firing after restart.
  */
-const LEGACY_BULK_ODDS_JOB_NAME = "odds:bulk-by-date";
-
-async function removeLegacyBulkOddsRepeatable() {
+async function removeDisabledBulkOddsRepeatable() {
+  if (isOddsBulkByDateEnabled()) return;
   const q = getQueue(QUEUE_NAMES.ODDS);
   const list = await q.getRepeatableJobs();
   for (const job of list) {
-    if (job.name === LEGACY_BULK_ODDS_JOB_NAME) {
+    if (job.name === REPEATABLE_JOB_NAMES.ODDS_BULK_BY_DATE) {
       await q.removeRepeatableByKey(job.key);
       console.log(
-        `[scheduler] removed legacy repeatable "${job.name}" on "${q.name}"`,
+        `[scheduler] removed disabled repeatable "${job.name}" on "${q.name}"`,
       );
     }
   }
 }
 
 export async function startScheduler() {
-  await removeLegacyBulkOddsRepeatable();
+  await removeDisabledBulkOddsRepeatable();
   const repeatables = buildRepeatables();
   for (const r of repeatables) {
     const q = getQueue(r.queue);
@@ -267,7 +289,7 @@ export async function clearAllRepeatables() {
   const repeatables = buildRepeatables();
   const managedNames = new Set([
     ...repeatables.map((r) => r.name),
-    LEGACY_BULK_ODDS_JOB_NAME,
+    REPEATABLE_JOB_NAMES.ODDS_BULK_BY_DATE,
   ]);
   const queuesSeen = new Set();
   for (const r of [...repeatables, { queue: QUEUE_NAMES.ODDS }]) {

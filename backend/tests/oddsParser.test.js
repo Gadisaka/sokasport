@@ -44,6 +44,74 @@ test("parseMarkets picks first ordered bookmaker with non-empty markets", () => 
   assert.ok(parsed.bookmakers[0].markets.length > 0);
 });
 
+test("parseMarkets fallthrough picks first non-chain bookmaker with prices", () => {
+  const payload = [
+    {
+      fixture: { id: 1 },
+      bookmakers: [
+        {
+          id: 8,
+          name: "Preferred",
+          bets: [{ name: "Match Winner", values: [] }],
+        },
+        {
+          id: 11,
+          name: "Chain",
+          bets: [{ name: "Match Winner", values: [] }],
+        },
+        {
+          id: 47,
+          name: "Other",
+          bets: [
+            {
+              name: "Match Winner",
+              values: [{ value: "Home", odd: "1.90" }],
+            },
+          ],
+        },
+      ],
+    },
+  ];
+  const parsed = parseMarkets(payload, {
+    orderedBookmakerApiIds: [8, 11],
+    anyBookmakerFallthrough: true,
+    allowedMarketNames: null,
+  });
+  assert.equal(parsed.bookmakers.length, 1);
+  assert.equal(parsed.bookmakers[0].apiBookmakerId, 47);
+});
+
+test("parseMarkets without fallthrough returns empty when chain empty", () => {
+  const payload = [
+    {
+      fixture: { id: 1 },
+      bookmakers: [
+        {
+          id: 8,
+          name: "Preferred",
+          bets: [{ name: "Match Winner", values: [] }],
+        },
+        {
+          id: 47,
+          name: "Other",
+          bets: [
+            {
+              name: "Match Winner",
+              values: [{ value: "Home", odd: "1.90" }],
+            },
+          ],
+        },
+      ],
+    },
+  ];
+  const parsed = parseMarkets(payload, {
+    orderedBookmakerApiIds: [8],
+    anyBookmakerFallthrough: false,
+    allowedMarketNames: null,
+  });
+  assert.equal(parsed.bookmakers.length, 0);
+});
+
 test("parseMarkets legacy mode keeps multiple bookmakers when filter unset", () => {
   const parsed = parseMarkets(mkPayload(false), {
     orderedBookmakerApiIds: null,

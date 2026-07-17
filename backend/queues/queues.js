@@ -23,6 +23,7 @@ export const REPEATABLE_JOB_NAMES = {
   FIXTURES_FUTURE: "fixtures:future",
   FIXTURES_LOOKBACK: "fixtures:lookback",
   ODDS_TICK: "odds:tick",
+  ODDS_BULK_BY_DATE: "odds:bulk-by-date",
   LIVE_TICK: "live:tick",
   LIVE_SCORES_TICK: "live-scores:tick",
   LEAGUES_META: "leagues:meta",
