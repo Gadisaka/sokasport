@@ -14,6 +14,7 @@ import { prisma } from "../Config/db.js";
 import { logAuditEvent } from "../lib/auditLog.js";
 import { normalizePhoneOrNull } from "../lib/phone.js";
 import { validateUsername } from "../lib/username.js";
+import { unsetUserFields } from "../lib/sparseUserFields.js";
 
 /** Parse query param as positive integer; invalid values fall back to `fallback`. */
 function toPositiveInt(value, fallback) {
@@ -202,18 +203,23 @@ export async function createUser(req, res) {
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
+    const phoneNorm = normalizePhoneOrNull(phone);
 
     const created = await prisma.$transaction(async (tx) => {
+      // Omit optional sparse-unique fields when empty — never persist null
+      // (Mongo sparse unique indexes still index null values).
+      const data = {
+        fullname: String(fullname).trim(),
+        email: String(email).toLowerCase().trim(),
+        password: hashedPassword,
+        role_id: roleId,
+        status: Boolean(status),
+      };
+      if (staffUsername) data.username = staffUsername;
+      if (phoneNorm) data.phone = phoneNorm;
+
       const user = await tx.user.create({
-        data: {
-          username: staffUsername,
-          fullname: String(fullname).trim(),
-          email: String(email).toLowerCase().trim(),
-          phone: normalizePhoneOrNull(phone),
-          password: hashedPassword,
-          role_id: roleId,
-          status: Boolean(status),
-        },
+        data,
         include: { role: true },
       });
 
@@ -347,8 +353,10 @@ export async function updateUser(req, res) {
     }
 
     let nextUsername;
+    let clearUsername = false;
     if (nextRole.name === "PLAYER") {
-      nextUsername = null;
+      // Players must not keep a username field (even as null) for sparse uniqueness.
+      clearUsername = true;
       if (username != null && String(username).trim()) {
         return res.status(400).json({
           message: "Players cannot have a username",
@@ -366,14 +374,20 @@ export async function updateUser(req, res) {
       });
     }
 
+    let clearPhone = false;
+    let nextPhone;
+    if (phone !== undefined) {
+      nextPhone = normalizePhoneOrNull(phone);
+      if (!nextPhone) clearPhone = true;
+    }
+
     const updated = await prisma.$transaction(async (tx) => {
       const updateData = {};
 
       if (fullname !== undefined) updateData.fullname = String(fullname).trim();
       if (email !== undefined)
         updateData.email = String(email).toLowerCase().trim();
-      if (phone !== undefined)
-        updateData.phone = normalizePhoneOrNull(phone);
+      if (phone !== undefined && !clearPhone) updateData.phone = nextPhone;
       if (status !== undefined) updateData.status = Boolean(status);
       if (roleId !== undefined) updateData.role_id = String(roleId);
       if (nextUsername !== undefined) updateData.username = nextUsername;
@@ -474,7 +488,27 @@ export async function updateUser(req, res) {
       });
     });
 
-    const updatedUser = mapUser(updated);
+    // $unset outside the interactive tx — sparse fields must be absent, not null.
+    const fieldsToUnset = [];
+    if (clearUsername) fieldsToUnset.push("username");
+    if (clearPhone) fieldsToUnset.push("phone");
+    if (fieldsToUnset.length > 0) {
+      await unsetUserFields(prisma, userId, fieldsToUnset);
+    }
+
+    const refreshed =
+      fieldsToUnset.length > 0
+        ? await prisma.user.findUnique({
+            where: { id: userId },
+            include: {
+              role: true,
+              cashier_profile: true,
+              agent_assignments: true,
+            },
+          })
+        : updated;
+
+    const updatedUser = mapUser(refreshed);
     await logAuditEvent({
       req,
       action: "USER_UPDATED",

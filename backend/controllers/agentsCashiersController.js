@@ -13,6 +13,7 @@ import bcrypt from "bcrypt";
 import { prisma } from "../Config/db.js";
 import { logAuditEvent } from "../lib/auditLog.js";
 import { normalizePhoneOrNull } from "../lib/phone.js";
+import { unsetUserFields } from "../lib/sparseUserFields.js";
 import { validateUsername } from "../lib/username.js";
 
 function toPositiveInt(value, fallback) {
@@ -215,17 +216,20 @@ export async function createCashier(req, res) {
 
     const hashed = await bcrypt.hash(password, 10);
 
+    const phoneNorm = normalizePhoneOrNull(phone);
     const user = await prisma.$transaction(async (tx) => {
+      const createData = {
+        username: usernameResult.username,
+        fullname: String(fullname).trim(),
+        email: String(email).toLowerCase().trim(),
+        password: hashed,
+        role_id: cashierRole.id,
+        status: Boolean(status),
+      };
+      if (phoneNorm) createData.phone = phoneNorm;
+
       const created = await tx.user.create({
-        data: {
-          username: usernameResult.username,
-          fullname: String(fullname).trim(),
-          email: String(email).toLowerCase().trim(),
-          phone: normalizePhoneOrNull(phone),
-          password: hashed,
-          role_id: cashierRole.id,
-          status: Boolean(status),
-        },
+        data: createData,
       });
 
       const wallet = await tx.wallet.create({
@@ -318,6 +322,9 @@ export async function updateCashier(req, res) {
       return res.status(404).json({ message: "Cashier not found" });
     }
 
+    const clearPhone =
+      phone !== undefined && !normalizePhoneOrNull(phone);
+
     await prisma.$transaction(async (tx) => {
       const userData = {};
       if (username !== undefined) {
@@ -330,8 +337,10 @@ export async function updateCashier(req, res) {
       if (fullname !== undefined) userData.fullname = String(fullname).trim();
       if (email !== undefined)
         userData.email = String(email).toLowerCase().trim();
-      if (phone !== undefined)
-        userData.phone = normalizePhoneOrNull(phone);
+      if (phone !== undefined) {
+        const phoneNorm = normalizePhoneOrNull(phone);
+        if (phoneNorm) userData.phone = phoneNorm;
+      }
       if (status !== undefined) userData.status = Boolean(status);
       if (password) userData.password = await bcrypt.hash(password, 10);
 
@@ -375,6 +384,10 @@ export async function updateCashier(req, res) {
         });
       }
     });
+
+    if (clearPhone) {
+      await unsetUserFields(prisma, userId, ["phone"]);
+    }
 
     const updated = await prisma.user.findUnique({
       where: { id: userId },
@@ -525,19 +538,22 @@ export async function createAgent(req, res) {
       return res.status(500).json({ message: "AGENT role missing" });
 
     const hashed = await bcrypt.hash(password, 10);
+    const phoneNorm = normalizePhoneOrNull(phone);
 
     let createdAgentId = null;
     await prisma.$transaction(async (tx) => {
+      const createData = {
+        username: usernameResult.username,
+        fullname: String(fullname).trim(),
+        email: String(email).toLowerCase().trim(),
+        password: hashed,
+        role_id: agentRole.id,
+        status: Boolean(status),
+      };
+      if (phoneNorm) createData.phone = phoneNorm;
+
       const user = await tx.user.create({
-        data: {
-          username: usernameResult.username,
-          fullname: String(fullname).trim(),
-          email: String(email).toLowerCase().trim(),
-          phone: normalizePhoneOrNull(phone),
-          password: hashed,
-          role_id: agentRole.id,
-          status: Boolean(status),
-        },
+        data: createData,
       });
       createdAgentId = user.id;
 
@@ -607,6 +623,8 @@ export async function updateAgent(req, res) {
     }
 
     const data = {};
+    const clearPhone =
+      phone !== undefined && !normalizePhoneOrNull(phone);
     if (username !== undefined) {
       const usernameResult = validateUsername(username);
       if (!usernameResult.ok) {
@@ -616,12 +634,18 @@ export async function updateAgent(req, res) {
     }
     if (fullname !== undefined) data.fullname = String(fullname).trim();
     if (email !== undefined) data.email = String(email).toLowerCase().trim();
-    if (phone !== undefined) data.phone = normalizePhoneOrNull(phone);
+    if (phone !== undefined) {
+      const phoneNorm = normalizePhoneOrNull(phone);
+      if (phoneNorm) data.phone = phoneNorm;
+    }
     if (status !== undefined) data.status = Boolean(status);
     if (password) data.password = await bcrypt.hash(password, 10);
 
     if (Object.keys(data).length > 0) {
       await prisma.user.update({ where: { id: userId }, data });
+    }
+    if (clearPhone) {
+      await unsetUserFields(prisma, userId, ["phone"]);
     }
 
     const after = await prisma.user.findUnique({

@@ -2,7 +2,8 @@
  * Staff username helpers.
  *
  * Usernames are staff-only login identifiers: lowercase `[a-z0-9_]`, length 3–32.
- * Players must keep `username` null and continue logging in with phone.
+ * Players must omit `username` (field absent, not null) and log in with phone.
+ * Writing `username: null` breaks the Mongo sparse unique index on username.
  */
 
 const USERNAME_RE = /^[a-z0-9_]{3,32}$/;

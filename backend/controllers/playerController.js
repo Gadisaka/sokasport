@@ -35,6 +35,7 @@ import {
   welcomeBonusRef,
 } from "../lib/bonusEngine.js";
 import { normalizeEthiopiaPhone } from "../lib/phone.js";
+import { uniqueViolationMentions } from "../lib/sparseUserFields.js";
 
 const JWT_SECRET = process.env.JWT_SECRET;
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "1d";
@@ -86,9 +87,10 @@ export async function register(req, res) {
     const phoneNorm = normalizeEthiopiaPhone(phone);
 
     const user = await prisma.$transaction(async (tx) => {
+      // Omit `username` entirely — do not write `null`. Sparse unique indexes
+      // on username still index null values and would reject every later player.
       const newUser = await tx.user.create({
         data: {
-          username: null,
           fullname: String(fullname).trim(),
           phone: phoneNorm,
           email: `${phoneNorm}@player.local`,
@@ -143,9 +145,16 @@ export async function register(req, res) {
     });
   } catch (error) {
     if (error?.code === "P2002") {
-      return res
-        .status(409)
-        .json({ message: "Phone number already registered" });
+      if (
+        uniqueViolationMentions(error, "phone") ||
+        uniqueViolationMentions(error, "email")
+      ) {
+        return res
+          .status(409)
+          .json({ message: "Phone number already registered" });
+      }
+      console.error("register unique violation:", error?.meta ?? error);
+      return res.status(409).json({ message: "Account already exists" });
     }
     console.error("register error:", error);
     return res.status(500).json({ message: "Registration failed" });

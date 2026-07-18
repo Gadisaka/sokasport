@@ -13,6 +13,7 @@
 
 import { prisma } from "../Config/db.js";
 import { suggestUsernameFromUser } from "../lib/username.js";
+import { unsetUserFields } from "../lib/sparseUserFields.js";
 
 const APPLY = process.argv.includes("--apply");
 
@@ -71,10 +72,8 @@ async function backfillStaffUsernames() {
           `[backfill-usernames] PLAYER ${user.id} has username=${user.username} — clearing`,
         );
         if (APPLY) {
-          await prisma.user.update({
-            where: { id: user.id },
-            data: { username: null },
-          });
+          // $unset — never write username:null (breaks sparse unique index).
+          await unsetUserFields(prisma, user.id, ["username"]);
         }
         taken.delete(user.username);
         updated += 1;
