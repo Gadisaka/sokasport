@@ -5,7 +5,7 @@
  *   - AES-256-CBC
  *   - key = Buffer.from(MRX_ENCRYPTION_KEY.slice(0, 64), "hex")
  *   - token = "<iv_hex>:<ciphertext_hex>"
- *   - payload = { phone, name, timestamp } (phone as stored / passed in)
+ *   - payload = { phone, name, balance, timestamp } (phone as stored / passed in)
  *
  * @module lib/mrxSso
  */
@@ -36,13 +36,20 @@ export function getMrxEncryptionKeyBuffer() {
 /**
  * Build and encrypt an SSO token for MRX game launch.
  *
- * @param {{ phone: string, name: string, timestamp?: number }} player
+ * @param {{ phone: string, name: string, balance?: number, timestamp?: number }} player
  * @returns {string} iv_hex:ciphertext_hex
  */
-export function encryptMrxSsoToken({ phone, name, timestamp = Date.now() }) {
+export function encryptMrxSsoToken({
+  phone,
+  name,
+  balance = 0,
+  timestamp = Date.now(),
+}) {
+  const numericBalance = Number(balance);
   const payload = JSON.stringify({
     phone,
     name: name || phone,
+    balance: Number.isFinite(numericBalance) ? numericBalance : 0,
     timestamp,
   });
 
@@ -61,7 +68,7 @@ export function encryptMrxSsoToken({ phone, name, timestamp = Date.now() }) {
  * Decrypt an SSO token (used in tests / local verification).
  *
  * @param {string} ssoToken
- * @returns {{ phone: string, name: string, timestamp: number }}
+ * @returns {{ phone: string, name: string, balance: number, timestamp: number }}
  */
 export function decryptMrxSsoToken(ssoToken) {
   const [ivHex, cipherHex] = String(ssoToken ?? "").split(":");

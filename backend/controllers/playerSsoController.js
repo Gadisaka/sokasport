@@ -43,10 +43,22 @@ export async function generateSsoToken(req, res) {
       });
     }
 
-    // Same shape as MRX playerSso.js: phone as stored, name, timestamp
+    const wallet = await prisma.wallet.findFirst({
+      where: { user_id: userId, wallet_type: "PLAYER" },
+      select: { balance: true },
+    });
+    if (!wallet) {
+      return res.status(400).json({
+        success: false,
+        message: "No player wallet on this account.",
+      });
+    }
+
+    // Payload: phone, name, balance, timestamp
     const ssoToken = encryptMrxSsoToken({
       phone: player.phone,
       name: player.fullname || player.phone,
+      balance: Number(wallet.balance),
     });
 
     return res.json({ success: true, ssoToken });

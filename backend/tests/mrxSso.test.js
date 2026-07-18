@@ -44,11 +44,13 @@ test("round-trip preserves phone as passed (no reformatting)", () => {
   const token = encryptMrxSsoToken({
     phone: "251911223344",
     name: "Abebe Kebede",
+    balance: 1060,
     timestamp,
   });
   const payload = decryptMrxSsoToken(token);
   assert.equal(payload.phone, "251911223344");
   assert.equal(payload.name, "Abebe Kebede");
+  assert.equal(payload.balance, 1060);
   assert.equal(payload.timestamp, timestamp);
 });
 
@@ -61,6 +63,7 @@ test("payload uses name fallback to phone when name empty", () => {
   const payload = decryptMrxSsoToken(token);
   assert.equal(payload.phone, "0911223344");
   assert.equal(payload.name, "0911223344");
+  assert.equal(payload.balance, 0);
 });
 
 test("falls back to default key when env unset", () => {
@@ -68,10 +71,23 @@ test("falls back to default key when env unset", () => {
   const token = encryptMrxSsoToken({
     phone: "0911223344",
     name: "Player",
+    balance: 250.5,
     timestamp: 42,
   });
   const payload = decryptMrxSsoToken(token);
   assert.equal(payload.phone, "0911223344");
+  assert.equal(payload.balance, 250.5);
   assert.equal(payload.timestamp, 42);
   process.env.MRX_ENCRYPTION_KEY = TEST_KEY;
+});
+
+test("round-trip preserves balance field", () => {
+  const token = encryptMrxSsoToken({
+    phone: "251911556677",
+    name: "Test Player",
+    balance: 1000,
+    timestamp: 99,
+  });
+  const payload = decryptMrxSsoToken(token);
+  assert.equal(payload.balance, 1000);
 });
