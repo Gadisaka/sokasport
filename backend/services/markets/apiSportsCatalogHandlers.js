@@ -690,6 +690,112 @@ reg("WIN_TO_NIL", {
   },
 });
 
+// ---------------------------------------------------------------------------
+// Double Chance combos. The DC leg is itself slash-compound ("Home/Draw"), so
+// labels like "Home/Draw/Over 2.5" / "1X/Yes" / "Home/Draw and Over 2.5" need
+// a prefix-aware parse before the BTTS/total remainder is graded.
+// ---------------------------------------------------------------------------
+function normalizeDcCombination(raw) {
+  const key = String(raw || "").trim().toUpperCase().replace(/\s+/g, " ");
+  if (
+    key === "1X" ||
+    key === "X1" ||
+    key === "HOME/DRAW" ||
+    key === "HOME OR DRAW" ||
+    key === "HOME_OR_DRAW"
+  ) {
+    return "1X";
+  }
+  if (
+    key === "12" ||
+    key === "21" ||
+    key === "HOME/AWAY" ||
+    key === "HOME OR AWAY" ||
+    key === "HOME_OR_AWAY"
+  ) {
+    return "12";
+  }
+  if (
+    key === "X2" ||
+    key === "2X" ||
+    key === "DRAW/AWAY" ||
+    key === "DRAW OR AWAY" ||
+    key === "DRAW_OR_AWAY"
+  ) {
+    return "X2";
+  }
+  return null;
+}
+
+/** Longest-prefix match so "Home/Draw/…" wins over a bare "Home". */
+function parseDcCombo(label) {
+  const raw = String(label || "").trim();
+  if (!raw) return null;
+  const prefixes = [
+    { re: /^(home\s*\/\s*draw|home\s+or\s+draw|1x|x1)(?=\s*(?:\/|and|&)|\s|$)/i, combination: "1X" },
+    { re: /^(home\s*\/\s*away|home\s+or\s+away|12|21)(?=\s*(?:\/|and|&)|\s|$)/i, combination: "12" },
+    { re: /^(draw\s*\/\s*away|draw\s+or\s+away|x2|2x)(?=\s*(?:\/|and|&)|\s|$)/i, combination: "X2" },
+  ];
+  for (const { re, combination } of prefixes) {
+    const m = raw.match(re);
+    if (!m) continue;
+    let rest = raw.slice(m[0].length).trim();
+    rest = rest.replace(/^(?:\/|\s*(?:and|&)\s*)/i, "").trim();
+    if (!rest) return null;
+    return { combination, rest };
+  }
+  return null;
+}
+
+// Double Chance / Both Teams To Score (e.g. "1X/Yes", "Home/Draw/Yes", "Home/Draw and Yes")
+function dcBttsValidate(params, ctx) {
+  const parsed = parseDcCombo(ctx?.label || "");
+  const combination = normalizeDcCombination(params?.combination ?? parsed?.combination);
+  const bttsPick = bttsOf(params?.btts ?? parsed?.rest);
+  if (!combination || !bttsPick) {
+    throw new ValidationError("invalid_combo", { field: "combo" });
+  }
+  return { combination, btts: bttsPick };
+}
+reg("DOUBLE_CHANCE_BTTS_FT", {
+  validate: dcBttsValidate,
+  canEvaluate: ftCanEval,
+  evaluate(sel, mr) {
+    const p = resolveParamsViaValidate(sel, dcBttsValidate);
+    if (!p) return { result: "VOID", reason: "invalid_combo" };
+    return combo(
+      doubleChance.evaluate({ market_params: { combination: p.combination } }, mr).result,
+      btts.evaluate({ market_params: { pick: p.btts } }, mr).result,
+    );
+  },
+});
+
+// Double Chance / Total (e.g. "1X/Over 2.5", "Home/Draw/Over 2.5", "Home/Draw and Over 2.5")
+function dcTotalValidate(params, ctx) {
+  const parsed = parseDcCombo(ctx?.label || "");
+  const combination = normalizeDcCombination(params?.combination ?? parsed?.combination);
+  const rest = parsed?.rest ?? "";
+  const ouSide = ouOf(params?.ouSide ?? rest);
+  const line =
+    params?.line != null ? Number(params.line) : numFrom(rest);
+  if (!combination || !ouSide || line == null || !Number.isFinite(line)) {
+    throw new ValidationError("invalid_combo", { field: "combo" });
+  }
+  return { combination, ouSide, line };
+}
+reg("DOUBLE_CHANCE_TOTAL_FT", {
+  validate: dcTotalValidate,
+  canEvaluate: ftCanEval,
+  evaluate(sel, mr) {
+    const p = resolveParamsViaValidate(sel, dcTotalValidate);
+    if (!p) return { result: "VOID", reason: "invalid_combo" };
+    return combo(
+      doubleChance.evaluate({ market_params: { combination: p.combination } }, mr).result,
+      overUnder.evaluate({ market_params: { side: p.ouSide, line: p.line } }, mr).result,
+    );
+  },
+});
+
 reg("APISPORTS_UNSUPPORTED_SPORT", {
   validate: (params) =>
     params && typeof params === "object" ? { ...params } : {},

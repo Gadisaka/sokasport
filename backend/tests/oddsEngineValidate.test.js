@@ -4,6 +4,22 @@ import assert from "node:assert/strict";
 import { validatePlacementSelections } from "../services/odds-engine/validateSelections.js";
 
 function makePrisma({ fixtures = [], oddLines = [] }) {
+  // Synthetic market ids so resolveOdds can join fixtureMarket → oddLines.
+  const marketsByKey = new Map();
+  for (const row of oddLines) {
+    const key = `${row.fixtureId}::${row.marketName}`;
+    if (!marketsByKey.has(key)) {
+      marketsByKey.set(key, {
+        id: `mkt-${marketsByKey.size + 1}`,
+        name: row.marketName,
+        fixture_id: row.fixtureId,
+      });
+    }
+  }
+  const marketIdByKey = new Map(
+    [...marketsByKey.entries()].map(([k, m]) => [k, m.id]),
+  );
+
   return {
     fixture: {
       findMany: async ({ where }) => {
@@ -11,19 +27,38 @@ function makePrisma({ fixtures = [], oddLines = [] }) {
         return fixtures.filter((f) => ids.includes(f.api_fixture_id));
       },
     },
+    fixtureMarket: {
+      findMany: async ({ where }) => {
+        const fixtureId = where?.fixture_id;
+        const names = where?.name?.in || [];
+        return [...marketsByKey.values()].filter(
+          (m) =>
+            m.fixture_id === fixtureId &&
+            (names.length === 0 || names.includes(m.name)),
+        );
+      },
+    },
     fixtureOddLine: {
       findMany: async ({ where }) => {
-        const fixtureIds = where?.market?.fixture_id?.in || [];
+        const marketIds = where?.market_id?.in || [];
         const valueFilter = where?.value;
         const values = Array.isArray(valueFilter?.in)
           ? valueFilter.in
           : [valueFilter].filter(Boolean);
+        // Legacy path (market.fixture_id.in) kept for older assertions.
+        const fixtureIds = where?.market?.fixture_id?.in || [];
         return oddLines
-          .filter(
-            (row) =>
-              fixtureIds.includes(row.fixtureId) &&
-              (values.length === 0 || values.includes(row.value)),
-          )
+          .filter((row) => {
+            const key = `${row.fixtureId}::${row.marketName}`;
+            const marketId = marketIdByKey.get(key);
+            const byMarket =
+              marketIds.length === 0 || marketIds.includes(marketId);
+            const byFixture =
+              fixtureIds.length === 0 || fixtureIds.includes(row.fixtureId);
+            const byValue =
+              values.length === 0 || values.includes(row.value);
+            return byMarket && byFixture && byValue;
+          })
           .map((row) => ({
             odd: row.odd,
             value: row.value,
@@ -352,4 +387,82 @@ test("validatePlacementSelections resolves DOUBLE_CHANCE via marketCode + combin
 
   assert.equal(out.ok, true);
   assert.equal(out.code, "ok");
+});
+
+test("validatePlacementSelections resolves DC combo labels uppercased by UI against stored values", async () => {
+  const prev = process.env.MARKET_ALLOWLIST_PHASE;
+  process.env.MARKET_ALLOWLIST_PHASE = "score";
+  try {
+    const cases = [
+      {
+        marketLabel: "Double Chance/Both Teams To Score",
+        label: "HOME/DRAW/YES",
+        value: "Home/Draw/Yes",
+        odd: 2.4,
+      },
+      {
+        marketLabel: "Double Chance/Both Teams To Score",
+        label: "1X/YES",
+        value: "Home/Draw/Yes",
+        odd: 2.4,
+      },
+      {
+        marketLabel: "Double Chance/Total",
+        label: "HOME/DRAW/OVER 2.5",
+        value: "Home/Draw/Over 2.5",
+        odd: 3.1,
+      },
+      {
+        marketLabel: "Double Chance/Total",
+        label: "1X AND OVER 2.5",
+        value: "Home/Draw and Over 2.5",
+        odd: 3.2,
+      },
+    ];
+
+    for (const { marketLabel, label, value, odd } of cases) {
+      const prisma = makePrisma({
+        fixtures: [
+          {
+            id: "fx1",
+            api_fixture_id: 11,
+            status: "NS",
+            start_time: new Date(Date.now() + 60_000),
+          },
+        ],
+        oddLines: [
+          {
+            fixtureId: "fx1",
+            marketName: marketLabel,
+            value,
+            odd,
+            bookmaker: { api_bookmaker_id: 8 },
+          },
+        ],
+      });
+
+      const out = await validatePlacementSelections({
+        prismaClient: prisma,
+        rawSelections: [
+          {
+            apiFixtureId: 11,
+            marketLabel,
+            label,
+            odds: odd,
+          },
+        ],
+        live: false,
+      });
+
+      assert.equal(
+        out.ok,
+        true,
+        `${marketLabel} ${label} → ${value} (code=${out.code} reason=${out.reason || ""})`,
+      );
+      assert.equal(out.code, "ok", `${marketLabel} ${label}`);
+    }
+  } finally {
+    if (prev === undefined) delete process.env.MARKET_ALLOWLIST_PHASE;
+    else process.env.MARKET_ALLOWLIST_PHASE = prev;
+  }
 });

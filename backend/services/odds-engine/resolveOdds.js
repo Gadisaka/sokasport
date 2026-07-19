@@ -31,6 +31,8 @@ const COMBO_MARKET_NAMES_BY_CODE = {
     "Halftime Result/Total Goals",
   ],
   TOTAL_GOALS_BTTS: ["Total Goals/Both Teams To Score"],
+  DOUBLE_CHANCE_BTTS_FT: ["Double Chance/Both Teams To Score"],
+  DOUBLE_CHANCE_TOTAL_FT: ["Double Chance/Total"],
 };
 
 export function buildSelectionCandidates({
@@ -120,13 +122,37 @@ export function buildSelectionCandidates({
     }
   }
 
-  // Combination markets (Result/BTTS, Result/Total, Total/BTTS): the UI
-  // uppercases labels on click while ingestion stores provider casing and
-  // abbreviated API-Sports strings. Without alias expansion every combo leg
-  // resolves to no odd line → market_suspended.
-  if (raw.includes("/")) {
+  // Combination markets (Result/BTTS, Result/Total, Total/BTTS, DC combos):
+  // the UI uppercases labels on click while ingestion stores provider casing
+  // and abbreviated API-Sports strings. Without alias expansion every combo
+  // leg resolves to no odd line → market_suspended. Also expand "and"/"&"
+  // DC forms (no slash) and code-driven DC combo labels.
+  const isDcComboCode =
+    code === "DOUBLE_CHANCE_BTTS_FT" || code === "DOUBLE_CHANCE_TOTAL_FT";
+  if (
+    raw.includes("/") ||
+    /\band\b/i.test(raw) ||
+    raw.includes("&") ||
+    isDcComboCode
+  ) {
     for (const alias of expandCompoundSelectionCandidates(raw)) {
       candidates.add(alias);
+    }
+  }
+
+  // DC combo carried via market params — expand combination × second-leg
+  // into the stored provider value strings.
+  if (isDcComboCode && combination) {
+    const bttsPick = String(marketParams?.btts || "").toUpperCase().trim();
+    const ouSide = String(marketParams?.ouSide || "").toUpperCase().trim();
+    const line = marketParams?.line;
+    let synthetic = null;
+    if (bttsPick) synthetic = `${combination}/${bttsPick}`;
+    else if (ouSide && line != null) synthetic = `${combination}/${ouSide} ${line}`;
+    if (synthetic) {
+      for (const alias of expandCompoundSelectionCandidates(synthetic)) {
+        candidates.add(alias);
+      }
     }
   }
 
@@ -146,7 +172,14 @@ export function buildMarketNameCandidates({ marketLabel, marketCode }) {
   ) {
     for (const n of MATCH_WINNER_MARKET_NAMES) names.add(n);
   }
-  if (code === "DOUBLE_CHANCE" || label.toLowerCase().includes("double chance")) {
+  // Plain Double Chance only — do not pull DC combo markets into the plain
+  // "Double Chance" name set (would risk matching the wrong market).
+  if (
+    code === "DOUBLE_CHANCE" ||
+    (/^double chance$/i.test(label) &&
+      code !== "DOUBLE_CHANCE_TOTAL_FT" &&
+      code !== "DOUBLE_CHANCE_BTTS_FT")
+  ) {
     for (const n of DOUBLE_CHANCE_MARKET_NAMES) names.add(n);
   }
   const comboNames = COMBO_MARKET_NAMES_BY_CODE[code];
@@ -162,6 +195,12 @@ export function buildMarketNameCandidates({ marketLabel, marketCode }) {
   }
   if (/total goals\/both teams/i.test(labelLower)) {
     for (const n of COMBO_MARKET_NAMES_BY_CODE.TOTAL_GOALS_BTTS) names.add(n);
+  }
+  if (/double chance\/both teams/i.test(labelLower)) {
+    for (const n of COMBO_MARKET_NAMES_BY_CODE.DOUBLE_CHANCE_BTTS_FT) names.add(n);
+  }
+  if (/double chance\/total/i.test(labelLower)) {
+    for (const n of COMBO_MARKET_NAMES_BY_CODE.DOUBLE_CHANCE_TOTAL_FT) names.add(n);
   }
   return [...names].filter(Boolean);
 }

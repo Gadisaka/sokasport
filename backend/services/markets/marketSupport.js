@@ -65,6 +65,7 @@ export const REAL_GRADER_CODES = new Set([
   "SHOTS_ON_TARGET_TEAM_HOME", "SHOTS_ON_TARGET_TEAM_AWAY",
   // Combination markets (score-derived AND of two outcomes).
   "RESULT_TOTAL_FT", "TOTAL_GOALS_BTTS", "RESULT_BTTS_FT", "WIN_TO_NIL",
+  "DOUBLE_CHANCE_TOTAL_FT", "DOUBLE_CHANCE_BTTS_FT",
 ]);
 
 // Base goals/result graders (decide off the goal score only). A stat-qualified
@@ -192,6 +193,8 @@ const PROVIDER_NAME_TO_CODE = new Map([
   ["results/both teams score", "RESULT_BTTS_FT"],
   ["result/both teams score", "RESULT_BTTS_FT"],
   ["win to nil", "WIN_TO_NIL"],
+  ["double chance/total", "DOUBLE_CHANCE_TOTAL_FT"],
+  ["double chance/both teams to score", "DOUBLE_CHANCE_BTTS_FT"],
 
   // --- LIVE odds/live/bets display names (Tier E) ---
   // Mapped to the SAME canonical graders; only names whose SCOPE exactly matches

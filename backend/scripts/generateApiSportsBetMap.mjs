@@ -51,6 +51,8 @@ function guess(name) {
   if (/^exact score$/i.test(name)) return "CORRECT_SCORE";
   if (/double chance.*first half/i.test(s)) return "DOUBLE_CHANCE_HT";
   if (/double chance.*second half/i.test(s)) return "DOUBLE_CHANCE_SH";
+  if (/double chance\/total/i.test(s)) return "DOUBLE_CHANCE_TOTAL_FT";
+  if (/double chance\/both/i.test(s)) return "DOUBLE_CHANCE_BTTS_FT";
   if (/double chance/i.test(s) && /\d/.test(name)) return "APISPORTS_TIME_WINDOW"; // DC 0-15m etc.
   if (/double chance/i.test(s)) return "DOUBLE_CHANCE";
   if (/first half winner/i.test(s)) return "HALF_TIME_RESULT";

@@ -58,6 +58,29 @@ test("combo VOIDs when a leg pushes (whole-line total)", () => {
   assert.equal(gc("RESULT_TOTAL_FT", {}, "Home/Over 3", 2, 1), "VOID");
 });
 
+test("DOUBLE_CHANCE/BTTS: 1X/Yes and Home/Draw/Yes", () => {
+  // 1X = home or draw; Yes = both scored.
+  assert.equal(gc("DOUBLE_CHANCE_BTTS_FT", {}, "1X/Yes", 2, 1), "WON"); // home + both
+  assert.equal(gc("DOUBLE_CHANCE_BTTS_FT", {}, "Home/Draw/Yes", 1, 1), "WON"); // draw + both
+  assert.equal(gc("DOUBLE_CHANCE_BTTS_FT", {}, "1X/Yes", 0, 2), "LOST"); // away win
+  assert.equal(gc("DOUBLE_CHANCE_BTTS_FT", {}, "Home/Draw/Yes", 2, 0), "LOST"); // 1X ok, BTTS no
+  assert.equal(gc("DOUBLE_CHANCE_BTTS_FT", {}, "X2/No", 0, 1), "WON"); // away + not both
+  assert.equal(gc("DOUBLE_CHANCE_BTTS_FT", {}, "Home/Draw and Yes", 2, 1), "WON");
+});
+
+test("DOUBLE_CHANCE/TOTAL: 1X/Over 2.5 and Home/Draw/Over 2.5", () => {
+  assert.equal(gc("DOUBLE_CHANCE_TOTAL_FT", {}, "1X/Over 2.5", 3, 1), "WON"); // home + 4
+  assert.equal(gc("DOUBLE_CHANCE_TOTAL_FT", {}, "Home/Draw/Over 2.5", 2, 1), "WON"); // home + 3
+  assert.equal(gc("DOUBLE_CHANCE_TOTAL_FT", {}, "Home/Draw/Over 2.5", 1, 1), "LOST"); // draw but only 2 goals
+  assert.equal(gc("DOUBLE_CHANCE_TOTAL_FT", {}, "1X/Over 2.5", 1, 0), "LOST"); // 1X ok, under
+  assert.equal(gc("DOUBLE_CHANCE_TOTAL_FT", {}, "12/Under 2.5", 0, 1), "WON"); // away + 1
+  assert.equal(gc("DOUBLE_CHANCE_TOTAL_FT", {}, "Home/Draw and Over 2.5", 3, 0), "WON");
+});
+
+test("DOUBLE_CHANCE/TOTAL VOIDs when total leg pushes", () => {
+  assert.equal(gc("DOUBLE_CHANCE_TOTAL_FT", {}, "1X/Over 3", 2, 1), "VOID");
+});
+
 test("name-only round-trip: combos resolve under score phase + grade", () => {
   const prev = process.env.MARKET_ALLOWLIST_PHASE;
   process.env.MARKET_ALLOWLIST_PHASE = "score";
@@ -68,6 +91,10 @@ test("name-only round-trip: combos resolve under score phase + grade", () => {
       ["Total Goals/Both Teams To Score", "U/YES 2.5", "TOTAL_GOALS_BTTS"],
       ["Results/Both Teams Score", "Home/Yes", "RESULT_BTTS_FT"],
       ["Win to Nil", "Home", "WIN_TO_NIL"],
+      ["Double Chance/Both Teams To Score", "1X/Yes", "DOUBLE_CHANCE_BTTS_FT"],
+      ["Double Chance/Both Teams To Score", "Home/Draw/Yes", "DOUBLE_CHANCE_BTTS_FT"],
+      ["Double Chance/Total", "1X/Over 2.5", "DOUBLE_CHANCE_TOTAL_FT"],
+      ["Double Chance/Total", "Home/Draw and Over 2.5", "DOUBLE_CHANCE_TOTAL_FT"],
     ]) {
       const r = classifySelectionSupport({ marketLabel: name, label, selection: label }, { mode: "strict" });
       assert.equal(r.ok, true, `${name}: ${r.reason}`);

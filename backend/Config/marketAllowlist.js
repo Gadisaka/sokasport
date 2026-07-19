@@ -100,6 +100,8 @@ export const CODES_SCORE = Object.freeze([
   "TOTAL_GOALS_BTTS",
   "RESULT_BTTS_FT",
   "WIN_TO_NIL",
+  "DOUBLE_CHANCE_TOTAL_FT",
+  "DOUBLE_CHANCE_BTTS_FT",
 ]);
 
 // HALF-TIME markets: need ht_home_score/ht_away_score ingested (Tier C). Enable

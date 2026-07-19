@@ -3,6 +3,10 @@
  * The UI uppercases labels on click ("HOME/YES") while ingestion keeps provider
  * casing ("Home/Yes") and abbreviated variants ("1/O 2.5", "U/YES 2.5").
  * Mirrors the parsing helpers in apiSportsCatalogHandlers.js combo validators.
+ *
+ * Double Chance combos need special handling: the DC leg is itself slash-compound
+ * ("Home/Draw"), so labels like "Home/Draw/Yes" / "1X and Over 2.5" have more
+ * than two slash parts or use "and"/"&" separators.
  */
 
 const SIDE_FORMS = {
@@ -17,6 +21,11 @@ const OU_FORMS = {
 const BTTS_FORMS = {
   YES: ["Yes", "Y"],
   NO: ["No", "N"],
+};
+const DC_FORMS = {
+  "1X": ["1X", "Home/Draw", "Home or Draw"],
+  "12": ["12", "Home/Away", "Home or Away"],
+  X2: ["X2", "Draw/Away", "Draw or Away"],
 };
 
 function side3(s) {
@@ -64,14 +73,85 @@ function addForms(set, forms) {
   for (const f of forms) addCaseVariants(set, f);
 }
 
+/** Longest-prefix match so "Home/Draw/…" wins over a bare "Home". */
+function parseDcCombo(label) {
+  const raw = String(label || "").trim();
+  if (!raw) return null;
+  const prefixes = [
+    { re: /^(home\s*\/\s*draw|home\s+or\s+draw|1x|x1)(?=\s*(?:\/|and|&)|\s|$)/i, combination: "1X" },
+    { re: /^(home\s*\/\s*away|home\s+or\s+away|12|21)(?=\s*(?:\/|and|&)|\s|$)/i, combination: "12" },
+    { re: /^(draw\s*\/\s*away|draw\s+or\s+away|x2|2x)(?=\s*(?:\/|and|&)|\s|$)/i, combination: "X2" },
+  ];
+  for (const { re, combination } of prefixes) {
+    const m = raw.match(re);
+    if (!m) continue;
+    let rest = raw.slice(m[0].length).trim();
+    rest = rest.replace(/^(?:\/|\s*(?:and|&)\s*)/i, "").trim();
+    if (!rest) return null;
+    return { combination, rest };
+  }
+  return null;
+}
+
+function expandDcComboCandidates(label, out) {
+  const parsed = parseDcCombo(label);
+  if (!parsed) return;
+  const dcForms = DC_FORMS[parsed.combination];
+  if (!dcForms) return;
+
+  const btts = bttsOf(parsed.rest);
+  if (btts) {
+    const forms = [];
+    for (const dc of dcForms) {
+      for (const b of BTTS_FORMS[btts]) {
+        forms.push(`${dc}/${b}`);
+        forms.push(`${dc} and ${b}`);
+        forms.push(`${dc} & ${b}`);
+      }
+    }
+    addForms(out, forms);
+    return;
+  }
+
+  const ouSide = ouOf(parsed.rest);
+  const line = numFrom(parsed.rest);
+  if (ouSide && line != null) {
+    const forms = [];
+    const fullOu = ouSide === "OVER" ? "Over" : "Under";
+    for (const dc of dcForms) {
+      for (const o of OU_FORMS[ouSide]) {
+        forms.push(`${dc}/${fullOu} ${line}`);
+        forms.push(`${dc}/${o} ${line}`);
+        forms.push(`${dc} and ${fullOu} ${line}`);
+        forms.push(`${dc} & ${fullOu} ${line}`);
+        forms.push(`${dc} and ${o} ${line}`);
+        forms.push(`${dc} & ${o} ${line}`);
+      }
+    }
+    addForms(out, forms);
+  }
+}
+
 export function expandCompoundSelectionCandidates(raw) {
   const label = String(raw || "").trim();
-  if (!label.includes("/")) return [];
+  if (!label) return [];
 
   const out = new Set();
-  const parts = label.split("/");
 
-  if (parts.length !== 2) return [];
+  // DC combos first — handles 3+ slash parts and "and"/"&" separators.
+  if (
+    label.includes("/") ||
+    /\band\b/i.test(label) ||
+    label.includes("&") ||
+    /^(1x|x2|12)\b/i.test(label)
+  ) {
+    expandDcComboCandidates(label, out);
+  }
+
+  if (!label.includes("/")) return [...out];
+
+  const parts = label.split("/");
+  if (parts.length !== 2) return [...out];
 
   const [p0, p1] = parts;
 
