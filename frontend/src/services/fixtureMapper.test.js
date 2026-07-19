@@ -194,6 +194,61 @@ describe("mapFixtureToMatch summary strip", () => {
     expect(match.detailedOdds.extra).toHaveLength(0);
   });
 
+  it("puts Double Chance combo markets in extra, not the summary strip", () => {
+    const match = mapFixtureToMatch({
+      ...baseFx(),
+      markets: [
+        {
+          name: "Match Winner",
+          odd_lines: [
+            { value: "Home", odd: 2.1 },
+            { value: "Draw", odd: 3.2 },
+            { value: "Away", odd: 4.3 },
+          ],
+        },
+        {
+          name: "Double Chance",
+          odd_lines: [
+            { value: "Home/Draw", odd: 1.4 },
+            { value: "Draw/Away", odd: 1.5 },
+            { value: "Home/Away", odd: 1.6 },
+          ],
+        },
+        {
+          name: "Double Chance/Total",
+          odd_lines: [
+            { value: "Home/Draw/Over 2.5", odd: 2.8 },
+            { value: "Home/Draw/Under 2.5", odd: 1.9 },
+          ],
+        },
+        {
+          name: "Double Chance/Both Teams To Score",
+          odd_lines: [
+            { value: "Home/Draw/Yes", odd: 2.4 },
+            { value: "Home/Draw/No", odd: 2.1 },
+          ],
+        },
+      ],
+    });
+
+    expect(match.markets.map((m) => m.id)).toEqual([
+      "1",
+      "x",
+      "2",
+      "1x",
+      "x2",
+      "12",
+    ]);
+    expect(match.detailedOdds.main.map((m) => m.category)).toEqual([
+      "Match Winner",
+      "Double Chance",
+    ]);
+    expect(match.detailedOdds.extra.map((m) => m.category)).toEqual([
+      "Double Chance/Total",
+      "Double Chance/Both Teams To Score",
+    ]);
+  });
+
   it("falls back to total priced odd cells when extra_markets_count is absent", () => {
     const match = mapFixtureToMatch({
       ...baseFx(),

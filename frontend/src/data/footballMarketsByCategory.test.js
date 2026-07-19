@@ -6,6 +6,17 @@ import {
 } from "./footballMarketsByCategory.js";
 
 describe("getTabsForMarketName", () => {
+  it("maps Double Chance combo markets to combination", () => {
+    expect(
+      getTabsForMarketName("Double Chance/Total").has("combination"),
+    ).toBe(true);
+    expect(
+      getTabsForMarketName("Double Chance/Both Teams To Score").has(
+        "combination",
+      ),
+    ).toBe(true);
+  });
+
   it("maps Match Winner to main-market", () => {
     expect(getTabsForMarketName("Match Winner").has("main-market")).toBe(true);
   });

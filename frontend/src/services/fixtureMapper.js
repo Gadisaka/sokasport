@@ -108,22 +108,38 @@ function toDetailedOdds(markets = []) {
  * `toSummaryMarkets` builds the compact strip using `toCategoryOdds` per market
  * (first priced line wins per selection label).
  */
+function isPlainMatchWinnerName(name) {
+  const n = String(name || "").toLowerCase().trim();
+  return (
+    n === "match winner" ||
+    n === "1x2" ||
+    n === "fulltime result" ||
+    n === "full time result" ||
+    n === "match result"
+  );
+}
+
+/** Exact plain Double Chance only — not "Double Chance/Total" etc. */
+function isPlainDoubleChanceName(name) {
+  return String(name || "").toLowerCase().trim() === "double chance";
+}
+
 function toSummaryMarkets(markets = []) {
   const map = {};
 
   for (const market of markets) {
-    const name = String(market.name || "").toLowerCase();
-    if (!name.includes("match winner") && !name.includes("double chance"))
-      continue;
+    const isMw = isPlainMatchWinnerName(market.name);
+    const isDc = isPlainDoubleChanceName(market.name);
+    if (!isMw && !isDc) continue;
 
     const lines = toCategoryOdds(market.odd_lines || []);
 
     for (const { id, value } of lines) {
       const key = String(id).toLowerCase();
-      if (name.includes("match winner") && ["1", "x", "2"].includes(key)) {
+      if (isMw && ["1", "x", "2"].includes(key)) {
         map[key] = value;
       }
-      if (name.includes("double chance") && ["1x", "12", "x2"].includes(key)) {
+      if (isDc && ["1x", "12", "x2"].includes(key)) {
         map[key] = value;
       }
     }
