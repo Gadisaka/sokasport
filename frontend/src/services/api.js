@@ -342,6 +342,7 @@ export async function fetchPlayerWallet() {
 
   return {
     balance: Number(data.balance ?? 0),
+    withdrawable: Number(data.withdrawable ?? 0),
     walletType: data.walletType ?? data.wallet_type,
   };
 }
