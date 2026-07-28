@@ -203,6 +203,30 @@ export function usePayoutTicketMutation() {
   });
 }
 
+export function useCashbackQuoteMutation() {
+  return useMutation({
+    mutationFn: async (ticketId) => {
+      const payload = await apiRequest(`/tickets/${ticketId}/cashback-quote`);
+      return payload;
+    },
+  });
+}
+
+export function usePayCashbackMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ ticketId, cashierId }) =>
+      apiRequest(`/tickets/${ticketId}/cashback-payout`, {
+        method: "PATCH",
+        body: JSON.stringify(cashierId ? { cashierId } : {}),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: TICKETS_KEY });
+      qc.invalidateQueries({ queryKey: CASHIER_DASHBOARD_STATS_KEY });
+    },
+  });
+}
+
 export function useCashoutQuoteMutation() {
   return useMutation({
     mutationFn: async (ticketId) => {

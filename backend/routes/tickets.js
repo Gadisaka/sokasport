@@ -18,6 +18,10 @@ import {
   executeTicketCashout,
   quoteTicketCashout,
 } from "../controllers/cashoutController.js";
+import {
+  payoutTicketCashback,
+  quoteTicketCashback,
+} from "../controllers/cashbackPayoutController.js";
 import { authorizePermission } from "../middleware/auth.js";
 import { createSportsbookRateLimiter } from "../middleware/rateLimit.js";
 
@@ -74,6 +78,16 @@ router.patch(
   "/:id/payout",
   authorizePermission("tickets:payout"),
   payoutTicket,
+);
+router.get(
+  "/:id/cashback-quote",
+  authorizePermission("tickets:payout"),
+  quoteTicketCashback,
+);
+router.patch(
+  "/:id/cashback-payout",
+  authorizePermission("tickets:payout"),
+  payoutTicketCashback,
 );
 router.get(
   "/:id/cashout-quote",

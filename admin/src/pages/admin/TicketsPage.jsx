@@ -186,6 +186,7 @@ export default function AdminTicketsPage() {
                 <option value="WON">Won</option>
                 <option value="LOST">Lost</option>
                 <option value="PAID">Paid</option>
+                <option value="CASHBACK_PAID">Cashback paid</option>
                 <option value="VOID">Void</option>
                 <option value="CANCELED">Canceled</option>
               </select>

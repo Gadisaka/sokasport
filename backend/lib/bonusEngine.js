@@ -225,7 +225,9 @@ export function evaluateCashback({
   if (!bonus || bonus.type !== "CASHBACK" || !bonus.status) {
     return fail("inactive");
   }
-  if (!ticket || !ticket.user_id) return fail("no_user");
+  // user_id is required only for online wallet credit (caller-enforced).
+  // Cashier-printed slips have no player and are paid at the counter.
+  if (!ticket) return fail("no_ticket");
 
   const rules =
     bonus.rules && typeof bonus.rules === "object" ? bonus.rules : {};
@@ -420,6 +422,51 @@ export async function applyDepositBonusesInTx(tx, p) {
 }
 
 /**
+ * Load selection legs + fixture/match statuses used by cashback evaluation.
+ * Shared by online wallet credit and cashier claim-time quote/payout.
+ *
+ * @param {import("@prisma/client").Prisma.TransactionClient | import("@prisma/client").PrismaClient} db
+ * @param {string} ticketId
+ * @returns {Promise<{ selections: Array, fixtureStatuses: string[], matchStatuses: string[] }>}
+ */
+export async function loadCashbackContext(db, ticketId) {
+  const selections = await db.ticketSelection.findMany({
+    where: { ticket_id: ticketId },
+  });
+  const fixtureIds = [
+    ...new Set(selections.map((s) => s.fixture_id).filter(Boolean)),
+  ];
+  const matchIds = [
+    ...new Set(selections.map((s) => s.match_id).filter(Boolean)),
+  ];
+  const [fixtures, matches] = await Promise.all([
+    fixtureIds.length
+      ? db.fixture.findMany({
+          where: { id: { in: fixtureIds } },
+          select: { status: true },
+        })
+      : Promise.resolve([]),
+    matchIds.length
+      ? db.match.findMany({
+          where: { id: { in: matchIds } },
+          select: { status: true },
+        })
+      : Promise.resolve([]),
+  ]);
+
+  return {
+    selections,
+    fixtureStatuses: fixtures.map((f) => f.status).filter(Boolean),
+    matchStatuses: matches.map((m) => m.status).filter(Boolean),
+  };
+}
+
+/** Ledger reference for cashier cashback payout at the counter. */
+export function cashbackPayoutRef(ticketId) {
+  return `cashback-payout:${ticketId}`;
+}
+
+/**
  * Cashback for online wallet tickets only (skip cashier-printed slips).
  *
  * @param {import("@prisma/client").Prisma.TransactionClient} tx
@@ -444,34 +491,13 @@ export async function creditCashbackOnLostTicketInTx(tx, ticketId) {
   // Tiered rules need the slip's selections plus the live fixture/match
   // statuses to enforce the count / disqualified-leg gates. Legacy flat
   // rules ignore this context (passed but unused).
-  const selections = await tx.ticketSelection.findMany({
-    where: { ticket_id: ticketId },
-  });
-  const fixtureIds = [
-    ...new Set(selections.map((s) => s.fixture_id).filter(Boolean)),
-  ];
-  const matchIds = [
-    ...new Set(selections.map((s) => s.match_id).filter(Boolean)),
-  ];
-  const [fixtures, matches] = await Promise.all([
-    fixtureIds.length
-      ? tx.fixture.findMany({
-          where: { id: { in: fixtureIds } },
-          select: { status: true },
-        })
-      : Promise.resolve([]),
-    matchIds.length
-      ? tx.match.findMany({
-          where: { id: { in: matchIds } },
-          select: { status: true },
-        })
-      : Promise.resolve([]),
-  ]);
+  const { selections, fixtureStatuses, matchStatuses } =
+    await loadCashbackContext(tx, ticketId);
 
   const amount = computeCashbackAmount(ticket, bonus, {
     selections,
-    fixtureStatuses: fixtures.map((f) => f.status).filter(Boolean),
-    matchStatuses: matches.map((m) => m.status).filter(Boolean),
+    fixtureStatuses,
+    matchStatuses,
     now: new Date(),
   });
   if (amount <= 0) return { credited: false, reason: "not_eligible" };

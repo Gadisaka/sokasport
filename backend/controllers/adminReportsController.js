@@ -195,6 +195,7 @@ export async function getAdminSalesReports(req, res) {
         won: 0,
         lost: 0,
         paid: 0,
+        cashbackPaid: 0,
       });
     }
 
@@ -212,6 +213,7 @@ export async function getAdminSalesReports(req, res) {
         if (ticket.status === "WON") dayRow.won += 1;
         if (ticket.status === "LOST") dayRow.lost += 1;
         if (ticket.status === "PAID") dayRow.paid += 1;
+        if (ticket.status === "CASHBACK_PAID") dayRow.cashbackPaid += 1;
       }
 
       const branchKey = ticket.branch_name || "Unknown";
@@ -223,6 +225,7 @@ export async function getAdminSalesReports(req, res) {
         won: 0,
         lost: 0,
         paid: 0,
+        cashbackPaid: 0,
       };
       branchRow.tickets += 1;
       branchRow.stake += stake;
@@ -230,6 +233,7 @@ export async function getAdminSalesReports(req, res) {
       if (ticket.status === "WON") branchRow.won += 1;
       if (ticket.status === "LOST") branchRow.lost += 1;
       if (ticket.status === "PAID") branchRow.paid += 1;
+      if (ticket.status === "CASHBACK_PAID") branchRow.cashbackPaid += 1;
       branchMap.set(branchKey, branchRow);
 
       const cashierKey = ticket.cashier_id || ONLINE_CASHIER_KEY;
@@ -245,6 +249,7 @@ export async function getAdminSalesReports(req, res) {
         won: 0,
         lost: 0,
         paid: 0,
+        cashbackPaid: 0,
       };
       cashierRow.tickets += 1;
       cashierRow.stake += stake;
@@ -252,6 +257,7 @@ export async function getAdminSalesReports(req, res) {
       if (ticket.status === "WON") cashierRow.won += 1;
       if (ticket.status === "LOST") cashierRow.lost += 1;
       if (ticket.status === "PAID") cashierRow.paid += 1;
+      if (ticket.status === "CASHBACK_PAID") cashierRow.cashbackPaid += 1;
       cashierMap.set(cashierKey, cashierRow);
     }
 
@@ -281,6 +287,8 @@ export async function getAdminSalesReports(req, res) {
         wonTickets: tickets.filter((t) => t.status === "WON").length,
         lostTickets: tickets.filter((t) => t.status === "LOST").length,
         paidTickets: tickets.filter((t) => t.status === "PAID").length,
+        cashbackPaidTickets: tickets.filter((t) => t.status === "CASHBACK_PAID")
+          .length,
       },
       byDay,
       byBranch,
@@ -308,6 +316,7 @@ function emptySalesPayload(start, end, filters) {
       won: 0,
       lost: 0,
       paid: 0,
+      cashbackPaid: 0,
     });
   }
 
@@ -326,6 +335,7 @@ function emptySalesPayload(start, end, filters) {
       wonTickets: 0,
       lostTickets: 0,
       paidTickets: 0,
+      cashbackPaidTickets: 0,
     },
     byDay,
     byBranch: [],

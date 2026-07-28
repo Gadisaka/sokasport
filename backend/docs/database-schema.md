@@ -247,6 +247,7 @@ Ticket statuses:
 - CANCELED
 - PAID
 - CASHED_OUT
+- CASHBACK_PAID
 
 ---
 

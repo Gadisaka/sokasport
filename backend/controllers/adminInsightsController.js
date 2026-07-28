@@ -194,6 +194,7 @@ export async function getAdminDashboardInsights(req, res) {
       CANCELED: 0,
       PAID: 0,
       CASHED_OUT: 0,
+      CASHBACK_PAID: 0,
     };
     let totalStake = 0;
     let totalPotentialWin = 0;
@@ -322,7 +323,8 @@ export async function getAdminDashboardInsights(req, res) {
         statusCounts.VOID +
         statusCounts.CANCELED +
         statusCounts.PAID +
-        statusCounts.CASHED_OUT,
+        statusCounts.CASHED_OUT +
+        statusCounts.CASHBACK_PAID,
       totalStake,
       totalPotentialWin,
       totalPayout,

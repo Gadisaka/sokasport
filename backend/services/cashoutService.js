@@ -9,6 +9,7 @@ const TERMINAL_TICKET_STATUSES = new Set([
   "VOID",
   "CANCELED",
   "CASHED_OUT",
+  "CASHBACK_PAID",
 ]);
 
 const FINAL_FIXTURE_STATUSES = new Set(["FT", "AET", "PEN", "AWD", "WO"]);

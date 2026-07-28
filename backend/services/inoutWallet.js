@@ -164,7 +164,9 @@ async function creditPayout(
     }
 
     const wallet = await findPlayerWallet(tx, userId);
-    if (!wallet) return { status: "no_wallet" };
+    if (!wallet || wallet.wallet_type !== "PLAYER") {
+      return { status: "no_wallet" };
+    }
 
     const beforeSnap = walletSnapshot(wallet);
     let balanceAfter = beforeSnap.balance;
@@ -176,6 +178,19 @@ async function creditPayout(
       });
       balanceBefore = credited.balanceBefore;
       balanceAfter = credited.balanceAfter;
+
+      // InOut game wins must unlock withdrawable.
+      if (asWithdrawable) {
+        const expectedWithdrawable = toMoney(
+          (beforeSnap.withdrawable ?? 0) + credit,
+        );
+        if (
+          credited.withdrawableAfter <
+          Math.min(expectedWithdrawable, credited.balanceAfter)
+        ) {
+          throw new Error("INOUT_WIN_WITHDRAWABLE_NOT_APPLIED");
+        }
+      }
     }
 
     try {

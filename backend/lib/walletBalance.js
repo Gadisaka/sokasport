@@ -3,8 +3,9 @@
  *
  * Rules:
  * - Deposit / bonus / cancel-refund: credit balance only (withdrawable unchanged)
- * - Payout / cashout: credit both balance and withdrawable
- * - Bet stake: debit balance; consume non-withdrawable first, then withdrawable
+ * - Payout / cashout (sportsbook, MRX wins, InOut wins): credit both balance and withdrawable
+ * - Bet stake (sportsbook / MRX fee / InOut bet): debit balance; consume non-withdrawable first, then withdrawable
+ * - InOut rollback: credit balance only (stake refund, not withdrawable)
  * - Withdraw: debit both; requires withdrawable >= amount
  * - Invariant (PLAYER): 0 <= withdrawable <= balance
  *
@@ -60,6 +61,12 @@ export async function creditWallet(tx, wallet, amount, { withdrawable = false } 
   const balanceBefore = toMoney(wallet.balance);
   const withdrawableBefore = toMoney(wallet.withdrawable ?? 0);
   const balanceAfter = toMoney(d(balanceBefore).add(a));
+
+  // Guard: a withdrawable credit with a missing wallet_type would silently
+  // skip updating `withdrawable` (treated as non-PLAYER). Fail loud instead.
+  if (withdrawable && wallet?.wallet_type == null) {
+    throw new Error("WALLET_TYPE_MISSING");
+  }
 
   if (!isPlayer(wallet)) {
     await tx.wallet.update({

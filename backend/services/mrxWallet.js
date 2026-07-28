@@ -89,7 +89,12 @@ export async function debitGameFee(phone, amount, referenceId) {
     if (!found) return { status: "user_not_found" };
     if (!found.wallet) return { status: "no_wallet" };
 
-    const wallet = found.wallet;
+    // Re-load full wallet so wallet_type + withdrawable are never partial.
+    const wallet = await tx.wallet.findUnique({ where: { id: found.wallet.id } });
+    if (!wallet || wallet.wallet_type !== "PLAYER") {
+      return { status: "no_wallet" };
+    }
+
     const beforeSnap = walletSnapshot(wallet);
     let debited;
     try {
@@ -164,11 +169,24 @@ export async function creditGameWinning(phone, amount, referenceId) {
     if (!found) return { status: "user_not_found" };
     if (!found.wallet) return { status: "no_wallet" };
 
-    const wallet = found.wallet;
+    // Re-load full wallet so wallet_type + withdrawable are never partial.
+    const wallet = await tx.wallet.findUnique({ where: { id: found.wallet.id } });
+    if (!wallet || wallet.wallet_type !== "PLAYER") {
+      return { status: "no_wallet" };
+    }
+
     const beforeSnap = walletSnapshot(wallet);
     const credited = await creditWallet(tx, wallet, credit, {
       withdrawable: true,
     });
+
+    // Game wins must unlock withdrawable; catch silent accounting failures.
+    const expectedWithdrawable = toMoney(
+      (beforeSnap.withdrawable ?? 0) + credit,
+    );
+    if (credited.withdrawableAfter < Math.min(expectedWithdrawable, credited.balanceAfter)) {
+      throw new Error("MRX_WIN_WITHDRAWABLE_NOT_APPLIED");
+    }
 
     try {
       await tx.transaction.create({

@@ -245,3 +245,38 @@ test("computeCashbackAmount uses tiered path when rules.tiers present", () => {
   );
   assert.equal(amount, 10);
 });
+
+test("evaluateCashback allows cashier tickets without user_id", () => {
+  const ev = evaluateCashback({
+    ticket: {
+      user_id: null,
+      stake: 30,
+      total_odds: 500.99,
+      created_at: new Date(),
+    },
+    selections: selections(10, 1.63),
+    bonus: tieredBonus({ minSelections: 7, minStake: 20 }),
+    now: new Date(),
+  });
+  // 500.99 / 1.63 ≈ 307.36 → 200–399 tier → ×5 → 150
+  assert.equal(ev.eligible, true);
+  assert.equal(ev.tier.stakeMultiplier, 5);
+  assert.equal(ev.amount, 150);
+});
+
+test("evaluateCashback reported slip: 10 legs, stake 30, 500.99/1.63 → ×5", () => {
+  const ev = evaluateCashback({
+    ticket: {
+      user_id: "u1",
+      stake: 30,
+      total_odds: 500.99,
+      created_at: new Date(),
+    },
+    selections: selections(10, 1.63),
+    bonus: tieredBonus({ minSelections: 7, minStake: 20, maxHours: 72 }),
+    now: new Date(),
+  });
+  assert.ok(ev.result > 307 && ev.result < 308);
+  assert.equal(ev.tier.stakeMultiplier, 5);
+  assert.equal(ev.amount, 150);
+});

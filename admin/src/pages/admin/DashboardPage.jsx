@@ -29,7 +29,12 @@ function statusTone(status) {
   if (status === "PAID" || status === "WON") {
     return "text-emerald-600 dark:text-emerald-400";
   }
-  if (status === "LOST" || status === "VOID" || status === "CANCELED") {
+  if (
+    status === "LOST" ||
+    status === "VOID" ||
+    status === "CANCELED" ||
+    status === "CASHBACK_PAID"
+  ) {
     return "text-rose-600 dark:text-rose-400";
   }
   return "text-(--muted)";

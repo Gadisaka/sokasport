@@ -15,6 +15,8 @@ import { API_URL } from "../../../constants.js";
 import { formatCouponInput } from "../../utils/formatCouponInput";
 import {
   useCashoutQuoteMutation,
+  useCashbackQuoteMutation,
+  usePayCashbackMutation,
   mapTicketDetail,
   useCancelTicketMutation,
   useConfirmPrintedTicketMutation,
@@ -472,6 +474,8 @@ export default function CashierTicketsPage() {
   const payoutTicketMutation = usePayoutTicketMutation();
   const cashoutQuoteMutation = useCashoutQuoteMutation();
   const executeCashoutMutation = useExecuteCashoutMutation();
+  const cashbackQuoteMutation = useCashbackQuoteMutation();
+  const payCashbackMutation = usePayCashbackMutation();
   const confirmPrint = useConfirmPrintedTicketMutation();
   const preparePrint = usePreparePrintTicketMutation();
   const updateStake = useUpdateTicketStakeMutation();
@@ -571,6 +575,8 @@ export default function CashierTicketsPage() {
     payoutTicketMutation.isPending ||
     cashoutQuoteMutation.isPending ||
     executeCashoutMutation.isPending ||
+    cashbackQuoteMutation.isPending ||
+    payCashbackMutation.isPending ||
     confirmPrint.isPending ||
     preparePrint.isPending ||
     updateStake.isPending;
@@ -956,6 +962,25 @@ export default function CashierTicketsPage() {
     }
   };
 
+  const handlePayCashbackTicket = async () => {
+    if (!payoutTicket) return;
+    setPayoutError("");
+    setCompletedAction(null);
+    try {
+      const response = await payCashbackMutation.mutateAsync({
+        ticketId: payoutTicket.id,
+      });
+      setActionSuccess(response?.message || "Cashback payout completed");
+      const refreshed = await refreshPayoutTicket(payoutTicket);
+      setPayoutTicket(refreshed);
+      setPayoutQuote(response?.quote || null);
+      setCompletedAction("cashback");
+      await Promise.all([slipsQuery.refetch(), walletQuery.refetch()]);
+    } catch (error) {
+      setPayoutError(error?.message || "Failed to pay cashback");
+    }
+  };
+
   const handlePrintActionReceipt = async (type) => {
     if (!payoutTicket) return;
     setPayoutError("");
@@ -971,13 +996,17 @@ export default function CashierTicketsPage() {
       const escposData = await encodeActionReceiptAsync(payoutTicket, {
         width: "80mm",
         type,
+        amount:
+          type === "cashback" ? toNumber(payoutQuote?.amount) : undefined,
       });
       const localPrintResult = await printViaLocalService(escposData);
       if (localPrintResult.success) {
         setActionSuccess(
           type === "payout"
             ? "Payout receipt printed."
-            : "Cancellation receipt printed.",
+            : type === "cashback"
+              ? "Cashback receipt printed."
+              : "Cancellation receipt printed.",
         );
         return;
       }
@@ -1022,16 +1051,29 @@ export default function CashierTicketsPage() {
   useEffect(() => {
     let cancelled = false;
     async function loadQuote() {
-      if (payoutAction !== "cashout" || !payoutTicket?.id) return;
+      if (
+        (payoutAction !== "cashout" && payoutAction !== "cashback") ||
+        !payoutTicket?.id
+      ) {
+        return;
+      }
       try {
-        const payload = await cashoutQuoteMutation.mutateAsync(payoutTicket.id);
+        const payload =
+          payoutAction === "cashback"
+            ? await cashbackQuoteMutation.mutateAsync(payoutTicket.id)
+            : await cashoutQuoteMutation.mutateAsync(payoutTicket.id);
         if (!cancelled) {
           setPayoutQuote(payload?.quote || null);
         }
       } catch (error) {
         if (!cancelled) {
           setPayoutQuote(null);
-          setPayoutError(error?.message || "Failed to load cashout quote");
+          setPayoutError(
+            error?.message ||
+              (payoutAction === "cashback"
+                ? "Failed to load cashback quote"
+                : "Failed to load cashout quote"),
+          );
         }
       }
     }
@@ -1329,6 +1371,12 @@ export default function CashierTicketsPage() {
                     <option value="payout" className="bg-slate-900 text-white">
                       Payout
                     </option>
+                    <option
+                      value="cashback"
+                      className="bg-slate-900 text-white"
+                    >
+                      Pay Cashback
+                    </option>
                     <option value="cancel" className="bg-slate-900 text-white">
                       Cancel
                     </option>
@@ -1380,6 +1428,8 @@ export default function CashierTicketsPage() {
                         onClick={() => {
                           if (payoutAction === "payout") {
                             void handlePayoutTicket();
+                          } else if (payoutAction === "cashback") {
+                            void handlePayCashbackTicket();
                           } else if (payoutAction === "cancel") {
                             void handleCancelTicket();
                           } else if (payoutAction === "cashout") {
@@ -1388,7 +1438,8 @@ export default function CashierTicketsPage() {
                         }}
                         disabled={
                           isBusy ||
-                          (payoutAction === "cashout" &&
+                          ((payoutAction === "cashout" ||
+                            payoutAction === "cashback") &&
                             payoutQuote &&
                             !payoutQuote.allowed)
                         }
@@ -1402,11 +1453,14 @@ export default function CashierTicketsPage() {
                           ? "Cancel Ticket"
                           : payoutAction === "cashout"
                             ? "Execute Cash Out"
-                            : "Pay Winner"}
+                            : payoutAction === "cashback"
+                              ? "Pay Cashback"
+                              : "Pay Winner"}
                       </button>
 
                       {(completedAction === "payout" ||
-                        completedAction === "cancel") && (
+                        completedAction === "cancel" ||
+                        completedAction === "cashback") && (
                         <button
                           type="button"
                           onClick={() =>
@@ -1417,7 +1471,9 @@ export default function CashierTicketsPage() {
                         >
                           {completedAction === "payout"
                             ? "Print Payout Receipt"
-                            : "Print Cancel Receipt"}
+                            : completedAction === "cashback"
+                              ? "Print Cashback Receipt"
+                              : "Print Cancel Receipt"}
                         </button>
                       )}
                     </div>
@@ -1447,6 +1503,35 @@ export default function CashierTicketsPage() {
                       </div>
                     )}
 
+                    {payoutAction === "cashback" && payoutQuote && (
+                      <div className="mt-3 rounded-sm border border-[var(--border)] bg-[var(--surfaceMuted)] p-3 text-xs">
+                        <p>
+                          Cashback amount:{" "}
+                          <span className="font-semibold">
+                            {formatCurrency(payoutQuote.amount)}
+                          </span>
+                        </p>
+                        {payoutQuote.result != null && (
+                          <p className="mt-1 text-[var(--muted)]">
+                            Result ratio:{" "}
+                            {toNumber(payoutQuote.result).toFixed(2)}
+                            {payoutQuote.tier?.stakeMultiplier != null && (
+                              <>
+                                {" "}
+                                | Tier ×{payoutQuote.tier.stakeMultiplier}
+                              </>
+                            )}
+                          </p>
+                        )}
+                        {!payoutQuote.allowed && (
+                          <p className="mt-1 text-[var(--danger)]">
+                            Not eligible (
+                            {payoutQuote.reasonCode || "unavailable"}).
+                          </p>
+                        )}
+                      </div>
+                    )}
+
                     <p className="mt-2 text-[11px] text-[var(--muted)]">
                       Current status:{" "}
                       <span className="font-mono">{payoutTicket.status}</span>
@@ -1455,6 +1540,14 @@ export default function CashierTicketsPage() {
                           <>
                             {" "}
                             &middot; Payout is only available for WON tickets.
+                          </>
+                        )}
+                      {payoutAction === "cashback" &&
+                        payoutTicket.status !== "LOST" && (
+                          <>
+                            {" "}
+                            &middot; Cashback is only available for LOST printed
+                            tickets.
                           </>
                         )}
                       {payoutAction === "cancel" &&
@@ -1473,6 +1566,14 @@ export default function CashierTicketsPage() {
                           cannot be edited.
                         </>
                       )}
+                      {payoutAction === "cashback" &&
+                        payoutTicket.status === "LOST" && (
+                          <>
+                            {" "}
+                            &middot; Cashback eligibility is calculated at claim
+                            time and cannot be edited.
+                          </>
+                        )}
                     </p>
                   </>
                 )}

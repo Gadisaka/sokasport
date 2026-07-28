@@ -262,10 +262,21 @@ Suggested form fields under **Settings → Bonuses → Cashback**:
 | stake < minStake | No cashback |
 | Ticket with PST fixture on any leg | No cashback |
 | Outside maxHours window | No cashback |
-| Cashier-printed ticket | No cashback (existing) |
-| Duplicate settlement | Idempotent (existing) |
+| Cashier-printed ticket (online auto-credit) | Still skipped at settlement |
+| Cashier-printed LOST ticket (claim-time) | Eligible via cashback-quote / cashback-payout → `CASHBACK_PAID` |
+| Duplicate settlement / payout | Idempotent (existing + unique `cashback-payout:` ref) |
 
-Files: `backend/tests/bonusEngine.test.js`, `backend/tests/ticketSettlementService.test.js`.
+Files: `backend/tests/bonusEngine.test.js`, `backend/tests/ticketSettlementService.test.js`, `backend/tests/cashbackPayoutService.test.js`.
+
+### Cashier claim-time payout (shipped)
+
+Printed slips have no player wallet, so cashback is paid at the counter:
+
+1. Cashier selects **Pay Cashback** and scans the receipt.
+2. `GET /api/tickets/:id/cashback-quote` runs `evaluateCashback` with `now = claim time`.
+3. `PATCH /api/tickets/:id/cashback-payout` credits the selling cashier wallet, writes `BONUS` / `cashback-payout:<ticketId>`, and sets status `CASHBACK_PAID`.
+
+Online auto-credit remains unchanged (`creditCashbackOnLostTicketInTx` still skips `ticket-print:` slips).
 
 ### Phase 4 — Docs & ops
 

@@ -358,7 +358,7 @@ export async function createShopWithdraw(req, res) {
     }
     if (withdrawable < numericAmount) {
       return res.status(400).json({
-        message: `Withdrawable balance is ${withdrawable} ETB. Deposits must be used for betting before withdrawal.`,
+        message: `Withdrawable balance is ${withdrawable} ETB. Only winnings are withdrawable; unused deposits stay locked.`,
       });
     }
 

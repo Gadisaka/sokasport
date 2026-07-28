@@ -82,7 +82,7 @@ function Withdraw() {
     }
     if (withdrawable != null && n > withdrawable) {
       setFormError(
-        `Withdrawable balance is ${withdrawable.toLocaleString()} ETB. Deposits must be used for betting before withdrawal.`,
+        `Withdrawable balance is ${withdrawable.toLocaleString()} ETB. Only winnings are withdrawable; unused deposits stay locked.`,
       );
       return;
     }
@@ -204,8 +204,9 @@ function Withdraw() {
                   : `${withdrawable.toLocaleString()} ETB`}
               </p>
               <p className="mt-2 m-0 text-center text-[11px] leading-relaxed text-[rgba(255,255,255,0.5)]">
-                Deposits become withdrawable after you use them for betting.
-                Winnings are withdrawable immediately.
+                Only winnings can be withdrawn (sportsbook, MRX, and casino).
+                Unused deposits stay locked until they are wagered and paid out
+                as a win.
               </p>
             </SoftPanel>
 

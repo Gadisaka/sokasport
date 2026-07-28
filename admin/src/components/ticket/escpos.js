@@ -513,19 +513,20 @@ export function encodeTicket(ticket, opts = {}) {
 }
 
 /**
- * Compact payout/cancel confirmation receipt — logo + summary only, no legs.
+ * Compact payout/cancel/cashback confirmation receipt — logo + summary only, no legs.
  *
- * Fields: logo, branch, receipt number, status, bets count, payout (payout
- * only), date. Intentionally small for a quick proof-of-action slip.
+ * Fields: logo, branch, receipt number, status, bets count, payout/cashback
+ * amount, date. Intentionally small for a quick proof-of-action slip.
  *
  * @param {Object} ticket
- * @param {{ width?: string, type?: "payout"|"cancel" }} [opts]
+ * @param {{ width?: string, type?: "payout"|"cancel"|"cashback", amount?: number }} [opts]
  * @returns {Promise<Uint8Array>}
  */
 export async function encodeActionReceiptAsync(ticket, opts = {}) {
-  const { width = "80mm", type = "payout" } = opts;
+  const { width = "80mm", type = "payout", amount } = opts;
   const chars = width === "58mm" ? CHARS_58MM : CHARS_80MM;
   const isPayout = type === "payout";
+  const isCashback = type === "cashback";
   const selections = Array.isArray(ticket?.selections) ? ticket.selections : [];
 
   const logoBytes = await getLogoEscPosPromise(width);
@@ -539,7 +540,15 @@ export async function encodeActionReceiptAsync(ticket, opts = {}) {
 
   parts.push(new Uint8Array(CMD.ALIGN_CENTER));
   parts.push(new Uint8Array(CMD.BOLD_ON));
-  parts.push(line(isPayout ? "PAYOUT RECEIPT" : "CANCELLATION RECEIPT"));
+  parts.push(
+    line(
+      isCashback
+        ? "CASHBACK RECEIPT"
+        : isPayout
+          ? "PAYOUT RECEIPT"
+          : "CANCELLATION RECEIPT",
+    ),
+  );
   parts.push(new Uint8Array(CMD.BOLD_OFF));
 
   parts.push(new Uint8Array(CMD.ALIGN_LEFT));
@@ -555,6 +564,14 @@ export async function encodeActionReceiptAsync(ticket, opts = {}) {
     const { net } = slipGrossTaxNetForTicket(ticket?.potentialWin, ticket);
     const payoutAmount = net != null ? net : Number(ticket?.potentialWin || 0);
     parts.push(line(leftRight("Payout:", formatCurrency(payoutAmount), chars)));
+  }
+
+  if (isCashback) {
+    const cashbackAmount =
+      amount != null ? Number(amount) : Number(ticket?.cashbackAmount || 0);
+    parts.push(
+      line(leftRight("Cashback:", formatCurrency(cashbackAmount), chars)),
+    );
   }
 
   parts.push(line(leftRight("Date:", formatDate(new Date()), chars)));

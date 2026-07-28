@@ -327,7 +327,7 @@ export async function approveWithdrawRequest(req, res) {
     if (error.message === "INSUFFICIENT_WITHDRAWABLE") {
       return res.status(400).json({
         message:
-          "Player withdrawable balance is insufficient. Deposits must be used for betting before withdrawal.",
+          "Player withdrawable balance is insufficient. Only winnings are withdrawable; unused deposits stay locked.",
       });
     }
     if (error.message === "CASHIER_WALLET_NOT_FOUND") {
@@ -518,7 +518,7 @@ export async function redeemShopWithdraw(req, res) {
     if (error.message === "INSUFFICIENT_WITHDRAWABLE") {
       return res.status(400).json({
         message:
-          "Player withdrawable balance is insufficient. Deposits must be used for betting before withdrawal.",
+          "Player withdrawable balance is insufficient. Only winnings are withdrawable; unused deposits stay locked.",
       });
     }
     if (error.message === "CASHIER_WALLET_NOT_FOUND") {

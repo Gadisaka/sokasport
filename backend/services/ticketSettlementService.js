@@ -75,6 +75,7 @@ const TERMINAL_TICKET_STATUSES = new Set([
   "VOID",
   "CANCELED",
   "CASHED_OUT",
+  "CASHBACK_PAID",
 ]);
 
 export function isFinalFixtureStatus(status) {
