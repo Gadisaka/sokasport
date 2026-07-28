@@ -28,6 +28,7 @@ import {
   generateSixDigitCode,
 } from "../lib/shopWithdraw.js";
 import { toMoney } from "../lib/moneyDecimal.js";
+import { syncPlayerWithdrawableIfNeeded } from "../lib/syncWithdrawable.js";
 import {
   creditBonusIfNew,
   computeWelcomeFlatAmount,
@@ -253,10 +254,14 @@ export async function getWallet(req, res) {
       return res.status(404).json({ message: "Wallet not found" });
     }
 
+    // Self-heal: if casino/sportsbook wins landed on balance but withdrawable
+    // stayed 0, recompute from mrx:win / inout:withdraw / win-settlement ledger.
+    const synced = await syncPlayerWithdrawableIfNeeded(prisma, wallet);
+
     return res.json({
       id: wallet.id,
-      balance: wallet.balance,
-      withdrawable: wallet.withdrawable ?? 0,
+      balance: synced.balance,
+      withdrawable: synced.withdrawable,
       walletType: wallet.wallet_type,
     });
   } catch (error) {
@@ -351,8 +356,9 @@ export async function createShopWithdraw(req, res) {
       });
     }
 
-    const balance = toMoney(wallet.balance);
-    const withdrawable = toMoney(wallet.withdrawable ?? 0);
+    const synced = await syncPlayerWithdrawableIfNeeded(prisma, wallet);
+    const balance = synced.balance;
+    const withdrawable = synced.withdrawable;
     if (balance < numericAmount) {
       return res.status(400).json({ message: "Insufficient balance" });
     }

@@ -19,8 +19,22 @@ function createMockTx(wallet) {
     wallet: {
       update: async ({ where, data }) => {
         const current = store.get(where.id);
-        Object.assign(current, data);
+        for (const [key, value] of Object.entries(data)) {
+          if (
+            value &&
+            typeof value === "object" &&
+            Object.prototype.hasOwnProperty.call(value, "increment")
+          ) {
+            current[key] = Number(current[key] ?? 0) + Number(value.increment);
+          } else {
+            current[key] = value;
+          }
+        }
         return { ...current };
+      },
+      findUnique: async ({ where }) => {
+        const current = store.get(where.id);
+        return current ? { ...current } : null;
       },
     },
   };

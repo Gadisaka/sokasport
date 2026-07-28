@@ -87,19 +87,57 @@ export async function creditWallet(tx, wallet, amount, { withdrawable = false } 
   }
   const snapped = snapPlayer(balanceAfter, withdrawableAfter);
 
+  // Use atomic $inc so concurrent credits cannot clobber withdrawable, and so
+  // Mongo docs that never had the field still get it created (from 0).
+  const data = {
+    balance: { increment: a },
+  };
+  if (withdrawable) {
+    data.withdrawable = { increment: a };
+  }
+
   await tx.wallet.update({
     where: { id: wallet.id },
-    data: {
-      balance: snapped.balance,
-      withdrawable: snapped.withdrawable,
-    },
+    data,
   });
+
+  // Re-read and clamp invariant; also backfill if increment did not stick.
+  const live = await tx.wallet.findUnique({ where: { id: wallet.id } });
+  const liveBalance = toMoney(live?.balance ?? snapped.balance);
+  let liveWithdrawable = toMoney(live?.withdrawable ?? 0);
+  if (withdrawable && liveWithdrawable < snapped.withdrawable) {
+    liveWithdrawable = snapped.withdrawable;
+    await tx.wallet.update({
+      where: { id: wallet.id },
+      data: {
+        balance: liveBalance,
+        withdrawable: Math.min(liveWithdrawable, liveBalance),
+      },
+    });
+  }
+  const finalSnap = snapPlayer(liveBalance, liveWithdrawable);
+  if (
+    finalSnap.withdrawable !== liveWithdrawable ||
+    finalSnap.balance !== liveBalance
+  ) {
+    await tx.wallet.update({
+      where: { id: wallet.id },
+      data: {
+        balance: finalSnap.balance,
+        withdrawable: finalSnap.withdrawable,
+      },
+    });
+  }
+
+  // Keep caller's in-memory wallet in sync for multi-step txs.
+  wallet.balance = finalSnap.balance;
+  wallet.withdrawable = finalSnap.withdrawable;
 
   return {
     balanceBefore,
-    balanceAfter: snapped.balance,
+    balanceAfter: finalSnap.balance,
     withdrawableBefore,
-    withdrawableAfter: snapped.withdrawable,
+    withdrawableAfter: finalSnap.withdrawable,
   };
 }
 
@@ -166,6 +204,9 @@ export async function debitWallet(tx, wallet, amount, { fromWithdrawable = false
       withdrawable: snapped.withdrawable,
     },
   });
+
+  wallet.balance = snapped.balance;
+  wallet.withdrawable = snapped.withdrawable;
 
   return {
     balanceBefore,

@@ -27,6 +27,7 @@
     "db:backfill-server-odds": "node scripts/backfillTicketSelectionServerOdds.mjs",
     "db:backfill-market-versions": "node scripts/backfillTicketSelectionMarketVersions.mjs",
     "db:repair-withdrawable": "node scripts/repairWithdrawableFromLedger.mjs",
+    "db:diagnose-withdrawable": "node scripts/diagnoseWithdrawable.mjs",
     "db:reset-ingestion": "node scripts/resetIngestionData.mjs",
     "db:reset-ingestion-and-sync": "node scripts/resetIngestionData.mjs --sync",
     "settlement:shadow-report": "node scripts/shadowSettlementReport.js",
