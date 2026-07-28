@@ -289,6 +289,8 @@ model Fixture {
   settled_at           DateTime?
   settled_status       String?
   grading_completed_at DateTime?
+  /** When status first became PST; settlement waits 72h before voiding the leg. */
+  postponed_at         DateTime?
 
   // V2 match result enrichment (see services/matchResult/v2.js).
   // Optional because today's ingestion doesn't populate them; the

@@ -59,4 +59,38 @@ describe("fixtureResultLock", () => {
     };
     assert.equal(fixtureSyncUnchanged(existing, incoming), true);
   });
+
+  it("buildFixtureSyncData sets postponed_at when status becomes PST", () => {
+    const data = buildFixtureSyncData(
+      { status: "NS", postponed_at: null },
+      {
+        start_time: new Date("2026-05-21T15:00:00Z"),
+        status: "PST",
+        home_score: null,
+        away_score: null,
+        league_id: "l1",
+        home_team_id: "h1",
+        away_team_id: "a1",
+      },
+    );
+    assert.equal(data.status, "PST");
+    assert.ok(data.postponed_at instanceof Date);
+  });
+
+  it("buildFixtureSyncData clears postponed_at when rescheduled from PST", () => {
+    const data = buildFixtureSyncData(
+      { status: "PST", postponed_at: new Date() },
+      {
+        start_time: new Date("2026-05-22T15:00:00Z"),
+        status: "NS",
+        home_score: null,
+        away_score: null,
+        league_id: "l1",
+        home_team_id: "h1",
+        away_team_id: "a1",
+      },
+    );
+    assert.equal(data.status, "NS");
+    assert.equal(data.postponed_at, null);
+  });
 });

@@ -5,6 +5,8 @@
  * @module lib/fixtureResultLock
  */
 
+import { resolvePostponedAtOnSync } from "./postponedSettlement.js";
+
 /**
  * @param {{ result_locked_at?: Date | string | null } | null | undefined} fixture
  */
@@ -37,6 +39,7 @@ export function buildFixtureSyncData(existing, incoming) {
     status: incoming.status,
     home_score: incoming.home_score,
     away_score: incoming.away_score,
+    postponed_at: resolvePostponedAtOnSync(existing, incoming),
   };
   // Half-time scores: only write when the upstream provided them (avoid
   // clobbering a stored HT score with null on a later tick that omits it).

@@ -41,7 +41,7 @@ register(loaderUrl, import.meta.url);
 const settlement = await import("../services/ticketSettlementService.js");
 const { SELECTION_RESULT } = await import("../services/marketEvaluator.js");
 
-function seedFixture({ id, status, homeScore, awayScore }) {
+function seedFixture({ id, status, homeScore, awayScore, postponedAt = null }) {
   const store = getStore();
   store.fixture.set(id, {
     id,
@@ -52,6 +52,7 @@ function seedFixture({ id, status, homeScore, awayScore }) {
     settled_at: null,
     settled_status: null,
     grading_completed_at: null,
+    postponed_at: postponedAt,
   });
 }
 
@@ -638,4 +639,94 @@ test("LOST ticket with a postponed leg is NOT eligible for tiered cashback", asy
   const bonusTx = [...store.transaction.values()].find((t) => t.type === "BONUS");
   assert.equal(bonusTx, undefined, "postponed leg must block cashback");
   assert.equal(store.wallet.get("w-d").balance, 0);
+});
+
+test("settleFixture skips PST fixture within 72-hour postponed wait", async () => {
+  resetStore();
+  const store = getStore();
+  const recentPostponed = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  seedFixture({
+    id: "fx-pst-wait",
+    status: "PST",
+    homeScore: null,
+    awayScore: null,
+    postponedAt: recentPostponed,
+  });
+  seedTicket({ id: "tk-pst-wait", stake: 50, totalOdds: 2 });
+  seedSelection({
+    id: "sel-pst-wait",
+    ticketId: "tk-pst-wait",
+    fixtureId: "fx-pst-wait",
+    selection: "1",
+    marketCode: "MATCH_WINNER",
+    odds: 2,
+  });
+
+  const summary = await settlement.settleFixture("fx-pst-wait");
+  assert.equal(summary.skipped, true);
+  assert.equal(summary.reason, "postponed_wait_pending");
+  assert.ok(summary.waitHoursRemaining > 0);
+  assert.equal(
+    store.ticketSelection.get("sel-pst-wait").result,
+    SELECTION_RESULT.PENDING,
+  );
+});
+
+test("settleFixture voids PST leg after 72-hour postponed wait", async () => {
+  resetStore();
+  const store = getStore();
+  const oldPostponed = new Date(Date.now() - 73 * 60 * 60 * 1000);
+  seedFixture({
+    id: "fx-pst-old",
+    status: "PST",
+    homeScore: null,
+    awayScore: null,
+    postponedAt: oldPostponed,
+  });
+  seedTicket({ id: "tk-pst-old", stake: 50, totalOdds: 2 });
+  seedSelection({
+    id: "sel-pst-old",
+    ticketId: "tk-pst-old",
+    fixtureId: "fx-pst-old",
+    selection: "1",
+    marketCode: "MATCH_WINNER",
+    odds: 2,
+  });
+
+  const summary = await settlement.settleFixture("fx-pst-old");
+  assert.equal(summary.skipped, undefined);
+  assert.equal(summary.selectionsUpdated, 1);
+  assert.equal(
+    store.ticketSelection.get("sel-pst-old").result,
+    SELECTION_RESULT.VOID,
+  );
+});
+
+test("settleFixture force bypasses postponed wait", async () => {
+  resetStore();
+  const store = getStore();
+  seedFixture({
+    id: "fx-pst-force",
+    status: "PST",
+    homeScore: null,
+    awayScore: null,
+    postponedAt: new Date(),
+  });
+  seedTicket({ id: "tk-pst-force", stake: 50, totalOdds: 2 });
+  seedSelection({
+    id: "sel-pst-force",
+    ticketId: "tk-pst-force",
+    fixtureId: "fx-pst-force",
+    selection: "1",
+    marketCode: "MATCH_WINNER",
+    odds: 2,
+  });
+
+  const summary = await settlement.settleFixture("fx-pst-force", { force: true });
+  assert.equal(summary.skipped, undefined);
+  assert.equal(summary.selectionsUpdated, 1);
+  assert.equal(
+    store.ticketSelection.get("sel-pst-force").result,
+    SELECTION_RESULT.VOID,
+  );
 });

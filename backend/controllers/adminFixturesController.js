@@ -21,6 +21,7 @@ import {
   settleFixture,
   isTerminalFixtureStatus,
 } from "../services/ticketSettlementService.js";
+import { getPostponedWaitInfo } from "../lib/postponedSettlement.js";
 
 const ALLOWED_OVERRIDE_STATUSES = new Set([
   "FT",
@@ -75,6 +76,7 @@ function parseEditableOptions(req) {
 
 function mapFixtureRow(fixture, pendingLegs = 0, editableOptions = {}) {
   const editable = isFixtureEditable(fixture, editableOptions);
+  const postponedWait = getPostponedWaitInfo(fixture);
   return {
     id: fixture.id,
     apiFixtureId: fixture.api_fixture_id,
@@ -89,6 +91,9 @@ function mapFixtureRow(fixture, pendingLegs = 0, editableOptions = {}) {
     htAwayScore: fixture.ht_away_score,
     settledAt: fixture.settled_at,
     gradingCompletedAt: fixture.grading_completed_at,
+    postponedAt: postponedWait.postponedAt,
+    postponedWaitExpires: postponedWait.postponedWaitExpires,
+    waitHoursRemaining: postponedWait.waitHoursRemaining,
     resultVersion: fixture.result_version,
     resultLockedAt: HAS_RESULT_LOCK_FIELDS ? fixture.result_locked_at : null,
     resultLockedBy: HAS_RESULT_LOCK_FIELDS ? fixture.result_locked_by : null,
