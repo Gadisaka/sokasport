@@ -38,7 +38,7 @@ import { logAuditEvent } from "../lib/auditLog.js";
 const DEFAULT_MAX_RECEIPT_AGE_HOURS = 24;
 
 function maxReceiptAgeHours() {
-  const raw = process.env.ONLINE_DEPOSIT_MAX_RECEIPT_AGE_HOURS;
+  const raw = process.env.ONLINE_DEPOSIT_MAX_RECEIPT_AGE_HOURS || 24;
   if (raw == null || String(raw).trim() === "") {
     return DEFAULT_MAX_RECEIPT_AGE_HOURS;
   }
