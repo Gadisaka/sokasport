@@ -12,6 +12,11 @@ function formatDateTime(value) {
   return Number.isNaN(parsed.getTime()) ? "—" : parsed.toLocaleString();
 }
 
+function formatWaitHours(hours) {
+  if (hours == null) return "—";
+  return hours >= 1 ? `${Math.round(hours)}h left` : "<1h left";
+}
+
 function canOverrideResult(role) {
   return role === "SUPER_ADMIN" || role === "ADMIN";
 }
@@ -502,7 +507,11 @@ export default function FixtureOpsPage() {
                       ) : null}
                     </td>
                     <td className="px-3 py-2 text-xs">
-                      {row.stuckSettlement ? (
+                      {row.postponedWaiting ? (
+                        <span className="rounded-sm bg-sky-100 px-1.5 py-0.5 text-sky-800">
+                          Postponed · {formatWaitHours(row.waitHoursRemaining)}
+                        </span>
+                      ) : row.stuckSettlement ? (
                         <span className="rounded-sm bg-amber-100 px-1.5 py-0.5 text-amber-800">
                           Stuck
                         </span>

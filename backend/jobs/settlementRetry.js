@@ -25,6 +25,11 @@
  * this gate the retry's `force: true` would bypass the wait and void
  * freshly-postponed fixtures that may still be rescheduled.
  *
+ * 3. POSTPONED SCAN — PST fixtures whose 72h wait has expired and that still
+ *    carry PENDING ticket legs. Deliberately NOT bounded by
+ *    SETTLEMENT_RETRY_MAX_AGE_DAYS: a game postponed months ago would
+ *    otherwise age out of the terminal scan with its legs never voided.
+ *
  * Runs on the `settlement-retry` repeatable queue (default every 5 min).
  * Bounded per tick: SETTLEMENT_RETRY_BATCH terminal fixtures and
  * SETTLEMENT_ZOMBIE_BATCH zombie fixtures.
@@ -41,7 +46,10 @@ import {
   buildFixtureSyncData,
   isFixtureResultLocked,
 } from "../lib/fixtureResultLock.js";
-import { evaluatePostponedSettlementWait } from "../lib/postponedSettlement.js";
+import {
+  POSTPONED_WAIT_HOURS,
+  evaluatePostponedSettlementWait,
+} from "../lib/postponedSettlement.js";
 import { logAuditEvent } from "../lib/auditLog.js";
 import { recordUnresolvableFixture } from "../lib/settlementMetrics.js";
 
@@ -185,6 +193,80 @@ async function retryTerminalFixtures(now, minStart) {
 }
 
 /**
+ * Void the legs of PST fixtures whose 72h reschedule window has closed.
+ *
+ * Scoped to fixtures that still carry PENDING ticket legs, and intentionally
+ * unbounded by `MAX_AGE_DAYS` — the terminal scan's age window would
+ * otherwise leave long-postponed games unsettled forever.
+ *
+ * Legacy rows postponed before `postponed_at` existed fall back to
+ * `start_time` as the wait anchor so they are not voided prematurely.
+ */
+async function settleExpiredPostponedFixtures(now) {
+  const waitCutoff = now - POSTPONED_WAIT_HOURS * 60 * 60 * 1000;
+
+  const pendingLegs = await prisma.ticketSelection.findMany({
+    where: { result: "PENDING", fixture_id: { not: null } },
+    select: { fixture_id: true },
+    distinct: ["fixture_id"],
+  });
+  const ids = pendingLegs.map((l) => l.fixture_id).filter(Boolean);
+  if (!ids.length) return { candidates: 0, settled: 0, waiting: 0, failed: 0 };
+
+  const fixtures = await prisma.fixture.findMany({
+    where: {
+      AND: [
+        { id: { in: ids } },
+        { status: "PST" },
+        unsetFilter("grading_completed_at"),
+      ],
+    },
+    select: {
+      id: true,
+      api_fixture_id: true,
+      status: true,
+      start_time: true,
+      postponed_at: true,
+    },
+    take: DEFAULT_BATCH,
+    orderBy: { start_time: "asc" },
+  });
+
+  let settled = 0;
+  let waiting = 0;
+  let failed = 0;
+
+  for (const fx of fixtures) {
+    try {
+      if (!evaluatePostponedSettlementWait(fx).ok) {
+        waiting++;
+        continue;
+      }
+      if (!fx.postponed_at && new Date(fx.start_time).getTime() > waitCutoff) {
+        waiting++;
+        continue;
+      }
+
+      const result = await settleFixture(fx.id, { force: true });
+      if (result && !result.skipped) settled++;
+      console.log(
+        `[settlementRetry] postponed voided fixture=${fx.id} ` +
+          `api_fixture_id=${fx.api_fixture_id} pending=${result?.pendingLegsRemaining ?? "?"}`,
+      );
+    } catch (err) {
+      failed++;
+      console.error(
+        `[settlementRetry] postponed settle failed fixture=${fx.id} ` +
+          `api_fixture_id=${fx.api_fixture_id}:`,
+        err?.message || err,
+      );
+    }
+  }
+
+  return { candidates: fixtures.length, settled, waiting, failed };
+}
+
+/**
  * Rescue "zombie" fixtures: past kickoff, still non-terminal, with at least
  * one PENDING ticket leg. The bulk date sync will never update these when
  * the league drops out of the daily slate, so we pull each one's result
@@ -294,6 +376,7 @@ async function rescueZombieFixtures(now, minStart) {
  * @returns {Promise<{
  *   scanned: number, retried: number, completed: number,
  *   stillPending: number, unresolvable: number, postponedWaiting: number,
+ *   postponed: { candidates: number, settled: number, waiting: number, failed: number },
  *   zombies: { candidates: number, refreshed: number, settled: number, failed: number },
  * }>}
  */
@@ -302,16 +385,19 @@ export async function runSettlementRetry() {
   const minStart = new Date(now - MAX_AGE_DAYS * 24 * 60 * 60 * 1000);
 
   const terminal = await retryTerminalFixtures(now, minStart);
+  const postponed = await settleExpiredPostponedFixtures(now);
   const zombies = await rescueZombieFixtures(now, minStart);
 
   console.log(
     `[settlementRetry] scanned=${terminal.scanned} retried=${terminal.retried} ` +
       `completed=${terminal.completed} stillPending=${terminal.stillPending} ` +
       `unresolvable=${terminal.unresolvable} postponedWaiting=${terminal.postponedWaiting} ` +
+      `postponed: candidates=${postponed.candidates} settled=${postponed.settled} ` +
+      `waiting=${postponed.waiting} failed=${postponed.failed} ` +
       `zombies: candidates=${zombies.candidates} refreshed=${zombies.refreshed} ` +
       `settled=${zombies.settled} failed=${zombies.failed}`,
   );
-  return { ...terminal, zombies };
+  return { ...terminal, postponed, zombies };
 }
 
 export default runSettlementRetry;

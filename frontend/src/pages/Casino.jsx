@@ -181,7 +181,7 @@ function Casino() {
         const ssoToken = await generateMrxSsoToken();
         const targetUrl = new URL(game.path || "/", game.ssoTarget);
         targetUrl.searchParams.set("sso_token", ssoToken);
-        window.open(targetUrl.toString(), "_blank", "noopener,noreferrer");
+        window.location.assign(targetUrl.toString());
       } catch (err) {
         if (err.message === "NOT_LOGGED_IN") {
           navigate("/login");

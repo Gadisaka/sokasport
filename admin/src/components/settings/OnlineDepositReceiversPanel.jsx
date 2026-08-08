@@ -9,8 +9,19 @@ import {
 const empty = {
   cbe: { receiverName: "", receiverAccount: "" },
   telebirr: { receiverName: "", receiverPhone: "" },
-  cbebirr: { receiverName: "", receiverPhone: "" },
+  cbebirr: { receiverName: "", receiverPhone: "", receiverAccount: "" },
 };
+
+/** Mirrors backend `isReceiverConfigured` — a channel without a target account is disabled. */
+function unconfiguredChannels(receivers) {
+  const missing = [];
+  if (!receivers?.cbe?.receiverAccount) missing.push("CBE");
+  if (!receivers?.telebirr?.receiverPhone) missing.push("Telebirr");
+  if (!receivers?.cbebirr?.receiverPhone && !receivers?.cbebirr?.receiverAccount) {
+    missing.push("CBE Birr");
+  }
+  return missing;
+}
 
 /**
  * Online deposit receiver config (CBE / Telebirr / CBE Birr). Used inside Settings tabs.
@@ -56,13 +67,22 @@ export default function OnlineDepositReceiversPanel() {
     );
   }
 
+  const missing = unconfiguredChannels(query.data?.receivers);
+
   return (
     <div>
       <p className="mb-4 text-sm text-[var(--muted)]">
         Account or phone and name shown to players for CBE, Telebirr, and CBE
-        Birr. When set, deposits are only credited if the verification API says
-        the payment matched these details.
+        Birr. Deposits are only credited when the verification API confirms the
+        payment reached these details, so a channel left blank stays disabled.
       </p>
+
+      {missing.length ? (
+        <div className="mb-4 rounded-sm border border-[var(--danger)] px-3 py-2 text-sm text-[var(--danger)]">
+          Online deposits are disabled for {missing.join(", ")} until a receiving
+          account is set.
+        </div>
+      ) : null}
 
       <form onSubmit={handleSave} className="space-y-6">
         <PanelCard className="p-6">
@@ -142,6 +162,10 @@ export default function OnlineDepositReceiversPanel() {
 
         <PanelCard className="p-6">
           <h3 className="text-sm font-semibold">CBE Birr</h3>
+          <p className="mt-1 text-xs text-[var(--muted)]">
+            Set the wallet phone, and the bank account too if players also send
+            from CBE Birr to your CBE account.
+          </p>
           <div className="mt-4 grid gap-3 sm:grid-cols-2">
             <label className="flex flex-col">
               <span className="mb-1 text-xs font-semibold text-[var(--muted)]">
@@ -168,6 +192,21 @@ export default function OnlineDepositReceiversPanel() {
                   setForm((f) => ({
                     ...f,
                     cbebirr: { ...f.cbebirr, receiverPhone: e.target.value },
+                  }))
+                }
+                className="rounded-sm border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm"
+              />
+            </label>
+            <label className="flex flex-col">
+              <span className="mb-1 text-xs font-semibold text-[var(--muted)]">
+                Receiver bank account (optional)
+              </span>
+              <input
+                value={form.cbebirr.receiverAccount}
+                onChange={(e) =>
+                  setForm((f) => ({
+                    ...f,
+                    cbebirr: { ...f.cbebirr, receiverAccount: e.target.value },
                   }))
                 }
                 className="rounded-sm border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm"

@@ -15,10 +15,13 @@ import {
   isOnlinePayMethod,
   isSuccessfulVerification,
   normalizeEthiopiaPhone,
+  normalizePayReceiptSegment,
   parseVerifiedAmountEtb,
+  parseVerifiedPaymentDate,
   sanitizePaySegment,
 } from "../lib/onlineDepositVerify.js";
 import {
+  isReceiverConfigured,
   ONLINE_DEPOSIT_RECEIVERS_SETTING_KEY,
   parseReceiversSetting,
   verifyResponseMatchesReceivers,
@@ -29,6 +32,66 @@ import {
 } from "../services/paymentVerifyClient.js";
 import { applyDepositBonusesInTx } from "../lib/bonusEngine.js";
 import { creditWallet } from "../lib/walletBalance.js";
+import { logAuditEvent } from "../lib/auditLog.js";
+
+/** Receipts older than this are refused; 0 disables the check. */
+const DEFAULT_MAX_RECEIPT_AGE_HOURS = 24;
+
+function maxReceiptAgeHours() {
+  const raw = process.env.ONLINE_DEPOSIT_MAX_RECEIPT_AGE_HOURS;
+  if (raw == null || String(raw).trim() === "") {
+    return DEFAULT_MAX_RECEIPT_AGE_HOURS;
+  }
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_MAX_RECEIPT_AGE_HOURS;
+}
+
+/**
+ * Rejects both the exact ledger key and — for CBE Birr, whose key embeds the
+ * payer phone — the same receipt claimed under a different payer phone.
+ */
+async function findPaymentAlreadyUsed(method, ledgerRef, receiptSegment) {
+  const or = [{ reference: { equals: ledgerRef, mode: "insensitive" } }];
+  if (String(method).toLowerCase() === "cbebirr" && receiptSegment) {
+    or.push({
+      reference: {
+        startsWith: `online-pay:cbebirr:${receiptSegment}:`,
+        mode: "insensitive",
+      },
+    });
+  }
+  return prisma.transaction.findFirst({
+    where: { OR: or },
+    select: { id: true, reference: true },
+  });
+}
+
+function payeeSummaryFromResponse(method, data) {
+  const m = String(method).toLowerCase();
+  if (m === "telebirr") {
+    const d = data?.data && typeof data.data === "object" ? data.data : {};
+    return {
+      payer: d.payerName ?? null,
+      payerAccount: d.payerTelebirrNo ?? null,
+      receiver: d.creditedPartyName ?? null,
+      receiverAccount: d.creditedPartyAccountNo ?? null,
+    };
+  }
+  if (m === "cbe") {
+    return {
+      payer: data?.payer ?? null,
+      payerAccount: null,
+      receiver: data?.receiver ?? null,
+      receiverAccount: data?.receiverAccount ?? null,
+    };
+  }
+  return {
+    payer: data?.customerName ?? null,
+    payerAccount: data?.debitAccount ?? null,
+    receiver: data?.receiverName ?? null,
+    receiverAccount: data?.creditAccount ?? null,
+  };
+}
 
 function verifySummaryFromResponse(method, data) {
   const m = String(method).toLowerCase();
@@ -207,6 +270,20 @@ export async function verifyOnlineDeposit(req, res) {
       return res.status(400).json({ message: "Invalid payment method" });
     }
 
+    const receiversRow = await prisma.setting.findUnique({
+      where: { key: ONLINE_DEPOSIT_RECEIVERS_SETTING_KEY },
+    });
+    const receiversCfg = parseReceiversSetting(receiversRow?.value);
+    if (!isReceiverConfigured(methodRaw, receiversCfg)) {
+      console.error(
+        `online-deposit refused: no receiving account configured for "${methodRaw}" — set it in Admin → Online deposit receivers`,
+      );
+      return res.status(503).json({
+        message:
+          "Online deposit for this method is unavailable right now. Please deposit at a shop or try another method.",
+      });
+    }
+
     const remote = await verifyPaymentRemote(methodRaw, remoteBody);
 
     if (!remote.ok) {
@@ -224,14 +301,29 @@ export async function verifyOnlineDeposit(req, res) {
       });
     }
 
-    const receiversRow = await prisma.setting.findUnique({
-      where: { key: ONLINE_DEPOSIT_RECEIVERS_SETTING_KEY },
-    });
-    const receiversCfg = parseReceiversSetting(receiversRow?.value);
+    const payee = payeeSummaryFromResponse(methodRaw, data);
     if (!verifyResponseMatchesReceivers(methodRaw, receiversCfg, data)) {
+      console.warn(
+        `online-deposit rejected: payee mismatch method=${methodRaw} ref=${ledgerRef} receiver="${payee.receiver ?? ""}" account="${payee.receiverAccount ?? ""}"`,
+      );
       return res.status(400).json({
         message: "Payment recipient does not match platform deposit details.",
       });
+    }
+
+    const maxAgeHours = maxReceiptAgeHours();
+    const paidAt = parseVerifiedPaymentDate(methodRaw, data);
+    if (maxAgeHours > 0 && paidAt) {
+      const ageHours = (Date.now() - paidAt.getTime()) / 3_600_000;
+      if (ageHours > maxAgeHours) {
+        console.warn(
+          `online-deposit rejected: receipt too old ref=${ledgerRef} ageHours=${ageHours.toFixed(1)}`,
+        );
+        return res.status(400).json({
+          message:
+            "This payment is too old to be used for a deposit. Please contact support.",
+        });
+      }
     }
 
     const verifiedAmount = parseVerifiedAmountEtb(methodRaw, data);
@@ -257,11 +349,12 @@ export async function verifyOnlineDeposit(req, res) {
 
     const creditAmount = verifiedAmount;
 
-    // Check if this payment reference was already used (defense-in-depth)
-    const existingTx = await prisma.transaction.findFirst({
-      where: { reference: ledgerRef },
-      select: { id: true },
-    });
+    // Check if this payment was already used (defense-in-depth)
+    const existingTx = await findPaymentAlreadyUsed(
+      methodRaw,
+      ledgerRef,
+      normalizePayReceiptSegment(parts.receiptNumber),
+    );
     if (existingTx) {
       return res.status(409).json({
         message: "This payment was already used for a deposit.",
@@ -313,6 +406,24 @@ export async function verifyOnlineDeposit(req, res) {
           newBalance: Number(wFinal?.balance ?? credited.balanceAfter),
           creditedAmount: creditAmount,
         };
+      });
+
+      await logAuditEvent({
+        req,
+        action: "ONLINE_DEPOSIT_CREDITED",
+        module: "WALLET",
+        entityType: "WALLET",
+        entityId: wallet.id,
+        meta: {
+          method: methodRaw,
+          amount: result.creditedAmount,
+          reference: ledgerRef,
+          paidAt: paidAt ? paidAt.toISOString() : null,
+          payer: payee.payer,
+          payerAccount: payee.payerAccount,
+          receiver: payee.receiver,
+          receiverAccount: payee.receiverAccount,
+        },
       });
 
       const depMsg = depositNotification({

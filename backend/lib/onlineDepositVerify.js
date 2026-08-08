@@ -34,6 +34,16 @@ export function sanitizePaySegment(s) {
 }
 
 /**
+ * Ledger keys are case-stable so `abc1` and `ABC1` cannot become two refs for
+ * the same payment.
+ * @param {unknown} s
+ * @returns {string}
+ */
+export function normalizePayReceiptSegment(s) {
+  return sanitizePaySegment(s).toUpperCase();
+}
+
+/**
  * @param {string} method
  * @returns {method is "cbe" | "cbebirr" | "telebirr"}
  */
@@ -48,7 +58,7 @@ export function isOnlinePayMethod(method) {
  */
 export function buildOnlinePayLedgerReference(method, parts) {
   const m = String(method).toLowerCase();
-  const s = sanitizePaySegment;
+  const s = normalizePayReceiptSegment;
   if (m === "telebirr") {
     const ref = s(parts.reference);
     return ref ? `online-pay:telebirr:${ref}` : null;
@@ -119,4 +129,50 @@ export function isSuccessfulVerification(method, body) {
  */
 export function amountsMatch(declared, verified, epsilon = 0.01) {
   return Math.abs(declared - verified) <= epsilon;
+}
+
+/**
+ * Providers report local wall-clock time in mixed formats. Values are read as
+ * UTC, which leaves a few hours of slack in favour of the player.
+ * @param {unknown} raw
+ * @returns {Date|null}
+ */
+export function parseProviderDate(raw) {
+  const s = String(raw ?? "").trim();
+  if (!s) return null;
+
+  const dmy = s.match(
+    /^(\d{2})[-/](\d{2})[-/](\d{4})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?/,
+  );
+  if (dmy) {
+    const [, dd, mm, yyyy, hh, mi, ss] = dmy;
+    return new Date(Date.UTC(+yyyy, +mm - 1, +dd, +hh, +mi, +(ss ?? 0)));
+  }
+
+  const ymd = s.match(
+    /^(\d{4})[-/](\d{2})[-/](\d{2})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?/,
+  );
+  if (ymd) {
+    const [, yyyy, mm, dd, hh, mi, ss] = ymd;
+    return new Date(Date.UTC(+yyyy, +mm - 1, +dd, +hh, +mi, +(ss ?? 0)));
+  }
+
+  const parsed = new Date(s);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+/**
+ * @param {"cbe"|"cbebirr"|"telebirr"} method
+ * @param {Record<string, unknown>} body
+ * @returns {Date|null}
+ */
+export function parseVerifiedPaymentDate(method, body) {
+  const m = String(method).toLowerCase();
+  if (m === "cbebirr") return parseProviderDate(body?.transactionDate);
+  if (m === "cbe") return parseProviderDate(body?.date);
+  if (m === "telebirr") {
+    const data = body?.data && typeof body.data === "object" ? body.data : {};
+    return parseProviderDate(data.paymentDate);
+  }
+  return null;
 }

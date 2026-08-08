@@ -21,7 +21,10 @@ import {
   settleFixture,
   isTerminalFixtureStatus,
 } from "../services/ticketSettlementService.js";
-import { getPostponedWaitInfo } from "../lib/postponedSettlement.js";
+import {
+  POSTPONED_WAIT_HOURS,
+  getPostponedWaitInfo,
+} from "../lib/postponedSettlement.js";
 
 const ALLOWED_OVERRIDE_STATUSES = new Set([
   "FT",
@@ -46,6 +49,19 @@ const HAS_RESULT_LOCK_FIELDS =
 const HAS_MARKET_OVERRIDES_FIELD = FIXTURE_MODEL_FIELDS.has(
   "market_result_overrides",
 );
+
+/**
+ * Prisma clause matching PST fixtures still inside their reschedule window.
+ * Those are waiting by design, so they must not be counted as stuck.
+ */
+function postponedWaitingWhere(now = new Date()) {
+  return {
+    status: "PST",
+    postponed_at: {
+      gt: new Date(now.getTime() - POSTPONED_WAIT_HOURS * 60 * 60 * 1000),
+    },
+  };
+}
 
 function parseBoolQuery(value, defaultValue) {
   if (value === undefined || value === null || value === "") return defaultValue;
@@ -77,6 +93,7 @@ function parseEditableOptions(req) {
 function mapFixtureRow(fixture, pendingLegs = 0, editableOptions = {}) {
   const editable = isFixtureEditable(fixture, editableOptions);
   const postponedWait = getPostponedWaitInfo(fixture);
+  const postponedWaiting = (postponedWait.waitHoursRemaining ?? 0) > 0;
   return {
     id: fixture.id,
     apiFixtureId: fixture.api_fixture_id,
@@ -94,6 +111,7 @@ function mapFixtureRow(fixture, pendingLegs = 0, editableOptions = {}) {
     postponedAt: postponedWait.postponedAt,
     postponedWaitExpires: postponedWait.postponedWaitExpires,
     waitHoursRemaining: postponedWait.waitHoursRemaining,
+    postponedWaiting,
     resultVersion: fixture.result_version,
     resultLockedAt: HAS_RESULT_LOCK_FIELDS ? fixture.result_locked_at : null,
     resultLockedBy: HAS_RESULT_LOCK_FIELDS ? fixture.result_locked_by : null,
@@ -103,7 +121,8 @@ function mapFixtureRow(fixture, pendingLegs = 0, editableOptions = {}) {
     editableReason: getFixtureEditableReason(fixture, editableOptions),
     stuckSettlement:
       isTerminalFixtureStatus(fixture.status) &&
-      fixture.grading_completed_at == null,
+      fixture.grading_completed_at == null &&
+      !postponedWaiting,
   };
 }
 
@@ -129,6 +148,7 @@ function buildListWhere({ q, status, filter, editableOnly, editableOptions }) {
       { grading_completed_at: null },
       { grading_completed_at: { isSet: false } },
     ];
+    where.NOT = postponedWaitingWhere();
   }
 
   if (Object.keys(where).length) clauses.push(where);
@@ -214,6 +234,7 @@ export async function getAdminFixturesSummary(req, res) {
                 { grading_completed_at: { isSet: false } },
               ],
             },
+            { NOT: postponedWaitingWhere() },
           ],
         },
       }),

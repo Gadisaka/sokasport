@@ -264,6 +264,62 @@ test("evaluateCashback allows cashier tickets without user_id", () => {
   assert.equal(ev.amount, 150);
 });
 
+test("pickCashbackTier rounds a between-band ratio down to the band reached", () => {
+  // 44.6 sits between the 20-44 and 45-79 bands; ranges are whole numbers but
+  // odds ratios are not, so it must pay the 20-44 multiplier, not nothing.
+  assert.equal(pickCashbackTier(44.6, TIERS).stakeMultiplier, 1);
+  assert.equal(pickCashbackTier(79.9, TIERS).stakeMultiplier, 2);
+  assert.equal(pickCashbackTier(99.5, TIERS).stakeMultiplier, 3);
+  assert.equal(pickCashbackTier(399.2, TIERS).stakeMultiplier, 5);
+  // Still nothing below the lowest band.
+  assert.equal(pickCashbackTier(19.99, TIERS), null);
+});
+
+test("evaluateCashback pays a between-band ratio instead of denying it", () => {
+  // 103.2372 / 2.3 = 44.886 -> 20-44 band -> stake x1
+  const ev = evaluateCashback({
+    ticket: { user_id: "u1", stake: 30, total_odds: 103.2372, created_at: new Date() },
+    selections: selections(9, 2.3),
+    bonus: tieredBonus(),
+    now: new Date(),
+  });
+  assert.equal(ev.eligible, true);
+  assert.equal(ev.tier.stakeMultiplier, 1);
+  assert.equal(ev.amount, 30);
+});
+
+test("evaluateCashback prices tiers off sold odds when a leg voided", () => {
+  // Sold at 1.5 * 1.5 * 2.0 * 2.0 = 9 ... scaled up to cross a band boundary.
+  const sels = [
+    { result: "VOID", odds: 2 },
+    { result: "WON", odds: 5 },
+    { result: "WON", odds: 5 },
+    { result: "LOST", odds: 2 },
+  ];
+  // Settlement collapsed the VOID leg: stored odds are 5*5*2 = 50 (ratio 25,
+  // x1) but the customer bought 2*5*5*2 = 100 (ratio 50, x2).
+  const ev = evaluateCashback({
+    ticket: { user_id: "u1", stake: 10, total_odds: 50, created_at: new Date() },
+    selections: sels,
+    bonus: tieredBonus(),
+    now: new Date(),
+  });
+  assert.equal(ev.result, 50);
+  assert.equal(ev.tier.stakeMultiplier, 2);
+  assert.equal(ev.amount, 20);
+});
+
+test("evaluateCashback keeps stored odds when no leg voided", () => {
+  const ev = evaluateCashback({
+    ticket: { user_id: "u1", stake: 10, total_odds: 96, created_at: new Date() },
+    selections: selections(3, 2.3),
+    bonus: tieredBonus(),
+    now: new Date(),
+  });
+  assert.ok(ev.result > 41.7 && ev.result < 41.8);
+  assert.equal(ev.amount, 10);
+});
+
 test("evaluateCashback reported slip: 10 legs, stake 30, 500.99/1.63 → ×5", () => {
   const ev = evaluateCashback({
     ticket: {

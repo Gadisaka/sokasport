@@ -165,7 +165,13 @@ export async function resolveAccumulatorForNewTicket(db, legCount, stake, totalO
 /**
  * Pick the cashback tier matching `result`. Ranges are inclusive on both
  * ends; a tier with `maxResult == null` is open-ended (matches everything
- * at or above its `minResult`). Returns the first matching tier or null.
+ * at or above its `minResult`).
+ *
+ * Configured ranges use whole numbers (20–44, 45–79, …) while `result` is a
+ * ratio of odds, so a value such as 44.6 falls between two tiers. Tiers are
+ * treated as lower bounds in that case: the highest tier whose `minResult`
+ * the value clears wins, which rounds the customer down to the band they
+ * fully reached instead of denying the payout.
  *
  * @param {number} result
  * @param {Array<{ minResult: number, maxResult: number | null, stakeMultiplier: number }>} tiers
@@ -174,22 +180,64 @@ export function pickCashbackTier(result, tiers) {
   if (!Array.isArray(tiers)) return null;
   const r = Number(result);
   if (!Number.isFinite(r)) return null;
-  for (const t of tiers) {
-    if (!t || typeof t !== "object") continue;
+
+  const normalize = (t) => {
+    if (!t || typeof t !== "object") return null;
     const min = Number(t.minResult);
     const mult = Number(t.stakeMultiplier);
-    if (!Number.isFinite(min) || !Number.isFinite(mult)) continue;
+    if (!Number.isFinite(min) || !Number.isFinite(mult)) return null;
     const max = t.maxResult == null ? Infinity : Number(t.maxResult);
-    if (Number.isNaN(max)) continue;
-    if (r >= min && r <= max) {
-      return {
-        minResult: min,
-        maxResult: t.maxResult == null ? null : max,
-        stakeMultiplier: mult,
-      };
+    if (Number.isNaN(max)) return null;
+    return {
+      minResult: min,
+      maxResult: t.maxResult == null ? null : max,
+      stakeMultiplier: mult,
+      max,
+    };
+  };
+
+  let fallback = null;
+  for (const raw of tiers) {
+    const t = normalize(raw);
+    if (!t) continue;
+    if (r >= t.minResult && r <= t.max) {
+      const { max, ...tier } = t;
+      return tier;
+    }
+    if (r > t.max && (!fallback || t.minResult > fallback.minResult)) {
+      fallback = t;
     }
   }
-  return null;
+  if (!fallback) return null;
+  const { max, ...tier } = fallback;
+  return tier;
+}
+
+/**
+ * Odds the ticket was sold at. Settlement rewrites `Ticket.total_odds` when a
+ * ticket resolves, collapsing VOID legs to a 1.0 multiplier, so the stored
+ * value is smaller than what the customer bought. Cashback tiers are priced
+ * off the sold odds, so rebuild them from the legs' locked odds whenever a
+ * VOID leg is present.
+ *
+ * @param {import("@prisma/client").Ticket} ticket
+ * @param {Array<{ result?: string, odds?: number }>} selections
+ */
+function placementTotalOdds(ticket, selections) {
+  const stored = Number(ticket.total_odds);
+  if (!Array.isArray(selections) || selections.length === 0) return stored;
+  const hasVoidLeg = selections.some(
+    (s) => s && String(s.result ?? "").toUpperCase() === "VOID",
+  );
+  if (!hasVoidLeg) return stored;
+
+  let product = 1;
+  for (const sel of selections) {
+    const o = Number(sel?.odds);
+    if (!Number.isFinite(o) || o <= 0) return stored;
+    product *= o;
+  }
+  return product > stored ? product : stored;
 }
 
 /**
@@ -287,7 +335,7 @@ export function evaluateCashback({
   }
   if (largestLostOdds <= 0) return fail("no_lost_leg");
 
-  const totalOdds = Number(ticket.total_odds);
+  const totalOdds = placementTotalOdds(ticket, selections);
   if (!Number.isFinite(totalOdds) || totalOdds <= 0) {
     return fail("invalid_total_odds");
   }

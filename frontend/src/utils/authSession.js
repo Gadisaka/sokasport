@@ -28,10 +28,12 @@ export function clearAuthSession() {
   window.dispatchEvent(new Event("authSessionUpdated"));
 }
 
-export function saveAuthSession({ token, user, remember = false }) {
-  const storage = remember ? localStorage : sessionStorage;
-  storage.setItem("token", token);
-  storage.setItem("user", JSON.stringify(user));
+export function saveAuthSession({ token, user, remember: _remember = true }) {
+  // Always use localStorage so auth survives MRX same-tab returns and new tabs.
+  localStorage.setItem("token", token);
+  localStorage.setItem("user", JSON.stringify(user));
+  sessionStorage.removeItem("token");
+  sessionStorage.removeItem("user");
   window.dispatchEvent(new Event("authSessionUpdated"));
 }
 

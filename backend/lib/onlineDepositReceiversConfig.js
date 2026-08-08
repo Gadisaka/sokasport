@@ -6,11 +6,12 @@ export const ONLINE_DEPOSIT_RECEIVERS_SETTING_KEY = "ONLINE_DEPOSIT_RECEIVERS";
 
 /** @typedef {{ receiverName: string, receiverAccount: string }} CbeReceiver */
 /** @typedef {{ receiverName: string, receiverPhone: string }} MmReceiver */
+/** @typedef {{ receiverName: string, receiverPhone: string, receiverAccount: string }} CbeBirrReceiver */
 
 export const DEFAULT_ONLINE_DEPOSIT_RECEIVERS = {
   cbe: { receiverName: "", receiverAccount: "" },
   telebirr: { receiverName: "", receiverPhone: "" },
-  cbebirr: { receiverName: "", receiverPhone: "" },
+  cbebirr: { receiverName: "", receiverPhone: "", receiverAccount: "" },
 };
 
 /**
@@ -48,6 +49,8 @@ export function parseReceiversSetting(raw) {
         base[key].receiverName = chunk.receiverName.trim();
       if (typeof chunk.receiverPhone === "string")
         base[key].receiverPhone = chunk.receiverPhone.trim();
+      if (key === "cbebirr" && typeof chunk.receiverAccount === "string")
+        base.cbebirr.receiverAccount = chunk.receiverAccount.trim();
     }
   }
   return base;
@@ -94,6 +97,15 @@ export function validateReceiversRequestBody(body) {
           return { ok: false, message: `${key}.receiverPhone must be a string` };
         }
         merged[key].receiverPhone = chunk.receiverPhone.trim();
+      }
+      if (key === "cbebirr" && chunk.receiverAccount !== undefined) {
+        if (typeof chunk.receiverAccount !== "string") {
+          return {
+            ok: false,
+            message: "cbebirr.receiverAccount must be a string",
+          };
+        }
+        merged.cbebirr.receiverAccount = chunk.receiverAccount.trim();
       }
     }
   }
@@ -150,8 +162,56 @@ function cbeAccountMatches(configAcc, verifyAcc) {
 }
 
 /**
- * If all configured fields for the method are empty, returns true (skip check).
- * Otherwise requires each non-empty configured field to match verify response.
+ * Matches an account/phone identifier that may arrive masked ("2519****0278")
+ * or with a trailing holder name ("0910872474 - SOME NAME").
+ */
+function accountIdentifierMatches(configValue, verifyValue) {
+  const cfgDigits = digitsOnly(configValue);
+  if (cfgDigits.length < 4) return false;
+  const raw = String(verifyValue ?? "");
+  const segments = raw
+    .split(/\*+/)
+    .map((part) => digitsOnly(part))
+    .filter((s) => s.length >= 2);
+  if (segments.length === 0) return false;
+
+  if (raw.includes("*")) {
+    return segments.every((seg) => cfgDigits.includes(seg));
+  }
+
+  const cfgTail = cfgDigits.slice(-9);
+  return segments.some((seg) => {
+    const segTail = seg.slice(-9);
+    if (cfgTail.length < 6 || segTail.length < 6) return false;
+    return cfgTail.endsWith(segTail) || segTail.endsWith(cfgTail);
+  });
+}
+
+/**
+ * True when the platform's receiving account for this channel is configured.
+ * Without it there is nothing to compare the verified payee against, so
+ * deposits must be refused rather than credited.
+ * @param {"cbe"|"telebirr"|"cbebirr"} method
+ * @param {typeof DEFAULT_ONLINE_DEPOSIT_RECEIVERS} cfg
+ * @returns {boolean}
+ */
+export function isReceiverConfigured(method, cfg) {
+  const m = String(method).toLowerCase();
+  if (m === "cbe") return (cfg?.cbe?.receiverAccount ?? "").length > 0;
+  if (m === "telebirr") return (cfg?.telebirr?.receiverPhone ?? "").length > 0;
+  if (m === "cbebirr") {
+    return (
+      (cfg?.cbebirr?.receiverPhone ?? "").length > 0 ||
+      (cfg?.cbebirr?.receiverAccount ?? "").length > 0
+    );
+  }
+  return false;
+}
+
+/**
+ * Fails closed: an unconfigured channel never matches, so no payment made to a
+ * third party can be credited. The receiving account must match, and the
+ * receiver name is additionally enforced when configured.
  * @param {"cbe"|"telebirr"|"cbebirr"} method
  * @param {typeof DEFAULT_ONLINE_DEPOSIT_RECEIVERS} cfg
  * @param {Record<string, unknown>} verifyData
@@ -159,50 +219,42 @@ function cbeAccountMatches(configAcc, verifyAcc) {
  */
 export function verifyResponseMatchesReceivers(method, cfg, verifyData) {
   const m = String(method).toLowerCase();
+  if (!isReceiverConfigured(m, cfg)) return false;
+
   if (m === "cbe") {
     const { receiverName, receiverAccount } = cfg.cbe;
-    const needName = receiverName.length > 0;
-    const needAcc = receiverAccount.length > 0;
-    if (!needName && !needAcc) return true;
     const recvName = String(verifyData?.receiver ?? "");
     const recvAcc = String(verifyData?.receiverAccount ?? "");
-    if (needName && !nameMatchesConfigured(receiverName, recvName)) return false;
-    if (needAcc && !cbeAccountMatches(receiverAccount, recvAcc)) return false;
+    if (!cbeAccountMatches(receiverAccount, recvAcc)) return false;
+    if (receiverName && !nameMatchesConfigured(receiverName, recvName)) {
+      return false;
+    }
     return true;
   }
   if (m === "telebirr") {
     const { receiverName, receiverPhone } = cfg.telebirr;
-    const needName = receiverName.length > 0;
-    const needPhone = receiverPhone.length > 0;
-    if (!needName && !needPhone) return true;
-    const d = verifyData?.data && typeof verifyData.data === "object" ? verifyData.data : {};
+    const d =
+      verifyData?.data && typeof verifyData.data === "object"
+        ? verifyData.data
+        : {};
     const name = String(d.creditedPartyName ?? "");
     const acct = String(d.creditedPartyAccountNo ?? "");
-    if (needName && !nameMatchesConfigured(receiverName, name)) return false;
-    if (needPhone && !telebirrAccountMatchesConfig(receiverPhone, acct)) return false;
+    if (!telebirrAccountMatchesConfig(receiverPhone, acct)) return false;
+    if (receiverName && !nameMatchesConfigured(receiverName, name)) return false;
     return true;
   }
   if (m === "cbebirr") {
-    const { receiverName, receiverPhone } = cfg.cbebirr;
-    const needName = receiverName.length > 0;
-    const needPhone = receiverPhone.length > 0;
-    if (!needName && !needPhone) return true;
+    const { receiverName, receiverPhone, receiverAccount } = cfg.cbebirr;
     const recvName = String(verifyData?.receiverName ?? "");
     const credit = String(verifyData?.creditAccount ?? "");
-    if (needName && !nameMatchesConfigured(receiverName, recvName)) return false;
-    if (needPhone) {
-      const p = digitsOnly(receiverPhone);
-      const c = digitsOnly(credit);
-      if (p.length >= 4 && c.length > 0) {
-        const ok =
-          c.endsWith(p.slice(-Math.min(9, p.length))) ||
-          p.endsWith(c.slice(-Math.min(9, c.length))) ||
-          c.includes(p.slice(-6)) ||
-          p.includes(c.slice(-6));
-        if (!ok) return false;
-      }
+    const identifierOk =
+      (receiverPhone && accountIdentifierMatches(receiverPhone, credit)) ||
+      (receiverAccount && accountIdentifierMatches(receiverAccount, credit));
+    if (!identifierOk) return false;
+    if (receiverName && !nameMatchesConfigured(receiverName, recvName)) {
+      return false;
     }
     return true;
   }
-  return true;
+  return false;
 }
