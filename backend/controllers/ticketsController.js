@@ -28,9 +28,15 @@ import { notifyUserSafe } from "../lib/createNotification.js";
 import { betPlacedNotification } from "../lib/notificationMessages.js";
 import { resolveAccumulatorForNewTicket } from "../lib/bonusEngine.js";
 import { refundTicketStakeInTx } from "../services/ticketCancelRefund.js";
+import {
+  abortCashierPrintHoldInTx,
+  findCashierPrintBet,
+  holdCashierPrintInTx,
+} from "../services/cashierPrintHold.js";
 import { classifySelectionSupport } from "../services/markets/marketSupport.js";
 import { validatePlacementSelections } from "../services/odds-engine/validateSelections.js";
-import { validateOpenTicketForPrint, normalizeSnapshotForPrintValidation, collectSellBlockingLegs } from "../services/ticketPrintValidation.js";
+import { validateOpenTicketForPrint, collectSellBlockingLegs } from "../services/ticketPrintValidation.js";
+import { evaluateTicketSelectionRemoval } from "../lib/ticketSelectionHelpers.js";
 import { getCache, setCache } from "../services/cacheService.js";
 import { withWalletLock } from "../lib/walletLock.js";
 import {
@@ -38,7 +44,6 @@ import {
   refundHeldTicket,
 } from "../services/heldTicketService.js";
 import { logPlacementValidation } from "../lib/placementValidationLogger.js";
-import { toMoney, d, sub } from "../lib/moneyDecimal.js";
 import { debitWallet } from "../lib/walletBalance.js";
 import {
   buildCouponNumber,
@@ -344,11 +349,7 @@ async function assertOpenTicketEditable(req, ticketId, { includeSelections = fal
     }
   }
 
-  const printReference = `ticket-print:${ticket.id}`;
-  const existingPrint = await prisma.transaction.findFirst({
-    where: { type: "BET", reference: printReference },
-    select: { id: true },
-  });
+  const existingPrint = await findCashierPrintBet(prisma, ticket.id);
   if (existingPrint) {
     return {
       error: {
@@ -2711,12 +2712,68 @@ export async function updateTicketStake(req, res) {
   }
 }
 
+async function mappedTicketForPrint(ticketId) {
+  const preparedTicket = await prisma.ticket.findUnique({
+    where: { id: ticketId },
+    include: ticketDetailInclude,
+  });
+  const printedSet = preparedTicket?.cashier_id
+    ? await getPrintedTicketIdSet({
+        cashierId: preparedTicket.cashier_id,
+        ticketIds: [ticketId],
+      })
+    : new Set();
+  return preparedTicket
+    ? mapTicket(preparedTicket, { printed: printedSet.has(ticketId) })
+    : undefined;
+}
+
+async function respondPrintWalletError(req, res, error) {
+  if (error?.code === "wallet_busy" || error?.message === "WALLET_BUSY") {
+    await logPlacementValidation({
+      actorUserId: req.user?.sub || null,
+      actorRole: req.user?.role || "CASHIER",
+      flowChannel: "CASHIER",
+      rejectionReason: "wallet_busy",
+      status: "REJECTED",
+    });
+    return res.status(409).json({
+      code: "wallet_busy",
+      message: "Cashier wallet is busy. Retry shortly.",
+    });
+  }
+  if (error?.message === "INSUFFICIENT_BALANCE") {
+    await logPlacementValidation({
+      actorUserId: req.user?.sub || null,
+      actorRole: req.user?.role || "CASHIER",
+      flowChannel: "CASHIER",
+      rejectionReason: "insufficient_balance",
+      status: "REJECTED",
+    });
+    return res.status(400).json({ message: "Insufficient cashier balance" });
+  }
+  if (error?.message === "INVALID_AMOUNT") {
+    return res.status(400).json({ message: "stake must be a positive number" });
+  }
+  if (error?.message === "ACCESS_DENIED" || error?.statusCode === 403) {
+    return res.status(403).json({ message: "Access denied" });
+  }
+  if (error?.message === "CASHIER_WALLET_NOT_FOUND") {
+    return res.status(404).json({ message: "Cashier wallet not found" });
+  }
+  if (error?.statusCode === 409) {
+    return res.status(409).json({
+      message: "Ticket status changed concurrently; print rejected",
+      code: "status_conflict",
+    });
+  }
+  return null;
+}
+
 /**
  * POST /api/tickets/:id/prepare-print
- * Validates odds/markets AND reserves a receipt number for an OPEN ticket in one
- * round trip before physical print (no wallet debit). The merged validation
- * keeps the cashier print flow to a single pre-print call; drift/version/lock
- * prompts surface here with the same 409 shapes the frontend already handles.
+ * Validates odds/markets, holds cashier float (`ticket-print:{id}` BET), and
+ * reserves a receipt number before physical print.
  */
 export async function preparePrintTicket(req, res) {
   try {
@@ -2768,50 +2825,129 @@ export async function preparePrintTicket(req, res) {
       return res.status(validation.statusCode).json(validation.body);
     }
 
-    let receiptNumber = ticket.receipt_number;
-    if (!receiptNumber) {
-      receiptNumber = await perfSpan(req.id, "print.prepare.reserveReceipt", () =>
-        reserveUniqueReceiptNumber(prisma),
-      );
-      await prisma.ticket.update({
-        where: { id: ticket.id },
-        data: {
-          receipt_number: receiptNumber,
-          cashier_id: ticket.cashier_id || cashier.id,
-          branch_name: ticket.branch_name || cashier.branch_name,
-          branch_location: ticket.branch_location || cashier.branch_location,
-        },
-      });
-    }
-
-    const preparedTicket = await perfSpan(req.id, "print.prepare.reloadTicket", () =>
-      prisma.ticket.findUnique({
-        where: { id: ticket.id },
-        include: ticketDetailInclude,
-      }),
+    const hold = await perfSpan(req.id, "print.prepare.holdFloat", () =>
+      withWalletLock(cashier.wallet_id, {}, async () =>
+        prisma.$transaction(async (tx) =>
+          holdCashierPrintInTx(tx, {
+            ticket,
+            cashier,
+            reserveReceiptNumber: reserveUniqueReceiptNumber,
+          }),
+        ),
+      ),
     );
-    const printedSet = preparedTicket?.cashier_id
-      ? await getPrintedTicketIdSet({
-          cashierId: preparedTicket.cashier_id,
-          ticketIds: [ticket.id],
-        })
-      : new Set();
+
+    const mapped = await perfSpan(req.id, "print.prepare.reloadTicket", () =>
+      mappedTicketForPrint(ticket.id),
+    );
 
     return res.json({
-      message: "Ticket prepared for print",
-      ticket: preparedTicket
-        ? mapTicket(preparedTicket, { printed: printedSet.has(ticket.id) })
-        : undefined,
+      message: hold.alreadyHeld
+        ? "Ticket already prepared for print"
+        : "Ticket prepared for print",
+      alreadyHeld: hold.alreadyHeld,
+      deductedAmount: hold.deductedAmount,
+      cashierWalletBalance: hold.balanceAfter,
+      ticket: mapped,
     });
   } catch (error) {
+    const handled = await respondPrintWalletError(req, res, error);
+    if (handled) return handled;
     console.error("preparePrintTicket error:", error);
     return res.status(500).json({ message: "Failed to prepare ticket print" });
   }
 }
 
 /**
+ * POST /api/tickets/:id/abort-print
+ * Releases a live print hold after local print failure. Ticket stays OPEN.
+ */
+export async function abortPrintTicket(req, res) {
+  try {
+    const ticket = await prisma.ticket.findUnique({
+      where: { id: req.params.id },
+    });
+    if (!ticket) {
+      return res.status(404).json({ message: "Ticket not found" });
+    }
+
+    const cashier = await resolveCashierByUserId(req.user.sub);
+    if (!cashier) {
+      return res.status(404).json({ message: CASHIER_PROFILE_MISSING_MESSAGE });
+    }
+    if (ticket.cashier_id && ticket.cashier_id !== cashier.id) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+    if (ticket.status === "PRINTED") {
+      return res.status(400).json({
+        message: "Cannot abort a print-confirmed ticket",
+      });
+    }
+    if (ticket.status !== "OPEN") {
+      return res.status(400).json({
+        message: "Only OPEN tickets can abort print",
+      });
+    }
+
+    const existing = await findCashierPrintBet(prisma, ticket.id);
+    if (!existing) {
+      const wallet = await prisma.wallet.findUnique({
+        where: { id: cashier.wallet_id },
+        select: { balance: true },
+      });
+      return res.json({
+        message: "Print hold was already released",
+        aborted: false,
+        refundedAmount: 0,
+        cashierWalletBalance: Number(wallet?.balance || 0),
+      });
+    }
+
+    const result = await withWalletLock(cashier.wallet_id, {}, async () =>
+      prisma.$transaction(async (tx) =>
+        abortCashierPrintHoldInTx(tx, { ticketId: ticket.id }),
+      ),
+    );
+
+    await logAuditEvent({
+      req,
+      action: "TICKET_PRINT_ABORTED",
+      module: "TICKETS",
+      entityType: "TICKET",
+      entityId: ticket.id,
+      meta: {
+        cashierId: cashier.id,
+        refundedAmount: result.refunded,
+        reason: result.reason,
+      },
+    });
+
+    const wallet = await prisma.wallet.findUnique({
+      where: { id: cashier.wallet_id },
+      select: { balance: true },
+    });
+
+    return res.json({
+      message: result.aborted
+        ? "Print hold released and cashier wallet refunded"
+        : "Print hold was already released",
+      aborted: result.aborted,
+      refundedAmount: result.refunded,
+      cashierWalletBalance:
+        result.balanceAfter ?? Number(wallet?.balance || 0),
+    });
+  } catch (error) {
+    const handled = await respondPrintWalletError(req, res, error);
+    if (handled) return handled;
+    console.error("abortPrintTicket error:", error);
+    return res.status(500).json({ message: "Failed to abort ticket print" });
+  }
+}
+
+/**
  * PATCH /api/tickets/:id/confirm-print
- * Deducts cashier stake only after print confirmation.
+ * Marks OPEN → PRINTED after paper is sent. Debit already happened in
+ * prepare-print; this path only charges when an older client skipped the hold.
  */
 export async function confirmPrintTicket(req, res) {
   try {
@@ -2834,14 +2970,7 @@ export async function confirmPrintTicket(req, res) {
     if (ticket.cashier_id && ticket.cashier_id !== cashier.id) {
       return res.status(403).json({ message: "Access denied" });
     }
-    const printReference = `ticket-print:${ticket.id}`;
-    const existingPrint = await prisma.transaction.findFirst({
-      where: {
-        type: "BET",
-        reference: printReference,
-      },
-      select: { id: true, wallet_id: true },
-    });
+    const existingPrint = await findCashierPrintBet(prisma, ticket.id);
     if (existingPrint || ticket.status === "PRINTED") {
       if (!ticket.receipt_number) {
         try {
@@ -2859,29 +2988,29 @@ export async function confirmPrintTicket(req, res) {
           where: { id: ticket.id },
           data: { status: "PRINTED" },
         });
+        await logAuditEvent({
+          req,
+          action: "TICKET_PRINT_CONFIRMED",
+          module: "TICKETS",
+          entityType: "TICKET",
+          entityId: ticket.id,
+          meta: {
+            cashierId: cashier.id,
+            deductedAmount: 0,
+            heldInPrepare: true,
+          },
+        });
       }
       const wallet = await prisma.wallet.findUnique({
         where: { id: existingPrint?.wallet_id || cashier.wallet_id },
         select: { balance: true },
       });
-      const printedTicket = await prisma.ticket.findUnique({
-        where: { id: ticket.id },
-        include: ticketDetailInclude,
-      });
-      const printedSet = printedTicket?.cashier_id
-        ? await getPrintedTicketIdSet({
-            cashierId: printedTicket.cashier_id,
-            ticketIds: [ticket.id],
-          })
-        : new Set();
       return res.json({
-        message: "Ticket was already print-confirmed",
+        message: "Print confirmed",
         alreadyPrinted: true,
         deductedAmount: 0,
         cashierWalletBalance: Number(wallet?.balance || 0),
-        ticket: printedTicket
-          ? mapTicket(printedTicket, { printed: printedSet.has(ticket.id) })
-          : undefined,
+        ticket: await mappedTicketForPrint(ticket.id),
       });
     }
     if (ticket.status !== "OPEN") {
@@ -2969,59 +3098,26 @@ export async function confirmPrintTicket(req, res) {
 
     const result = await withWalletLock(cashier.wallet_id, {}, async () =>
       prisma.$transaction(async (tx) => {
-        let effectiveTicket = ticket;
-        if (!ticket.cashier_id) {
-          effectiveTicket = await tx.ticket.update({
-            where: { id: ticket.id },
-            data: {
-              cashier_id: cashier.id,
-              branch_name: cashier.branch_name,
-              branch_location: cashier.branch_location,
-            },
-          });
-        }
-
-        const wallet = await tx.wallet.findUnique({
-          where: { id: cashier.wallet_id },
+        const live = await tx.ticket.findUnique({ where: { id: ticket.id } });
+        const hold = await holdCashierPrintInTx(tx, {
+          ticket: live || ticket,
+          cashier,
+          reserveReceiptNumber: reserveUniqueReceiptNumber,
         });
-        if (!wallet) throw new Error("CASHIER_WALLET_NOT_FOUND");
-
-        const stakeAmount = toMoney(effectiveTicket.stake);
-        const balanceBefore = toMoney(wallet.balance);
-        if (balanceBefore < stakeAmount)
-          throw new Error("INSUFFICIENT_BALANCE");
-
-        const balanceAfter = toMoney(sub(balanceBefore, stakeAmount));
-        await tx.wallet.update({
-          where: { id: wallet.id },
-          data: { balance: balanceAfter },
-        });
-        await tx.transaction.create({
-          data: {
-            wallet_id: wallet.id,
-            type: "BET",
-            amount: stakeAmount,
-            balance_before: balanceBefore,
-            balance_after: balanceAfter,
-            reference: printReference,
-          },
-        });
-
-        let receiptNumber = effectiveTicket.receipt_number;
-        if (!receiptNumber) {
-          receiptNumber = await reserveUniqueReceiptNumber(tx);
-        }
-
+        const receiptNumber = hold.ticket?.receipt_number;
         const { count } = await tx.ticket.updateMany({
-          where: { id: effectiveTicket.id, status: "OPEN" },
-          data: { status: "PRINTED", receipt_number: receiptNumber },
+          where: { id: ticket.id, status: "OPEN" },
+          data: {
+            status: "PRINTED",
+            ...(receiptNumber ? { receipt_number: receiptNumber } : {}),
+          },
         });
         if (count === 0) {
           throw Object.assign(new Error("STATUS_CONFLICT"), {
             statusCode: 409,
           });
         }
-        return { stakeAmount, balanceAfter, ticketId: effectiveTicket.id };
+        return hold;
       }),
     );
 
@@ -3034,61 +3130,24 @@ export async function confirmPrintTicket(req, res) {
       meta: {
         cashierId: cashier.id,
         ticketClaimed: !ticket.cashier_id,
-        deductedAmount: result.stakeAmount,
+        deductedAmount: result.deductedAmount,
         walletBalance: result.balanceAfter,
+        legacyConfirmDebit: true,
       },
     });
 
-    const printedTicket = await prisma.ticket.findUnique({
-      where: { id: ticket.id },
-      include: ticketDetailInclude,
-    });
-    const printedSet = printedTicket?.cashier_id
-      ? await getPrintedTicketIdSet({
-          cashierId: printedTicket.cashier_id,
-          ticketIds: [ticket.id],
-        })
-      : new Set();
-
     return res.json({
-      message: "Print confirmed and cashier wallet deducted",
-      alreadyPrinted: false,
-      deductedAmount: result.stakeAmount,
+      message: result.alreadyHeld
+        ? "Print confirmed"
+        : "Print confirmed and cashier wallet deducted",
+      alreadyPrinted: result.alreadyHeld,
+      deductedAmount: result.deductedAmount,
       cashierWalletBalance: result.balanceAfter,
-      ticket: printedTicket
-        ? mapTicket(printedTicket, { printed: printedSet.has(ticket.id) })
-        : undefined,
+      ticket: await mappedTicketForPrint(ticket.id),
     });
   } catch (error) {
-    if (error?.code === "wallet_busy" || error?.message === "WALLET_BUSY") {
-      await logPlacementValidation({
-        actorUserId: req.user?.sub || null,
-        actorRole: req.user?.role || "CASHIER",
-        flowChannel: "CASHIER",
-        rejectionReason: "wallet_busy",
-        status: "REJECTED",
-      });
-      return res.status(409).json({
-        code: "wallet_busy",
-        message: "Cashier wallet is busy. Retry shortly.",
-      });
-    }
-    if (error?.message === "INSUFFICIENT_BALANCE") {
-      await logPlacementValidation({
-        actorUserId: req.user?.sub || null,
-        actorRole: req.user?.role || "CASHIER",
-        flowChannel: "CASHIER",
-        rejectionReason: "insufficient_balance",
-        status: "REJECTED",
-      });
-      return res.status(400).json({ message: "Insufficient cashier balance" });
-    }
-    if (error?.statusCode === 409) {
-      return res.status(409).json({
-        message: "Ticket status changed concurrently; print rejected",
-        code: "status_conflict",
-      });
-    }
+    const handled = await respondPrintWalletError(req, res, error);
+    if (handled) return handled;
     console.error("confirmPrintTicket error:", error);
     return res.status(500).json({ message: "Failed to confirm ticket print" });
   }
@@ -3190,6 +3249,7 @@ export async function repeatTicket(req, res) {
 /**
  * DELETE /api/tickets/:id/selections/:selectionId
  * Removes a leg from an OPEN ticket before print (cashier can remove any selection).
+ * Remaining legs are not placement-validated here; prepare-print does that.
  */
 export async function removeTicketSelection(req, res) {
   try {
@@ -3232,37 +3292,25 @@ export async function removeTicketSelection(req, res) {
       });
     }
 
-    const selections = ticket.selections || [];
-    const selectionIndex = selections.findIndex(
-      (row) => row.id === req.params.selectionId,
+    const removal = evaluateTicketSelectionRemoval(
+      ticket.selections || [],
+      req.params.selectionId,
     );
-    if (selectionIndex < 0) {
-      return res.status(404).json({ message: "Selection not found on ticket" });
+    if (!removal.ok) {
+      return res.status(removal.status).json({ message: removal.message });
     }
 
-    if (selections.length <= 1) {
-      return res.status(400).json({
-        message: "At least one selection is required on the ticket",
-      });
-    }
-
-    const targetSelection = selections[selectionIndex];
+    const {
+      selectionIndex,
+      targetSelection,
+      remainingSelections,
+      nextTotalOdds,
+    } = removal;
 
     const snapshot = Array.isArray(ticket.selection_snapshot)
       ? [...ticket.selection_snapshot]
       : [];
     const nextSnapshot = snapshot.filter((_, idx) => idx !== selectionIndex);
-    const remainingSelections = selections.filter(
-      (_, idx) => idx !== selectionIndex,
-    );
-
-    const nextTotalOdds = remainingSelections.reduce(
-      (product, row) => product * Number(row.odds || 1),
-      1,
-    );
-    if (!Number.isFinite(nextTotalOdds) || nextTotalOdds <= 1) {
-      return res.status(400).json({ message: "Remaining selections odds are invalid" });
-    }
 
     const legCount = remainingSelections.length;
     const numericStake = Number(ticket.stake);
@@ -3286,25 +3334,6 @@ export async function removeTicketSelection(req, res) {
     );
     if (limitMsg) {
       return res.status(400).json({ message: limitMsg });
-    }
-
-    const { normalized, fullyStructured } =
-      normalizeSnapshotForPrintValidation(nextSnapshot);
-    if (fullyStructured && normalized.length > 0) {
-      const validated = await validatePlacementSelections({
-        prismaClient: prisma,
-        rawSelections: normalized,
-        live: false,
-        actorId: req.user?.sub ? `cashier:${req.user.sub}` : null,
-        writeFreeze: false,
-      });
-      if (!validated.ok) {
-        return res.status(409).json({
-          code: validated.code || "validation_failed",
-          message: "Remaining selections failed validation",
-          selections: validated.selections || [],
-        });
-      }
     }
 
     await prisma.$transaction(async (tx) => {

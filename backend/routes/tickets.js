@@ -1,5 +1,6 @@
 import express from "express";
 import {
+  abortPrintTicket,
   cancelTicket,
   confirmPrintTicket,
   preparePrintTicket,
@@ -61,6 +62,12 @@ router.post(
   authorizePermission("tickets:create"),
   createSportsbookRateLimiter("cashier_confirm_print"),
   preparePrintTicket,
+);
+router.post(
+  "/:id/abort-print",
+  authorizePermission("tickets:create"),
+  createSportsbookRateLimiter("cashier_confirm_print"),
+  abortPrintTicket,
 );
 router.patch(
   "/:id/confirm-print",

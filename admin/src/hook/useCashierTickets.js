@@ -318,6 +318,21 @@ export function usePreparePrintTicketMutation() {
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: TICKETS_KEY });
+      qc.invalidateQueries({ queryKey: ["cashier", "wallet"] });
+    },
+  });
+}
+
+export function useAbortPrintTicketMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ ticketId }) =>
+      apiRequest(`/tickets/${ticketId}/abort-print`, {
+        method: "POST",
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: TICKETS_KEY });
+      qc.invalidateQueries({ queryKey: ["cashier", "wallet"] });
     },
   });
 }
@@ -335,6 +350,7 @@ export function useConfirmPrintedTicketMutation() {
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: TICKETS_KEY });
+      qc.invalidateQueries({ queryKey: ["cashier", "wallet"] });
     },
   });
 }

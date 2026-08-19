@@ -20,6 +20,7 @@ import {
   mapTicketDetail,
   useCancelTicketMutation,
   useConfirmPrintedTicketMutation,
+  useAbortPrintTicketMutation,
   usePreparePrintTicketMutation,
   useCouponLookupMutation,
   useExecuteCashoutMutation,
@@ -63,6 +64,8 @@ function toNumber(value) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
 }
+
+const INSUFFICIENT_CASHIER_BALANCE_MESSAGE = "Insufficient cashier balance";
 
 function formatCurrency(value) {
   return `${toNumber(value).toLocaleString()} ETB`;
@@ -173,6 +176,7 @@ function TicketDetail({
   blockingLegs = [],
   onRemoveSelection,
   removeDisabled = false,
+  removingSelectionId = null,
 }) {
   if (!ticket) return null;
 
@@ -252,7 +256,12 @@ function TicketDetail({
                       <button
                         type="button"
                         onClick={() => onRemoveSelection(selection.id)}
-                        disabled={removeDisabled}
+                        disabled={
+                          removeDisabled ||
+                          (removingSelectionId != null &&
+                            String(removingSelectionId) ===
+                              String(selection.id))
+                        }
                         className="rounded-sm border border-[#b91c1c]/40 px-2 py-1 text-xs font-semibold text-[#b91c1c] hover:bg-[#fee2e2] disabled:cursor-not-allowed disabled:opacity-40"
                       >
                         Delete
@@ -415,6 +424,7 @@ export default function CashierTicketsPage() {
   const printInFlightRef = useRef(false);
   const autoRemoveExpiredInFlightRef = useRef(false);
   const [expiryTick, setExpiryTick] = useState(0);
+  const [removingSelectionId, setRemovingSelectionId] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -477,6 +487,7 @@ export default function CashierTicketsPage() {
   const cashbackQuoteMutation = useCashbackQuoteMutation();
   const payCashbackMutation = usePayCashbackMutation();
   const confirmPrint = useConfirmPrintedTicketMutation();
+  const abortPrint = useAbortPrintTicketMutation();
   const preparePrint = usePreparePrintTicketMutation();
   const updateStake = useUpdateTicketStakeMutation();
   const removeSelection = useRemoveTicketSelectionMutation();
@@ -549,6 +560,15 @@ export default function CashierTicketsPage() {
   const slipsEnabled = rightTab !== "inbox";
   const walletQuery = useCashierHistoryQuery({ page: 1 });
   const cashierBalance = walletQuery.data?.balance;
+  const stakeForFloatGate = Number.isFinite(sellStakeNum) && sellStakeNum > 0
+    ? sellStakeNum
+    : toNumber(sellTicket?.stake);
+  const insufficientFloat =
+    Boolean(sellTicket) &&
+    cashierBalance != null &&
+    Number.isFinite(stakeForFloatGate) &&
+    stakeForFloatGate > 0 &&
+    toNumber(cashierBalance) < stakeForFloatGate;
   const slipsQuery = useTodayTicketsQuery({
     status: slipsStatus,
     page: slipsPage,
@@ -578,6 +598,7 @@ export default function CashierTicketsPage() {
     cashbackQuoteMutation.isPending ||
     payCashbackMutation.isPending ||
     confirmPrint.isPending ||
+    abortPrint.isPending ||
     preparePrint.isPending ||
     updateStake.isPending;
   const printerConnected = Boolean(printerStatus?.connected);
@@ -672,6 +693,11 @@ export default function CashierTicketsPage() {
       return;
     }
 
+    if (insufficientFloat) {
+      setSellError(INSUFFICIENT_CASHIER_BALANCE_MESSAGE);
+      return;
+    }
+
     const parsedStake = Number(sellStakeInput);
     if (!Number.isFinite(parsedStake) || parsedStake <= 0) {
       setSellError("Stake must be a positive number");
@@ -700,6 +726,7 @@ export default function CashierTicketsPage() {
     if (!sellTicket?.id) return;
     setSellError("");
     setSellConfirmed(false);
+    setRemovingSelectionId(selectionId);
     try {
       const updated = await removeSelection.mutateAsync({
         ticketId: sellTicket.id,
@@ -709,16 +736,30 @@ export default function CashierTicketsPage() {
       setSellStakeInput(String(toNumber(updated?.stake)));
     } catch (error) {
       setSellError(error?.message || "Failed to remove selection");
+    } finally {
+      setRemovingSelectionId(null);
     }
   };
 
+  const sellBlockingLegs = sellBlockingQuery.data?.blockingLegs;
+  const removeSelectionMutateAsync = removeSelection.mutateAsync;
+  const sellSelectionIdsKey = (sellTicket?.selections || [])
+    .map((row) => String(row?.id || ""))
+    .join("|");
+  const blockingStartedKey = (sellBlockingLegs || [])
+    .filter((leg) => String(leg?.code || "") === "fixture_started")
+    .map((leg) => String(leg?.selectionId || ""))
+    .join("|");
+
   useEffect(() => {
     if (leftTab !== "sell" || !sellTicket?.id || sellConfirmed) return undefined;
-    if (removeSelection.isPending || autoRemoveExpiredInFlightRef.current) {
-      return undefined;
-    }
+    if (autoRemoveExpiredInFlightRef.current) return undefined;
 
-    const ids = removableExpiredSelectionIds(sellTicket.selections);
+    const ids = removableExpiredSelectionIds(
+      sellTicket.selections,
+      Date.now(),
+      sellBlockingLegs,
+    );
     if (ids.length === 0) return undefined;
 
     let cancelled = false;
@@ -734,8 +775,9 @@ export default function CashierTicketsPage() {
             (s) => String(s.id) === String(selectionId),
           );
           if (!stillOnTicket) continue;
+          setRemovingSelectionId(selectionId);
           try {
-            updated = await removeSelection.mutateAsync({
+            updated = await removeSelectionMutateAsync({
               ticketId: updated.id,
               selectionId,
             });
@@ -761,6 +803,7 @@ export default function CashierTicketsPage() {
         }
       } finally {
         autoRemoveExpiredInFlightRef.current = false;
+        setRemovingSelectionId(null);
       }
     })();
 
@@ -772,7 +815,10 @@ export default function CashierTicketsPage() {
     sellTicket,
     sellConfirmed,
     expiryTick,
-    removeSelection,
+    sellSelectionIdsKey,
+    blockingStartedKey,
+    sellBlockingLegs,
+    removeSelectionMutateAsync,
   ]);
 
   const handlePrint = async () => {
@@ -820,6 +866,38 @@ export default function CashierTicketsPage() {
       }
     };
 
+    const localPrintFailMessage = (result) => {
+      if (result?.code === "service_unreachable") {
+        return "Local print service unreachable. Start PrinterBridge.exe on this PC.";
+      }
+      if (result?.code === "com_unavailable") {
+        return "Printer queue unavailable. Check POS80 is installed in Windows Print queues.";
+      }
+      return String(
+        result?.error?.message ||
+          "Failed to send ticket to local printer service.",
+      );
+    };
+
+    let holdTaken = false;
+    let holdReleased = false;
+    let paperSent = false;
+    const releasePrintHold = async () => {
+      if (!holdTaken || holdReleased || paperSent) return true;
+      try {
+        await abortPrint.mutateAsync({
+          ticketId: ticketForWalletAndPrint.id,
+        });
+        holdReleased = true;
+        await walletQuery.refetch();
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const heldStakeMessage =
+      " Stake was taken. Retry print or cancel the ticket to refund.";
+
     try {
       // Fail fast when the printer is offline — before any network call.
       if (!printerConnected) {
@@ -830,12 +908,12 @@ export default function CashierTicketsPage() {
         return;
       }
 
-      // Single pre-print round trip: prepare-print now validates odds/markets
-      // AND reserves the receipt number (drift/lock prompts still fire here).
       setActionSuccess("Validating ticket before print...");
       const prepareResult = await runWithDriftRetry(preparePrint.mutateAsync, {
         ticketId: ticketForWalletAndPrint.id,
       });
+      holdTaken = true;
+      void walletQuery.refetch();
       const ticketToPrint = prepareResult?.ticket
         ? mapTicketDetail(prepareResult.ticket)
         : ticketForWalletAndPrint;
@@ -847,25 +925,14 @@ export default function CashierTicketsPage() {
       });
       const localPrintResult = await printViaLocalService(escposData);
       if (!localPrintResult.success) {
-        const localError = String(
-          localPrintResult.error?.message ||
-            "Failed to send ticket to local printer service.",
-        );
+        const aborted = await releasePrintHold();
         setActionSuccess("");
-        if (localPrintResult.code === "service_unreachable") {
-          setSellError(
-            "Local print service unreachable. Start PrinterBridge.exe on this PC.",
-          );
-        } else if (localPrintResult.code === "com_unavailable") {
-          setSellError(
-            "Printer queue unavailable. Check POS80 is installed in Windows Print queues.",
-          );
-        } else {
-          setSellError(localError);
-        }
+        const printMessage = localPrintFailMessage(localPrintResult);
+        setSellError(aborted ? printMessage : `${printMessage}${heldStakeMessage}`);
         setTicketPreviewOpen(false);
         return;
       }
+      paperSent = true;
 
       setActionSuccess("Print sent. Confirming sale...");
       let confirmResult;
@@ -900,16 +967,28 @@ export default function CashierTicketsPage() {
       }
       setSellTicket(updatedTicket);
 
-      // Fire-and-forget: don't block the cashier on post-sale refetches.
       Promise.all([slipsQuery.refetch(), walletQuery.refetch()]).catch(() => {});
 
-      const walletMessage = confirmResult.alreadyPrinted
-        ? "Ticket already confirmed; wallet was not deducted again."
-        : `Wallet deducted by ${formatCurrency(confirmResult.deductedAmount)}.`;
+      const confirmDeducted = Number(confirmResult?.deductedAmount) || 0;
+      const walletMessage =
+        confirmDeducted > 0
+          ? `Wallet deducted by ${formatCurrency(confirmDeducted)}. Ticket printed successfully.`
+          : "Ticket printed successfully.";
 
       setTicketPreviewOpen(false);
-      setActionSuccess(`${walletMessage} Ticket printed successfully.`);
+      setActionSuccess(walletMessage);
     } catch (error) {
+      if (holdTaken && !paperSent) {
+        const aborted = await releasePrintHold();
+        if (!aborted) {
+          setSellError(
+            `${error?.handled ? error.message : error?.message || "Failed to print ticket"}${heldStakeMessage}`,
+          );
+          setActionSuccess("");
+          setTicketPreviewOpen(false);
+          return;
+        }
+      }
       if (error?.handled) {
         setSellError(error.message);
       } else {
@@ -1245,7 +1324,12 @@ export default function CashierTicketsPage() {
                     <button
                       type="button"
                       onClick={handleSellConfirm}
-                      disabled={isBusy || sellConfirmed || hasInvalidLegs}
+                      disabled={
+                        isBusy ||
+                        sellConfirmed ||
+                        hasInvalidLegs ||
+                        insufficientFloat
+                      }
                       className="rounded-sm bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
                     >
                       {updateStake.isPending ? "Saving..." : "Confirm"}
@@ -1287,17 +1371,19 @@ export default function CashierTicketsPage() {
                       invalidSelectionIds={invalidSelectionIds}
                       blockingLegs={sellBlockingQuery.data?.blockingLegs || []}
                       onRemoveSelection={handleRemoveSelection}
-                      removeDisabled={
-                        sellConfirmed ||
-                        isBusy ||
-                        onlyOneLeg ||
-                        removeSelection.isPending
-                      }
+                      removeDisabled={sellConfirmed || onlyOneLeg}
+                      removingSelectionId={removingSelectionId}
                     />
 
                     {hasInvalidLegs ? (
                       <p className="mt-2 text-xs font-medium text-[#b91c1c]">
                         Remove expired or invalid selections before confirming.
+                      </p>
+                    ) : null}
+
+                    {insufficientFloat ? (
+                      <p className="mt-2 text-xs font-medium text-[#b91c1c]">
+                        {INSUFFICIENT_CASHIER_BALANCE_MESSAGE}
                       </p>
                     ) : null}
 

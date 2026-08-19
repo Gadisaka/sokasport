@@ -79,13 +79,23 @@ export function collectExpiredSelectionIds(selections, now = Date.now()) {
 /**
  * Expired ids that can be removed while leaving at least one selection.
  * Prefers keeping a non-expired leg when any exist.
+ * Unions client kickoff/terminal expiry with server `fixture_started` blocking ids.
  * @returns {string[]}
  */
-export function removableExpiredSelectionIds(selections, now = Date.now()) {
+export function removableExpiredSelectionIds(
+  selections,
+  now = Date.now(),
+  blockingLegs = [],
+) {
   const all = Array.isArray(selections) ? selections : [];
   if (all.length <= 1) return [];
 
   const expiredIds = new Set(collectExpiredSelectionIds(all, now));
+  for (const leg of blockingLegs || []) {
+    if (String(leg?.code || "") !== "fixture_started") continue;
+    const id = String(leg?.selectionId || "").trim();
+    if (id) expiredIds.add(id);
+  }
   if (expiredIds.size === 0) return [];
 
   const hasNonExpired = all.some(
