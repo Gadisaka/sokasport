@@ -79,28 +79,37 @@ function positiveMarketVersion(value) {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
-function buildAcceptDriftSelections(changedRows, ticket) {
+/**
+ * Merge a 409 drift response into the running accept map, keyed by leg index.
+ *
+ * Drift is reported one code at a time (version drift outranks odds drift), so
+ * accepting must carry forward everything seen so far — rebuilding from the
+ * latest response alone would re-submit stale values for the other field.
+ */
+function mergeAcceptedDriftRows(acceptedByIndex, changedRows, ticket) {
   const snapshotSelections = Array.isArray(ticket?.selections)
     ? ticket.selections
     : [];
-  return changedRows.map((row) => {
-    const idx = Number(row.index);
+  for (const row of changedRows) {
+    const idx = Number(row?.index);
+    if (!Number.isFinite(idx)) continue;
     const fromTicket = snapshotSelections[idx];
-    const acceptedOdds = Number.isFinite(Number(row.serverOdds))
-      ? Number(row.serverOdds)
-      : Number(fromTicket?.odds);
-    const acceptedMarketVersion = positiveMarketVersion(
-      row.serverMarketVersion ?? fromTicket?.serverMarketVersion,
-    );
-    const payload = {
-      index: idx,
-      acceptedOdds,
-    };
+    const previous = acceptedByIndex.get(idx) || { index: idx };
+    const serverOdds = Number(row?.serverOdds);
+    const acceptedOdds = Number.isFinite(serverOdds)
+      ? serverOdds
+      : Number(previous.acceptedOdds ?? fromTicket?.odds);
+    const next = { index: idx, acceptedOdds };
+    const acceptedMarketVersion =
+      positiveMarketVersion(row?.serverMarketVersion) ??
+      previous.acceptedMarketVersion ??
+      positiveMarketVersion(fromTicket?.serverMarketVersion);
     if (acceptedMarketVersion != null) {
-      payload.acceptedMarketVersion = acceptedMarketVersion;
+      next.acceptedMarketVersion = acceptedMarketVersion;
     }
-    return payload;
-  });
+    acceptedByIndex.set(idx, next);
+  }
+  return [...acceptedByIndex.values()];
 }
 
 function formatTime(value) {
@@ -759,6 +768,7 @@ export default function CashierTicketsPage() {
     const ticketForWalletAndPrint = sellTicket;
 
     const runWithDriftRetry = async (mutateAsync, basePayload) => {
+      const acceptedByIndex = new Map();
       let payload = basePayload;
       for (let attempt = 0; attempt <= MAX_PRINT_DRIFT_RETRIES; attempt++) {
         try {
@@ -779,13 +789,15 @@ export default function CashierTicketsPage() {
           payload = {
             ...basePayload,
             acceptOddsChanges: true,
-            selections: buildAcceptDriftSelections(
+            selections: mergeAcceptedDriftRows(
+              acceptedByIndex,
               changedRows,
               ticketForWalletAndPrint,
             ),
           };
         }
       }
+      throw new Error("Failed to accept updated market. Try print again.");
     };
 
     const localPrintFailMessage = (result) => {

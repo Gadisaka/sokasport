@@ -23,8 +23,8 @@ The same receipt is now used in **three** places, via one shared component:
 the Check-ticket page and the **Check Coupon** preview inside the **desktop**
 and **mobile** bet slips.
 
-> Decisions taken with the product owner: **no stake/payout totals** on the
-> public card (privacy — stake/payout follow the printed receipt), and the
+> Decisions taken with the product owner: the public card shows **Stake,
+> Max Win, Total Odd, and Net Pay** (same rows as the printed slip), and the
 > coupon id is shown as **text, not a scannable barcode** (avoids a new
 > frontend dependency).
 
@@ -238,8 +238,8 @@ printed ticket lying on the modal).
       never drift.
 - [ ] Pick a neutral marker for "not played" that is visible on **both** the
       paper background and any dark modal background.
-- [ ] Decide explicitly whether to show stake/payout totals (privacy) and
-      whether the coupon id is a barcode (extra dependency) or plain text.
+- [ ] Show Stake / Max Win / Total Odd / Net Pay on the public receipt, and
+      decide whether the coupon id is a barcode (extra dependency) or plain text.
 - [ ] Scalloped edge is optional flavour — a CSS `mask` of repeating radial
       gradients; ensure card padding exceeds the notch radius.
 

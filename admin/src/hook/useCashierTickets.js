@@ -68,6 +68,10 @@ export function mapTicketDetail(ticket) {
           odds: Number(selection.odds || 0),
           result: selection.result,
           marketLabel: selection.marketLabel ?? selection.market_label ?? "",
+          serverMarketVersion:
+            selection.serverMarketVersion ??
+            selection.server_market_version ??
+            null,
           match: selection.match
             ? {
                 id: selection.match.id,

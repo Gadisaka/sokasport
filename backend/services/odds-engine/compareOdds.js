@@ -24,6 +24,10 @@ export function compareOddsDrift({
     // market version. Real versions are always >= 1 (fnv1a32 hashes /
     // bumpMarketVersion), so only gate on version drift when the client actually
     // sent one. Odds drift below still protects these legs.
+    // Both row shapes carry the full server picture (odds *and* version) so a
+    // client can accept a leg in one round trip. Reporting only one of the two
+    // makes callers ping-pong between `market_version_changed` and
+    // `odds_changed`, re-submitting stale values for whichever field is absent.
     if (
       Number.isFinite(submittedVersion) &&
       submittedVersion > 0 &&
@@ -32,6 +36,8 @@ export function compareOddsDrift({
     ) {
       versionChanges.push({
         index: leg.index,
+        submittedOdds: Number(leg.submittedOdds),
+        serverOdds: Number(current.serverOdds),
         submittedMarketVersion: submittedVersion,
         serverMarketVersion: serverVersion,
         marketState: current.marketState || "OPEN",
@@ -49,6 +55,12 @@ export function compareOddsDrift({
       index: leg.index,
       submittedOdds: Number(leg.submittedOdds),
       serverOdds: Number(current.serverOdds),
+      submittedMarketVersion: Number.isFinite(submittedVersion)
+        ? submittedVersion
+        : null,
+      serverMarketVersion: Number.isFinite(serverVersion)
+        ? serverVersion
+        : null,
       tolerance: Number(tolerance),
       marketState: current.marketState || "OPEN",
       marketLabel: leg.marketLabel || null,

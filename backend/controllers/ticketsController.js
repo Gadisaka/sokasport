@@ -569,6 +569,7 @@ function mapTicket(ticket, { printed = false } = {}) {
         result: selection.result,
         match: matchPayload,
         marketLabel,
+        serverMarketVersion: selection.server_market_version ?? null,
       };
     }) ?? [];
   const snapshotSelections =

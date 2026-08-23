@@ -99,6 +99,73 @@ test("compareOddsDrift returns version mismatch even on equal odds", () => {
   assert.equal(drift.versionChanges[0].serverMarketVersion, 4);
 });
 
+test("compareOddsDrift reports server odds AND version on every drift row", () => {
+  // Accepting a leg must be possible in one round trip. If a version-drift row
+  // omitted serverOdds (or an odds-drift row omitted serverMarketVersion), the
+  // client would re-submit the stale one and bounce between the two codes.
+  const drift = compareOddsDrift({
+    selections: [
+      {
+        index: 0,
+        submittedOdds: 1.8,
+        submittedMarketVersion: 3,
+        marketLabel: "Match Winner",
+        label: "Home",
+      },
+      {
+        index: 1,
+        submittedOdds: 2.1,
+        submittedMarketVersion: 7,
+        marketLabel: "Match Winner",
+        label: "Away",
+      },
+    ],
+    resolved: [
+      {
+        index: 0,
+        serverOdds: 1.95,
+        serverMarketVersion: 4,
+        marketState: "OPEN",
+      },
+      {
+        index: 1,
+        serverOdds: 2.5,
+        serverMarketVersion: 7,
+        marketState: "OPEN",
+      },
+    ],
+    tolerance: 0.02,
+  });
+
+  const versionRow = drift.versionChanges.find((row) => row.index === 0);
+  assert.equal(versionRow.serverOdds, 1.95);
+  assert.equal(versionRow.serverMarketVersion, 4);
+
+  const oddsRow = drift.oddsChanges.find((row) => row.index === 1);
+  assert.equal(oddsRow.serverOdds, 2.5);
+  assert.equal(oddsRow.serverMarketVersion, 7);
+});
+
+test("compareOddsDrift leaves version null when no version was submitted", () => {
+  const drift = compareOddsDrift({
+    selections: [
+      {
+        index: 0,
+        submittedOdds: 1.8,
+        marketLabel: "Match Winner",
+        label: "Home",
+      },
+    ],
+    resolved: [{ index: 0, serverOdds: 2.4, marketState: "OPEN" }],
+    tolerance: 0.02,
+  });
+
+  assert.equal(drift.versionChanges.length, 0);
+  assert.equal(drift.oddsChanges.length, 1);
+  assert.equal(drift.oddsChanges[0].submittedMarketVersion, null);
+  assert.equal(drift.oddsChanges[0].serverMarketVersion, null);
+});
+
 test("placement controller does not depend on upstream odds HTTP client", async () => {
   const content = await readFile(
     new URL("../controllers/ticketsController.js", import.meta.url),

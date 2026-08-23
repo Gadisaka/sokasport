@@ -13,8 +13,9 @@ import {
  *
  * Shared by the Check-ticket page and the "Check Coupon" preview in the desktop
  * and mobile bet slips. `ticket` is the payload from `fetchPublicCouponTicket`:
- * `{ couponNumber, outcome, outcomeAmount, selections: [{ matchName,
- * marketLabel, label, odds, kickoffAt, result, status }] }`.
+ * `{ couponNumber, outcome, outcomeAmount, stake, potentialWin, totalOdds,
+ * netPayout, selections: [{ matchName, marketLabel, label, odds, kickoffAt,
+ * result, status }] }`.
  */
 
 /** Per-leg outcome marker, tuned for the white paper background. */
@@ -100,6 +101,58 @@ function TicketOutcomeBanner({ ticket }) {
   );
 }
 
+function formatReceiptOdds(value) {
+  if (value == null || value === "") return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n.toFixed(2) : null;
+}
+
+function ReceiptTotals({ ticket }) {
+  const rows = [
+    { label: "Stake", value: formatOutcomeAmount(ticket.stake) },
+    { label: "Max Win", value: formatOutcomeAmount(ticket.potentialWin) },
+    { label: "Total Odd", value: formatReceiptOdds(ticket.totalOdds) },
+    {
+      label: "Net Pay",
+      value: formatOutcomeAmount(ticket.netPayout),
+      emphasize: true,
+    },
+  ].filter((row) => row.value);
+
+  if (rows.length === 0) return null;
+
+  return (
+    <div className="mt-3 rounded-[1rem] bg-gradient-to-br from-[#151528]/95 to-[#0c101c]/95 px-3.5 py-2.5 text-[12px] text-[#f5f5f5] shadow-inner shadow-black/20">
+      {rows.map((row, i) => {
+        const isLast = i === rows.length - 1;
+        return (
+          <div
+            key={row.label}
+            className={`flex justify-between gap-2 ${
+              isLast ? "pt-2" : "border-b border-[#2a2a3e] py-1.5"
+            } ${row.emphasize ? "font-extrabold" : ""}`}
+          >
+            <span
+              className={
+                row.emphasize ? "text-[#f5f5f5]" : "text-[rgba(255,255,255,0.72)]"
+              }
+            >
+              {row.label}
+            </span>
+            <span
+              className={
+                row.emphasize ? "text-[#86efac]" : "font-bold text-[#f5f5f5]"
+              }
+            >
+              {row.value}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function CouponReceipt({ ticket, className = "" }) {
   if (!ticket) return null;
   const selections = ticket.selections || [];
@@ -163,6 +216,7 @@ function CouponReceipt({ ticket, className = "" }) {
       <ReceiptDivider />
 
       <TicketOutcomeBanner ticket={ticket} />
+      <ReceiptTotals ticket={ticket} />
     </div>
   );
 }
