@@ -1,6 +1,10 @@
 import AppIcon from "./AppIcon";
 import { topHeaderData } from "../../data/homepageData";
 import { classifyLegStatus } from "../../utils/legResultStatus";
+import {
+  formatOutcomeAmount,
+  resolveTicketCheckOutcome,
+} from "../../utils/ticketCheckOutcome";
 
 /**
  * Public coupon rendered to look like the printed paper ticket: white thermal
@@ -9,8 +13,8 @@ import { classifyLegStatus } from "../../utils/legResultStatus";
  *
  * Shared by the Check-ticket page and the "Check Coupon" preview in the desktop
  * and mobile bet slips. `ticket` is the payload from `fetchPublicCouponTicket`:
- * `{ couponNumber, selections: [{ matchName, marketLabel, label, odds,
- * kickoffAt, result, status }] }`.
+ * `{ couponNumber, outcome, outcomeAmount, selections: [{ matchName,
+ * marketLabel, label, odds, kickoffAt, result, status }] }`.
  */
 
 /** Per-leg outcome marker, tuned for the white paper background. */
@@ -63,6 +67,36 @@ function ReceiptDivider() {
 function ReceiptHyphenRule() {
   return (
     <div aria-hidden className="my-1.5 border-t border-dashed border-[#d2d2d2]" />
+  );
+}
+
+const OUTCOME_STYLE = {
+  won: { cls: "text-[#15803d]", label: "Won" },
+  lost: { cls: "text-[#b91c1c]", label: "Lost" },
+  bonus: { cls: "text-[#ca8a04]", label: "Bonus" },
+};
+
+function TicketOutcomeBanner({ ticket }) {
+  const { outcome, amount } = resolveTicketCheckOutcome(ticket);
+  const money = formatOutcomeAmount(amount);
+
+  if (outcome === "won" || outcome === "lost" || outcome === "bonus") {
+    const cfg = OUTCOME_STYLE[outcome];
+    return (
+      <p
+        className={`m-0 text-center text-[15px] font-black ${cfg.cls}`}
+        role="status"
+      >
+        <span className="uppercase tracking-[0.18em]">{cfg.label}</span>
+        {money ? <span className="ml-2 tracking-normal">{money}</span> : null}
+      </p>
+    );
+  }
+
+  return (
+    <p className="m-0 text-center text-[10px] font-semibold leading-relaxed text-[#555]">
+      Results pending
+    </p>
   );
 }
 
@@ -128,9 +162,7 @@ function CouponReceipt({ ticket, className = "" }) {
 
       <ReceiptDivider />
 
-      <p className="m-0 text-center text-[10px] font-semibold leading-relaxed text-[#555]">
-        Stake and payout follow your receipt when the bet is paid or printed.
-      </p>
+      <TicketOutcomeBanner ticket={ticket} />
     </div>
   );
 }

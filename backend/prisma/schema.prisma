@@ -447,6 +447,8 @@ model Ticket {
   selection_snapshot  Json?
   status              TicketStatus @default(OPEN)
   created_at          DateTime     @default(now())
+  /** When the ticket was paid out (cashier PAID or cashback). Sale stays on created_at. */
+  paid_at             DateTime?
 
   user    User?    @relation(fields: [user_id], references: [id], onDelete: SetNull)
   cashier Cashier? @relation(fields: [cashier_id], references: [id], onDelete: Restrict)
@@ -458,6 +460,7 @@ model Ticket {
   @@index([coupon_number])
   @@index([receipt_number])
   @@index([idempotency_key])
+  @@index([paid_at])
   @@map("tickets")
 }
 

@@ -696,6 +696,7 @@ function mapPlayerTicket(ticket) {
     netPayout: taxBreakdown.netPayout,
     status: ticket.status,
     createdAt: ticket.created_at,
+    paidAt: ticket.paid_at ?? null,
     selections: normalSelections.length > 0 ? normalSelections : snapshotSelections,
   };
 }

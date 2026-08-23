@@ -19,6 +19,13 @@ function formatDateTime(value) {
   return date.toLocaleString();
 }
 
+function ticketListDate(item, statusFilter) {
+  const payday = statusFilter === "PAID" || statusFilter === "CASHBACK_PAID";
+  return payday
+    ? item.paid_at ?? item.paidAt ?? item.created_at
+    : item.created_at;
+}
+
 function toNumber(value) {
   const n = Number(value);
   return Number.isFinite(n) ? n : 0;
@@ -297,7 +304,7 @@ export default function AdminTicketsPage() {
                         onClick={() => toggleRow(item.id)}
                       >
                         <td className="px-4 py-3 text-(--muted)">{open ? "▼" : "▶"}</td>
-                        <td className="px-4 py-3">{formatDateTime(item.created_at)}</td>
+                        <td className="px-4 py-3">{formatDateTime(ticketListDate(item, applied.status))}</td>
                         <td className="px-4 py-3 font-mono">
                           {item.receipt_number || "—"}
                         </td>

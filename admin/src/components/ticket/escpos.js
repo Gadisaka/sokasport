@@ -47,6 +47,13 @@ const CMD = {
 const CHARS_80MM = 48;
 const CHARS_58MM = 32;
 
+/**
+ * Lines fed before the partial cut. The POS80 cutter sits ~15mm above the
+ * print head, so anything less leaves the barcode footer below the blade and
+ * it comes out on top of the next receipt.
+ */
+const FEED_LINES_BEFORE_CUT = 6;
+
 /** Target raster width in dots (~203 dpi layouts) */
 const LOGO_DOTS = {
   "58mm": 384,
@@ -493,7 +500,7 @@ function buildTicketEscPosParts(ticket, opts) {
     line(center(ticket.receiptNumber || ticket.couponNumber || "", chars)),
   );
 
-  parts.push(new Uint8Array(CMD.FEED_LINES(2)));
+  parts.push(new Uint8Array(CMD.FEED_LINES(FEED_LINES_BEFORE_CUT)));
   parts.push(new Uint8Array(CMD.CUT_PARTIAL));
 
   return parts;
@@ -577,7 +584,7 @@ export async function encodeActionReceiptAsync(ticket, opts = {}) {
   parts.push(line(leftRight("Date:", formatDate(new Date()), chars)));
   parts.push(line(divider(chars)));
 
-  parts.push(new Uint8Array(CMD.FEED_LINES(2)));
+  parts.push(new Uint8Array(CMD.FEED_LINES(FEED_LINES_BEFORE_CUT)));
   parts.push(new Uint8Array(CMD.CUT_PARTIAL));
 
   return concat(...parts);
@@ -677,7 +684,7 @@ export async function encodeSalesReportAsync(report, opts = {}) {
   parts.push(line(leftRight("ON HAND", formatCurrency(report?.onHand), chars)));
   parts.push(new Uint8Array(CMD.BOLD_OFF));
 
-  parts.push(new Uint8Array(CMD.FEED_LINES(2)));
+  parts.push(new Uint8Array(CMD.FEED_LINES(FEED_LINES_BEFORE_CUT)));
   parts.push(new Uint8Array(CMD.CUT_PARTIAL));
 
   return concat(...parts);

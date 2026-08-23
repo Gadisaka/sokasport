@@ -17,13 +17,19 @@ export function normalizeSnapshotForPrintValidation(
     for (const row of requestBody.selections) {
       const idx = Number.parseInt(row?.index, 10);
       const accepted = Number(row?.acceptedOdds);
-      const acceptedVersion = Number(
-        row?.acceptedMarketVersion ?? row?.marketVersion,
-      );
+      const rawVersion = row?.acceptedMarketVersion ?? row?.marketVersion;
+      const acceptedVersion =
+        rawVersion == null || rawVersion === ""
+          ? NaN
+          : Number(rawVersion);
       if (Number.isFinite(idx) && Number.isFinite(accepted)) {
         acceptedOddsByIndex.set(idx, accepted);
       }
-      if (Number.isFinite(idx) && Number.isFinite(acceptedVersion)) {
+      if (
+        Number.isFinite(idx) &&
+        Number.isFinite(acceptedVersion) &&
+        acceptedVersion > 0
+      ) {
         acceptedVersionsByIndex.set(idx, acceptedVersion);
       }
     }

@@ -109,9 +109,19 @@ function model(name) {
       }
       const next = { ...row };
       for (const [k, v] of Object.entries(data)) {
-        next[k] = v && typeof v === "object" && !Array.isArray(v) && !(v instanceof Date)
-          ? { ...v }
-          : v;
+        if (v && typeof v === "object" && !Array.isArray(v) && !(v instanceof Date)) {
+          if (typeof v.increment === "number") {
+            next[k] = Number(next[k] || 0) + v.increment;
+            continue;
+          }
+          if (typeof v.decrement === "number") {
+            next[k] = Number(next[k] || 0) - v.decrement;
+            continue;
+          }
+          next[k] = { ...v };
+          continue;
+        }
+        next[k] = v;
       }
       map.set(where.id, next);
       return clone(next);

@@ -344,7 +344,7 @@ export async function creditOnlineWinnerInTx(tx, ticketId) {
   }
   await tx.ticket.update({
     where: { id: ticket.id },
-    data: { status: "PAID" },
+    data: { status: "PAID", paid_at: new Date() },
   });
 
   return {

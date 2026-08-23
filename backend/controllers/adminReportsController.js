@@ -1,4 +1,5 @@
 import { prisma } from "../Config/db.js";
+import { buildSalesReportAggregates } from "../lib/ticketPayday.js";
 
 function parseDateYmd(value) {
   if (!value) return null;
@@ -87,8 +88,6 @@ function isUnsettledTicketStatus(status) {
   return status === "OPEN" || status === "PRINTED";
 }
 
-const ONLINE_CASHIER_KEY = "__online__";
-
 /**
  * GET /api/admin/reports/sales
  * Ticket sales (stakes) for admins: optional agent + cashier filters.
@@ -155,20 +154,40 @@ export async function getAdminSalesReports(req, res) {
       where.cashier_id = { in: ids };
     }
 
-    const tickets = await prisma.ticket.findMany({
-      where,
-      select: {
-        id: true,
-        cashier_id: true,
-        branch_name: true,
-        stake: true,
-        status: true,
-        created_at: true,
-      },
-    });
+    const paidWhere = {
+      paid_at: { gte: start, lte: end },
+      status: { in: ["PAID", "CASHBACK_PAID"] },
+    };
+    if (where.cashier_id) paidWhere.cashier_id = where.cashier_id;
+
+    const [tickets, paidTickets] = await Promise.all([
+      prisma.ticket.findMany({
+        where,
+        select: {
+          id: true,
+          cashier_id: true,
+          branch_name: true,
+          stake: true,
+          status: true,
+          created_at: true,
+        },
+      }),
+      prisma.ticket.findMany({
+        where: paidWhere,
+        select: {
+          id: true,
+          cashier_id: true,
+          branch_name: true,
+          status: true,
+          paid_at: true,
+        },
+      }),
+    ]);
 
     const cashierIds = [
-      ...new Set(tickets.map((t) => t.cashier_id).filter(Boolean)),
+      ...new Set(
+        [...tickets, ...paidTickets].map((t) => t.cashier_id).filter(Boolean),
+      ),
     ];
     const cashierRows =
       cashierIds.length > 0
@@ -181,90 +200,21 @@ export async function getAdminSalesReports(req, res) {
       cashierRows.map((c) => [c.id, c.user?.fullname || "Cashier"]),
     );
 
-    const dailyMap = new Map();
-    for (let i = 0; i < daySpan; i += 1) {
-      const d = new Date(start.getTime());
-      d.setUTCDate(d.getUTCDate() + i);
-      const ymd = d.toISOString().slice(0, 10);
-      dailyMap.set(ymd, {
-        date: ymd,
-        dayLabel: getDayLabel(d),
-        tickets: 0,
-        stake: 0,
-        open: 0,
-        won: 0,
-        lost: 0,
-        paid: 0,
-        cashbackPaid: 0,
-      });
-    }
-
-    const branchMap = new Map();
-    const cashierMap = new Map();
-
-    for (const ticket of tickets) {
-      const stake = Number(ticket.stake || 0);
-      const ymd = ticket.created_at.toISOString().slice(0, 10);
-      const dayRow = dailyMap.get(ymd);
-      if (dayRow) {
-        dayRow.tickets += 1;
-        dayRow.stake += stake;
-        if (isUnsettledTicketStatus(ticket.status)) dayRow.open += 1;
-        if (ticket.status === "WON") dayRow.won += 1;
-        if (ticket.status === "LOST") dayRow.lost += 1;
-        if (ticket.status === "PAID") dayRow.paid += 1;
-        if (ticket.status === "CASHBACK_PAID") dayRow.cashbackPaid += 1;
-      }
-
-      const branchKey = ticket.branch_name || "Unknown";
-      const branchRow = branchMap.get(branchKey) || {
-        branchName: branchKey,
-        tickets: 0,
-        stake: 0,
-        open: 0,
-        won: 0,
-        lost: 0,
-        paid: 0,
-        cashbackPaid: 0,
-      };
-      branchRow.tickets += 1;
-      branchRow.stake += stake;
-      if (isUnsettledTicketStatus(ticket.status)) branchRow.open += 1;
-      if (ticket.status === "WON") branchRow.won += 1;
-      if (ticket.status === "LOST") branchRow.lost += 1;
-      if (ticket.status === "PAID") branchRow.paid += 1;
-      if (ticket.status === "CASHBACK_PAID") branchRow.cashbackPaid += 1;
-      branchMap.set(branchKey, branchRow);
-
-      const cashierKey = ticket.cashier_id || ONLINE_CASHIER_KEY;
-      const cashierRow = cashierMap.get(cashierKey) || {
-        cashierProfileId: cashierKey,
-        cashierName:
-          cashierKey === ONLINE_CASHIER_KEY
-            ? "Online / no cashier"
-            : cashierNameById.get(cashierKey) || "Cashier",
-        tickets: 0,
-        stake: 0,
-        open: 0,
-        won: 0,
-        lost: 0,
-        paid: 0,
-        cashbackPaid: 0,
-      };
-      cashierRow.tickets += 1;
-      cashierRow.stake += stake;
-      if (isUnsettledTicketStatus(ticket.status)) cashierRow.open += 1;
-      if (ticket.status === "WON") cashierRow.won += 1;
-      if (ticket.status === "LOST") cashierRow.lost += 1;
-      if (ticket.status === "PAID") cashierRow.paid += 1;
-      if (ticket.status === "CASHBACK_PAID") cashierRow.cashbackPaid += 1;
-      cashierMap.set(cashierKey, cashierRow);
-    }
-
-    const totalStake = tickets.reduce(
-      (sum, ticket) => sum + Number(ticket.stake || 0),
-      0,
-    );
+    const {
+      dailyMap,
+      branchMap,
+      cashierMap,
+      totalStake,
+      paidTicketsCount,
+      cashbackPaidTicketsCount,
+    } = buildSalesReportAggregates({
+      soldTickets: tickets,
+      paidTickets,
+      start,
+      daySpan,
+      getDayLabel,
+      cashierNameById,
+    });
 
     const byDay = [...dailyMap.values()];
     const byBranch = [...branchMap.values()].sort((a, b) =>
@@ -286,9 +236,8 @@ export async function getAdminSalesReports(req, res) {
         openTickets: tickets.filter((t) => isUnsettledTicketStatus(t.status)).length,
         wonTickets: tickets.filter((t) => t.status === "WON").length,
         lostTickets: tickets.filter((t) => t.status === "LOST").length,
-        paidTickets: tickets.filter((t) => t.status === "PAID").length,
-        cashbackPaidTickets: tickets.filter((t) => t.status === "CASHBACK_PAID")
-          .length,
+        paidTickets: paidTicketsCount,
+        cashbackPaidTickets: cashbackPaidTicketsCount,
       },
       byDay,
       byBranch,

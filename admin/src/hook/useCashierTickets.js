@@ -42,6 +42,7 @@ export function mapTicketRow(ticket) {
     winningsTaxRate: ticket.winnings_tax_rate ?? ticket.winningsTaxRate ?? null,
     status: String(ticket.status || "").toUpperCase(),
     createdAt: ticket.created_at ?? ticket.createdAt ?? null,
+    paidAt: ticket.paid_at ?? ticket.paidAt ?? null,
     printed: Boolean(ticket.printed),
   };
 }

@@ -92,6 +92,7 @@ export async function getAdminDashboardInsights(req, res) {
       activeCashiers,
       activeAgents,
       ticketsInRange,
+      paidTicketsInRange,
       chartTickets,
       recentTicketsRaw,
       payoutInRange,
@@ -117,6 +118,12 @@ export async function getAdminDashboardInsights(req, res) {
           status: true,
           branch_name: true,
           branch_location: true,
+        },
+      }),
+      prisma.ticket.count({
+        where: {
+          paid_at: { gte: start, lte: end },
+          status: "PAID",
         },
       }),
       prisma.ticket.findMany({
@@ -316,7 +323,7 @@ export async function getAdminDashboardInsights(req, res) {
       activeAgents,
       totalTickets: ticketsInRange.length,
       openTickets: statusCounts.OPEN + statusCounts.PRINTED,
-      paidTickets: statusCounts.PAID,
+      paidTickets: paidTicketsInRange,
       settledTickets:
         statusCounts.WON +
         statusCounts.LOST +

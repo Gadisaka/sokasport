@@ -138,6 +138,7 @@ test("single-leg WON ticket transitions to PAID and credits player wallet", asyn
   const store = getStore();
   const ticket = store.ticket.get("tk-1");
   assert.equal(ticket.status, "PAID");
+  assert.ok(ticket.paid_at instanceof Date);
 
   const wallet = store.wallet.get("w-1");
   // Stake was already debited at placement (not modeled here); credit

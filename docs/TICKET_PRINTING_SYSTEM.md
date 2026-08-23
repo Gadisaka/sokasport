@@ -267,7 +267,7 @@ const PRINTER_API_KEY =
 
 export const EXPECTED_PROTOCOL_VERSION = "1";
 
-const STATUS_POLL_MS = 7000;
+const STATUS_POLL_MS = 15000;
 
 export { STATUS_POLL_MS };
 
@@ -602,7 +602,10 @@ import {
   formatTaxLineLabel,
   slipGrossTaxNetForTicket,
 } from "../../utils/winningsTax.js";
-import { formatCashierReceiptLine } from "./receiptFormat.js";
+import {
+  formatCashierReceiptLine,
+  formatLeagueReceiptLine,
+} from "./receiptFormat.js";
 import {
   createBarcodeCanvasForPrint,
   getBarcodePayload,
@@ -634,11 +637,24 @@ const CMD = {
 const CHARS_80MM = 48;
 const CHARS_58MM = 32;
 
+/**
+ * Lines fed before the partial cut. The POS80 cutter sits ~15mm above the
+ * print head, so anything less leaves the barcode footer below the blade and
+ * it comes out on top of the next receipt.
+ */
+const FEED_LINES_BEFORE_CUT = 6;
+
 /** Target raster width in dots (~203 dpi layouts) */
 const LOGO_DOTS = {
   "58mm": 384,
   "80mm": 576,
 };
+
+/**
+ * Fraction of paper width the logo occupies. The raster stays full width
+ * (multiple of 8 dots) so rows never skew; only the drawn logo shrinks.
+ */
+const LOGO_SCALE = 0.6;
 
 /** @type {Record<string, Promise<Uint8Array>>} */
 const logoEscPosCache = {};
@@ -691,6 +707,31 @@ function leftRight(left, right, width) {
   return trimmedLeft + " ".repeat(Math.max(1, gap)) + right;
 }
 
+/** Market left, selection centered, odds right — keeps pick away from the odds column. */
+function marketPickOddsLine(market, pick, odds, width) {
+  const oddsText = String(odds ?? "").trim();
+  const pickText = String(pick ?? "-").trim();
+  const marketText = String(market ?? "-").trim();
+
+  const oddsLen = oddsText.length;
+  const pickLen = pickText.length;
+  const pickStart = Math.max(
+    marketText.length + 1,
+    Math.min(
+      Math.floor((width - pickLen) / 2),
+      width - oddsLen - pickLen - 1,
+    ),
+  );
+  const trimmedMarket = marketText.slice(0, Math.max(1, pickStart - 1));
+
+  return (
+    trimmedMarket.padEnd(pickStart, " ") +
+    pickText +
+    " ".repeat(Math.max(1, width - oddsLen - pickStart - pickLen)) +
+    oddsText
+  ).slice(0, width);
+}
+
 function divider(width, char = "-") {
   return char.repeat(width);
 }
@@ -740,12 +781,28 @@ function formatDate(value) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-function formatKickoff(value) {
+/** Kickoff as "D/M/YYYY HH:MM" (matches the printed-ticket structure). */
+function formatKickoffFull(value) {
   if (!value) return "";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
   const pad = (n) => String(n).padStart(2, "0");
-  return `${pad(date.getDate())}/${pad(date.getMonth() + 1)} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  return `${date.getDate()}/${date.getMonth() + 1}/${date.getFullYear()} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+/** Kickoff time in ms for sorting; missing/invalid times sort last. */
+function selectionStartMs(selection) {
+  const value = selection?.match?.startTime;
+  if (!value) return Number.POSITIVE_INFINITY;
+  const ms = new Date(value).getTime();
+  return Number.isNaN(ms) ? Number.POSITIVE_INFINITY : ms;
+}
+
+/** Stable copy of selections ordered by kickoff date/time, earliest first. */
+function selectionsByKickoff(selections) {
+  return (Array.isArray(selections) ? [...selections] : []).sort(
+    (a, b) => selectionStartMs(a) - selectionStartMs(b),
+  );
 }
 
 /**
@@ -822,8 +879,13 @@ async function rasterLogoToEscPos(src, targetWidthDots) {
   const ih = img.naturalHeight || img.height;
   if (!iw || !ih) return new Uint8Array(0);
 
+  // Keep the raster the full paper width (multiple of 8 dots → no row skew),
+  // but draw the logo smaller and centered within it so it appears reduced.
   const w = targetWidthDots;
-  const h = Math.max(1, Math.round((ih * w) / iw));
+  const logoW = Math.max(1, Math.round(w * LOGO_SCALE));
+  const logoH = Math.max(1, Math.round((ih * logoW) / iw));
+  const h = logoH;
+  const dx = Math.max(0, Math.round((w - logoW) / 2));
 
   const canvas = document.createElement("canvas");
   canvas.width = w;
@@ -833,7 +895,7 @@ async function rasterLogoToEscPos(src, targetWidthDots) {
 
   ctx.fillStyle = "#ffffff";
   ctx.fillRect(0, 0, w, h);
-  ctx.drawImage(img, 0, 0, w, h);
+  ctx.drawImage(img, dx, 0, logoW, logoH);
 
   const imageData = ctx.getImageData(0, 0, w, h).data;
   return imageDataToGsV0(imageData, w, h);
@@ -908,10 +970,11 @@ function pushCashierLines(parts, ticket, chars) {
  * Ticket body after optional logo: metadata, legs, totals, footer. No INIT.
  */
 function buildTicketEscPosParts(ticket, opts) {
-  const { width = "80mm", platformWinningsTax = null } = opts;
+  const { width = "80mm", platformWinningsTax = null, barcodeBytes = null } =
+    opts;
 
   const chars = width === "58mm" ? CHARS_58MM : CHARS_80MM;
-  const selections = Array.isArray(ticket?.selections) ? ticket.selections : [];
+  const selections = selectionsByKickoff(ticket?.selections);
 
   const { tax, net, gross } = slipGrossTaxNetForTicket(
     ticket?.potentialWin,
@@ -924,9 +987,9 @@ function buildTicketEscPosParts(ticket, opts) {
 
   parts.push(new Uint8Array(CMD.ALIGN_LEFT));
   parts.push(line(divider(chars)));
-  parts.push(new Uint8Array(CMD.BOLD_ON));
 
   parts.push(line(leftRight("Coupon:", ticket.couponNumber || "-", chars)));
+  parts.push(line(leftRight("Receipt:", ticket.receiptNumber || "-", chars)));
   pushCashierLines(parts, ticket, chars);
   parts.push(line(leftRight("Date:", ticketDateForEscpos(ticket), chars)));
 
@@ -941,29 +1004,52 @@ function buildTicketEscPosParts(ticket, opts) {
       const sel = selections[i];
       const home = sel?.match?.homeTeam || "";
       const away = sel?.match?.awayTeam || "";
-      const matchName = away ? `${home} vs ${away}` : home || "Match";
-      const kickoff = formatKickoff(sel?.match?.startTime);
+      const matchName = away ? `${home} Vs ${away}` : home || "Match";
+      const kickoff = formatKickoffFull(sel?.match?.startTime);
+      const leagueHeader = formatLeagueReceiptLine({
+        leagueType: sel?.match?.leagueType,
+        leagueCountry: sel?.match?.leagueCountry,
+        country: sel?.match?.country,
+        leagueName: sel?.match?.leagueName,
+      });
       const pick = sel?.selection || sel?.pick || "-";
-      const market = sel?.marketLabel || "";
+      const market = String(sel?.marketLabel || "").trim();
       const odds = formatOdds(sel?.odds);
 
-      const matchLines = wrapText(`${i + 1}. ${matchName}`, chars);
-      for (const ml of matchLines) {
-        parts.push(line(ml));
+      // 1) League type + name (bold). Falls back to the teams when no league.
+      parts.push(new Uint8Array(CMD.BOLD_ON));
+      for (const hl of wrapText(leagueHeader || matchName, chars)) {
+        parts.push(line(hl));
       }
+      parts.push(new Uint8Array(CMD.BOLD_OFF));
 
+      // 2) Date / time
       if (kickoff) {
-        parts.push(line(`   ${kickoff}`));
+        parts.push(line(kickoff));
       }
 
-      const pickLabel = market ? `${market}: ${pick}` : pick;
-      const pickLines = wrapText(pickLabel, chars - 8);
-      for (let j = 0; j < pickLines.length; j++) {
-        if (j === pickLines.length - 1) {
-          parts.push(line(leftRight(`   ${pickLines[j]}`, odds, chars)));
-        } else {
-          parts.push(line(`   ${pickLines[j]}`));
+      // 3) Teams (only when the league header already showed above)
+      if (leagueHeader) {
+        for (const tl of wrapText(matchName, chars)) {
+          parts.push(line(tl));
         }
+      }
+
+      // 4) Market type + selection + odds
+      const marketText = market || "-";
+      const pickLen = String(pick).trim().length;
+      const pickStart = Math.max(1, Math.floor((chars - pickLen) / 2));
+      const marketWrapWidth = Math.max(1, pickStart - 1);
+      if (marketText.length <= marketWrapWidth) {
+        parts.push(line(marketPickOddsLine(marketText, pick, odds, chars)));
+      } else {
+        const mLines = wrapText(marketText, marketWrapWidth);
+        for (let k = 0; k < mLines.length - 1; k++) {
+          parts.push(line(mLines[k]));
+        }
+        parts.push(
+          line(marketPickOddsLine(mLines[mLines.length - 1], pick, odds, chars)),
+        );
       }
 
       if (i < selections.length - 1) {
@@ -974,15 +1060,16 @@ function buildTicketEscPosParts(ticket, opts) {
 
   parts.push(line(divider(chars)));
 
+  parts.push(new Uint8Array(CMD.BOLD_ON));
   parts.push(line(leftRight("Bets:", String(selections.length), chars)));
   parts.push(line(leftRight("Stake:", formatCurrency(ticket.stake), chars)));
   parts.push(
     line(leftRight("Total Odds:", formatOdds(ticket.totalOdds), chars)),
   );
   if (showTax) {
-    parts.push(line(leftRight("Gross win:", formatCurrency(gross), chars)));
+    parts.push(line(leftRight("Gross Win:", formatCurrency(gross), chars)));
     parts.push(line(leftRight(`${taxLabel}:`, formatCurrency(tax), chars)));
-    parts.push(line(leftRight("Net payout:", formatCurrency(net), chars)));
+    parts.push(line(leftRight("Net Payout:", formatCurrency(net), chars)));
   } else {
     parts.push(
       line(
@@ -991,15 +1078,19 @@ function buildTicketEscPosParts(ticket, opts) {
     );
   }
 
-  parts.push(line(divider(chars)));
+  parts.push(new Uint8Array(CMD.BOLD_OFF));
 
+  // Footer: barcode at the bottom (raster when available), else printed code.
+  parts.push(new Uint8Array(CMD.FEED_LINES(1)));
   parts.push(new Uint8Array(CMD.ALIGN_CENTER));
+  if (barcodeBytes && barcodeBytes.length > 0) {
+    parts.push(barcodeBytes);
+  }
   parts.push(
     line(center(ticket.receiptNumber || ticket.couponNumber || "", chars)),
   );
 
-  parts.push(new Uint8Array(CMD.BOLD_OFF));
-  parts.push(new Uint8Array(CMD.FEED_LINES(2)));
+  parts.push(new Uint8Array(CMD.FEED_LINES(FEED_LINES_BEFORE_CUT)));
   parts.push(new Uint8Array(CMD.CUT_PARTIAL));
 
   return parts;
@@ -1019,6 +1110,177 @@ export function encodeTicket(ticket, opts = {}) {
 }
 
 /**
+ * Compact payout/cancel/cashback confirmation receipt — logo + summary only, no legs.
+ *
+ * Fields: logo, branch, receipt number, status, bets count, payout/cashback
+ * amount, date. Intentionally small for a quick proof-of-action slip.
+ *
+ * @param {Object} ticket
+ * @param {{ width?: string, type?: "payout"|"cancel"|"cashback", amount?: number }} [opts]
+ * @returns {Promise<Uint8Array>}
+ */
+export async function encodeActionReceiptAsync(ticket, opts = {}) {
+  const { width = "80mm", type = "payout", amount } = opts;
+  const chars = width === "58mm" ? CHARS_58MM : CHARS_80MM;
+  const isPayout = type === "payout";
+  const isCashback = type === "cashback";
+  const selections = Array.isArray(ticket?.selections) ? ticket.selections : [];
+
+  const logoBytes = await getLogoEscPosPromise(width);
+
+  const parts = [new Uint8Array(CMD.INIT)];
+
+  if (logoBytes.length > 0) {
+    parts.push(new Uint8Array(CMD.ALIGN_CENTER));
+    parts.push(logoBytes);
+  }
+
+  parts.push(new Uint8Array(CMD.ALIGN_CENTER));
+  parts.push(new Uint8Array(CMD.BOLD_ON));
+  parts.push(
+    line(
+      isCashback
+        ? "CASHBACK RECEIPT"
+        : isPayout
+          ? "PAYOUT RECEIPT"
+          : "CANCELLATION RECEIPT",
+    ),
+  );
+  parts.push(new Uint8Array(CMD.BOLD_OFF));
+
+  parts.push(new Uint8Array(CMD.ALIGN_LEFT));
+  parts.push(line(divider(chars)));
+  parts.push(line(leftRight("Branch:", ticket?.branchName || "-", chars)));
+  parts.push(
+    line(leftRight("Receipt:", ticket?.receiptNumber || "-", chars)),
+  );
+  parts.push(line(leftRight("Status:", ticket?.status || "-", chars)));
+  parts.push(line(leftRight("Bets:", String(selections.length), chars)));
+
+  if (isPayout) {
+    const { net } = slipGrossTaxNetForTicket(ticket?.potentialWin, ticket);
+    const payoutAmount = net != null ? net : Number(ticket?.potentialWin || 0);
+    parts.push(line(leftRight("Payout:", formatCurrency(payoutAmount), chars)));
+  }
+
+  if (isCashback) {
+    const cashbackAmount =
+      amount != null ? Number(amount) : Number(ticket?.cashbackAmount || 0);
+    parts.push(
+      line(leftRight("Cashback:", formatCurrency(cashbackAmount), chars)),
+    );
+  }
+
+  parts.push(line(leftRight("Date:", formatDate(new Date()), chars)));
+  parts.push(line(divider(chars)));
+
+  parts.push(new Uint8Array(CMD.FEED_LINES(FEED_LINES_BEFORE_CUT)));
+  parts.push(new Uint8Array(CMD.CUT_PARTIAL));
+
+  return concat(...parts);
+}
+
+/**
+ * Cashier sales report summary slip (logo + betting / payout / wallet totals).
+ *
+ * Mirrors the dashboard stats for a date range; printed on demand from the
+ * cashier dashboard "Print" button.
+ *
+ * @param {Object} report
+ * @param {{ width?: string }} [opts]
+ * @returns {Promise<Uint8Array>}
+ */
+export async function encodeSalesReportAsync(report, opts = {}) {
+  const { width = "80mm" } = opts;
+  const chars = width === "58mm" ? CHARS_58MM : CHARS_80MM;
+  const n = (v) => String(Math.round(Number(v) || 0));
+
+  const logoBytes = await getLogoEscPosPromise(width);
+
+  const parts = [new Uint8Array(CMD.INIT)];
+
+  if (logoBytes.length > 0) {
+    parts.push(new Uint8Array(CMD.ALIGN_CENTER));
+    parts.push(logoBytes);
+  }
+
+  parts.push(new Uint8Array(CMD.ALIGN_CENTER));
+  parts.push(new Uint8Array(CMD.BOLD_ON));
+  parts.push(line("SALES REPORT SUMMARY"));
+  parts.push(new Uint8Array(CMD.BOLD_OFF));
+
+  parts.push(new Uint8Array(CMD.ALIGN_LEFT));
+  const rangeRight = report?.toLabel
+    ? `${report?.fromLabel || ""} - ${report.toLabel}`
+    : report?.fromLabel || "";
+  parts.push(line(leftRight("DATE :", rangeRight, chars)));
+  parts.push(line(leftRight("TIME :", formatDate(new Date()), chars)));
+  if (report?.cashierName) {
+    parts.push(line(leftRight("Cashier:", report.cashierName, chars)));
+  }
+
+  parts.push(line(divider(chars)));
+
+  parts.push(new Uint8Array(CMD.BOLD_ON));
+  parts.push(line("BETTING"));
+  parts.push(new Uint8Array(CMD.BOLD_OFF));
+  parts.push(line(leftRight("Total Bets", n(report?.totalBets), chars)));
+  parts.push(
+    line(leftRight("Total Amount", formatCurrency(report?.totalBetsAmount), chars)),
+  );
+
+  parts.push(new Uint8Array(CMD.BOLD_ON));
+  parts.push(line("PAYOUT"));
+  parts.push(new Uint8Array(CMD.BOLD_OFF));
+  parts.push(
+    line(leftRight("Total Payout", n(report?.totalPayoutCount), chars)),
+  );
+  parts.push(
+    line(
+      leftRight("Total Amount", formatCurrency(report?.totalPayoutAmount), chars),
+    ),
+  );
+
+  parts.push(new Uint8Array(CMD.BOLD_ON));
+  parts.push(line("CANCELLATIONS"));
+  parts.push(new Uint8Array(CMD.BOLD_OFF));
+  parts.push(
+    line(leftRight("Cancelled", n(report?.totalCancelledTickets), chars)),
+  );
+  parts.push(
+    line(
+      leftRight(
+        "Cancelled Amount",
+        formatCurrency(report?.totalCancelledStake),
+        chars,
+      ),
+    ),
+  );
+
+  parts.push(new Uint8Array(CMD.BOLD_ON));
+  parts.push(line("DEPOSIT/WITHDRAWAL"));
+  parts.push(new Uint8Array(CMD.BOLD_OFF));
+  parts.push(
+    line(leftRight("Deposit Amount", formatCurrency(report?.depositAmount), chars)),
+  );
+  parts.push(
+    line(
+      leftRight("Withdrawal Amount", formatCurrency(report?.withdrawAmount), chars),
+    ),
+  );
+
+  parts.push(line(divider(chars)));
+  parts.push(new Uint8Array(CMD.BOLD_ON));
+  parts.push(line(leftRight("ON HAND", formatCurrency(report?.onHand), chars)));
+  parts.push(new Uint8Array(CMD.BOLD_OFF));
+
+  parts.push(new Uint8Array(CMD.FEED_LINES(FEED_LINES_BEFORE_CUT)));
+  parts.push(new Uint8Array(CMD.CUT_PARTIAL));
+
+  return concat(...parts);
+}
+
+/**
  * Encode a ticket with proportional raster logo (browser canvas rasterization).
  *
  * @param {Object} ticket
@@ -1030,6 +1292,11 @@ export async function encodeTicketAsync(ticket, opts = {}) {
   const logoBytes = await getLogoEscPosPromise(width);
   const barcodePayload = getBarcodePayload(ticket);
 
+  let barcodeBytes = null;
+  if (barcodePayload) {
+    barcodeBytes = await getBarcodeEscPosPromise(width, barcodePayload);
+  }
+
   const parts = [new Uint8Array(CMD.INIT)];
 
   if (logoBytes.length > 0) {
@@ -1037,15 +1304,7 @@ export async function encodeTicketAsync(ticket, opts = {}) {
     parts.push(logoBytes);
   }
 
-  if (barcodePayload) {
-    const barcodeBytes = await getBarcodeEscPosPromise(width, barcodePayload);
-    if (barcodeBytes.length > 0) {
-      parts.push(new Uint8Array(CMD.ALIGN_CENTER));
-      parts.push(barcodeBytes);
-    }
-  }
-
-  parts.push(...buildTicketEscPosParts(ticket, opts));
+  parts.push(...buildTicketEscPosParts(ticket, { ...opts, barcodeBytes }));
   return concat(...parts);
 }
 ```
@@ -1064,6 +1323,15 @@ const OPTIONS_DATAURL = {
   textMargin: 3,
   background: "#ffffff",
   lineColor: "#000000",
+};
+
+// Shorter bars for thermal print; the receipt number is printed on its own
+// line just below, so the human-readable value is omitted here.
+const OPTIONS_PRINT = {
+  ...OPTIONS_DATAURL,
+  height: 38,
+  margin: 2,
+  displayValue: false,
 };
 
 /** Receipt / coupon id for barcode (same as former QR payload). */
@@ -1099,7 +1367,7 @@ export function createBarcodeCanvasForPrint(text, targetWidthDots) {
   if (!t || typeof document === "undefined") return null;
   try {
     const srcCanvas = document.createElement("canvas");
-    JsBarcode(srcCanvas, t, OPTIONS_DATAURL);
+    JsBarcode(srcCanvas, t, OPTIONS_PRINT);
     const srcW = srcCanvas.width;
     const srcH = srcCanvas.height;
     if (!srcW || !srcH) return null;
@@ -1423,28 +1691,36 @@ export function useTicketPrint(
 ### `admin/src/pages/cashier/TicketsPage.jsx`
 
 ```javascript
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import AdminShell from "../../components/layout/AdminShell";
 import PanelCard from "../../components/ui/PanelCard";
 import PrimaryButton from "../../components/ui/PrimaryButton";
 import Modal from "../../components/ui/Modal";
 import TicketTemplate from "../../components/ticket/TicketTemplate";
 import { useTicketPrint } from "../../components/ticket/useTicketPrint";
-import { encodeTicketAsync } from "../../components/ticket/escpos";
+import {
+  encodeTicketAsync,
+  encodeActionReceiptAsync,
+} from "../../components/ticket/escpos";
 import { print as printViaLocalService } from "../../services/localPrinter";
 import { useAuth } from "../../context/AuthContext";
 import { API_URL } from "../../../constants.js";
+import { formatCouponInput } from "../../utils/formatCouponInput";
 import {
   useCashoutQuoteMutation,
+  useCashbackQuoteMutation,
+  usePayCashbackMutation,
   mapTicketDetail,
   useCancelTicketMutation,
   useConfirmPrintedTicketMutation,
+  useAbortPrintTicketMutation,
   usePreparePrintTicketMutation,
-  useValidatePrintTicketMutation,
   useCouponLookupMutation,
   useExecuteCashoutMutation,
   usePayoutTicketMutation,
   useReceiptLookupMutation,
+  useRemoveTicketSelectionMutation,
+  useSellBlockingQuery,
   useTicketByIdLookupMutation,
   useTodayTicketsQuery,
   useUpdateTicketStakeMutation,
@@ -1457,6 +1733,12 @@ import {
   formatTaxLineLabel,
   slipGrossTaxNetForTicket,
 } from "../../utils/winningsTax";
+import { getSelectionRowClass } from "../../utils/legResultStatus";
+import {
+  collectInvalidSelectionIds,
+  invalidSelectionLabel,
+  removableExpiredSelectionIds,
+} from "../../utils/selectionExpiry";
 
 const LEFT_TABS = [
   { id: "sell", label: "Sell Ticket" },
@@ -1476,11 +1758,19 @@ function toNumber(value) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+const INSUFFICIENT_CASHIER_BALANCE_MESSAGE = "Insufficient cashier balance";
+
 function formatCurrency(value) {
   return `${toNumber(value).toLocaleString()} ETB`;
 }
 
 const PRINT_DRIFT_CODES = new Set(["odds_changed", "market_version_changed"]);
+const MAX_PRINT_DRIFT_RETRIES = 3;
+
+function positiveMarketVersion(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
 
 function buildAcceptDriftSelections(changedRows, ticket) {
   const snapshotSelections = Array.isArray(ticket?.selections)
@@ -1492,30 +1782,18 @@ function buildAcceptDriftSelections(changedRows, ticket) {
     const acceptedOdds = Number.isFinite(Number(row.serverOdds))
       ? Number(row.serverOdds)
       : Number(fromTicket?.odds);
-    return {
+    const acceptedMarketVersion = positiveMarketVersion(
+      row.serverMarketVersion ?? fromTicket?.serverMarketVersion,
+    );
+    const payload = {
       index: idx,
       acceptedOdds,
-      acceptedMarketVersion:
-        row.serverMarketVersion ??
-        row.submittedMarketVersion ??
-        fromTicket?.marketVersion ??
-        null,
     };
+    if (acceptedMarketVersion != null) {
+      payload.acceptedMarketVersion = acceptedMarketVersion;
+    }
+    return payload;
   });
-}
-
-function printDriftConfirmMessage(code) {
-  if (code === "market_version_changed") {
-    return "Market data was refreshed. Click OK to accept the latest market and continue printing.";
-  }
-  return "Ticket odds changed. Click OK to accept the latest odds and continue printing.";
-}
-
-function printDriftCancelMessage(code) {
-  if (code === "market_version_changed") {
-    return "Printing canceled. Review updated market and try again.";
-  }
-  return "Printing canceled. Review updated odds and try again.";
 }
 
 function formatTime(value) {
@@ -1540,7 +1818,17 @@ function writePrintedCache(setValue) {
   localStorage.setItem(PRINTED_STORAGE_KEY, JSON.stringify([...setValue]));
 }
 
-function TicketDetail({ ticket, platformWinningsTax = null }) {
+function TicketDetail({
+  ticket,
+  platformWinningsTax = null,
+  highlightSelections = false,
+  highlightInvalid = false,
+  invalidSelectionIds = null,
+  blockingLegs = [],
+  onRemoveSelection,
+  removeDisabled = false,
+  removingSelectionId = null,
+}) {
   if (!ticket) return null;
 
   const { tax, net, gross } = slipGrossTaxNetForTicket(
@@ -1549,19 +1837,14 @@ function TicketDetail({ ticket, platformWinningsTax = null }) {
   );
   const showTax = tax != null && tax > 0;
   const taxLabel = formatTaxLineLabel(ticket, platformWinningsTax);
+  const showActions = typeof onRemoveSelection === "function";
+  const invalidIds =
+    invalidSelectionIds instanceof Set ? invalidSelectionIds : new Set();
 
   return (
     <div className="mt-4 overflow-hidden rounded-sm border border-[var(--border)]">
       <div className="border-b border-[var(--border)] bg-[var(--surfaceMuted)] px-3 py-2 text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
-        <span className="block font-mono">
-          Receipt{" "}
-          {ticket.receiptNumber && ticket.receiptNumber.trim()
-            ? ticket.receiptNumber
-            : "—"}
-        </span>
-        <span className="mt-1 block text-[10px] font-normal normal-case text-[var(--muted)]">
-          Coupon {ticket.couponNumber}
-        </span>
+        <span className="block font-mono">Coupon {ticket.couponNumber}</span>
       </div>
 
       <div className="overflow-x-auto">
@@ -1573,6 +1856,7 @@ function TicketDetail({ ticket, platformWinningsTax = null }) {
               <th className="px-3 py-2">Market</th>
               <th className="px-3 py-2">Selection</th>
               <th className="px-3 py-2">Odd</th>
+              {showActions ? <th className="px-3 py-2"> </th> : null}
             </tr>
           </thead>
           <tbody>
@@ -1586,15 +1870,29 @@ function TicketDetail({ ticket, platformWinningsTax = null }) {
                     ? home || "-"
                     : "-";
               const marketText = String(selection.marketLabel ?? "").trim();
+              const isInvalid =
+                highlightInvalid && invalidIds.has(String(selection.id));
+              const rowHighlightClass = isInvalid
+                ? "bg-[#fee2e2]"
+                : highlightSelections
+                  ? getSelectionRowClass(selection)
+                  : "";
               return (
                 <tr
                   key={selection.id}
-                  className="border-b border-[var(--border)] last:border-0"
+                  className={`border-b border-[var(--border)] last:border-0 ${rowHighlightClass}`.trim()}
                 >
                   <td className="px-3 py-2 text-xs text-[var(--muted)]">
-                    {selection.match?.startTime
-                      ? new Date(selection.match.startTime).toLocaleString()
-                      : "-"}
+                    <div>
+                      {selection.match?.startTime
+                        ? new Date(selection.match.startTime).toLocaleString()
+                        : "-"}
+                    </div>
+                    {isInvalid ? (
+                      <span className="mt-0.5 inline-block text-[10px] font-semibold uppercase tracking-wide text-[#b91c1c]">
+                        {invalidSelectionLabel(selection.id, blockingLegs)}
+                      </span>
+                    ) : null}
                   </td>
                   <td className="px-3 py-2 text-xs">{matchLabel}</td>
                   <td className="px-3 py-2 text-xs text-[var(--muted)]">
@@ -1604,6 +1902,23 @@ function TicketDetail({ ticket, platformWinningsTax = null }) {
                   <td className="px-3 py-2 text-xs font-mono">
                     {toNumber(selection.odds).toFixed(2)}
                   </td>
+                  {showActions ? (
+                    <td className="px-3 py-2 text-right">
+                      <button
+                        type="button"
+                        onClick={() => onRemoveSelection(selection.id)}
+                        disabled={
+                          removeDisabled ||
+                          (removingSelectionId != null &&
+                            String(removingSelectionId) ===
+                              String(selection.id))
+                        }
+                        className="rounded-sm border border-[#b91c1c]/40 px-2 py-1 text-xs font-semibold text-[#b91c1c] hover:bg-[#fee2e2] disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        Delete
+                      </button>
+                    </td>
+                  ) : null}
                 </tr>
               );
             })}
@@ -1650,14 +1965,7 @@ function TicketDetail({ ticket, platformWinningsTax = null }) {
   );
 }
 
-function SlipsTable({
-  items,
-  page,
-  totalPages,
-  onPageChange,
-  onReprint,
-  onUseCoupon,
-}) {
+function SlipsTable({ items, page, totalPages, onPageChange }) {
   return (
     <PanelCard className="p-0">
       <div className="overflow-x-auto">
@@ -1665,7 +1973,6 @@ function SlipsTable({
           <thead>
             <tr className="border-b border-[var(--border)] text-xs uppercase tracking-wide text-[var(--muted)]">
               <th className="px-3 py-3">Time</th>
-              <th className="px-3 py-3">Receipt</th>
               <th className="px-3 py-3">Coupon</th>
               <th className="px-3 py-3">Amount</th>
               <th className="px-3 py-3">Possible Win</th>
@@ -1676,7 +1983,7 @@ function SlipsTable({
             {items.length === 0 ? (
               <tr>
                 <td
-                  colSpan={6}
+                  colSpan={5}
                   className="px-3 py-8 text-center text-xs text-[var(--muted)]"
                 >
                   No slips found for today.
@@ -1692,26 +1999,7 @@ function SlipsTable({
                     {formatTime(ticket.createdAt)}
                   </td>
                   <td className="px-3 py-3 text-xs font-mono">
-                    {ticket.receiptNumber ? (
-                      <button
-                        type="button"
-                        onClick={() => onUseCoupon(ticket)}
-                        className="text-[var(--accent)] underline-offset-2 hover:underline"
-                      >
-                        {ticket.receiptNumber}
-                      </button>
-                    ) : (
-                      <span className="text-[var(--muted)]">—</span>
-                    )}
-                  </td>
-                  <td className="px-3 py-3 text-xs font-mono">
-                    <button
-                      type="button"
-                      onClick={() => onUseCoupon(ticket)}
-                      className="text-[var(--accent)] underline-offset-2 hover:underline"
-                    >
-                      {ticket.couponNumber}
-                    </button>
+                    {ticket.couponNumber}
                   </td>
                   <td className="px-3 py-3 text-xs">
                     {toNumber(ticket.stake).toLocaleString()}
@@ -1721,13 +2009,7 @@ function SlipsTable({
                   </td>
                   <td className="px-3 py-3 text-xs">
                     {ticket.printed ? (
-                      <button
-                        type="button"
-                        className="rounded-sm border border-[var(--border)] bg-[var(--surfaceMuted)] px-2 py-1 text-[11px] font-semibold"
-                        onClick={() => onReprint(ticket)}
-                      >
-                        Reprint
-                      </button>
+                      <span className="text-[var(--muted)]">Reprint</span>
                     ) : (
                       <span className="text-[var(--muted)]">No</span>
                     )}
@@ -1779,6 +2061,7 @@ export default function CashierTicketsPage() {
   const [payoutTicket, setPayoutTicket] = useState(null);
   const [payoutQuote, setPayoutQuote] = useState(null);
   const [payoutAction, setPayoutAction] = useState("payout");
+  const [completedAction, setCompletedAction] = useState(null);
   const [sellError, setSellError] = useState("");
   const [payoutError, setPayoutError] = useState("");
   const [sellConfirmed, setSellConfirmed] = useState(false);
@@ -1787,6 +2070,10 @@ export default function CashierTicketsPage() {
   const [printedCache, setPrintedCache] = useState(() => readPrintedCache());
   const [platformWinningsTax, setPlatformWinningsTax] = useState(null);
   const [bettingLimits, setBettingLimits] = useState(null);
+  const printInFlightRef = useRef(false);
+  const autoRemoveExpiredInFlightRef = useRef(false);
+  const [expiryTick, setExpiryTick] = useState(0);
+  const [removingSelectionId, setRemovingSelectionId] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -1821,11 +2108,33 @@ export default function CashierTicketsPage() {
   const payoutTicketMutation = usePayoutTicketMutation();
   const cashoutQuoteMutation = useCashoutQuoteMutation();
   const executeCashoutMutation = useExecuteCashoutMutation();
+  const cashbackQuoteMutation = useCashbackQuoteMutation();
+  const payCashbackMutation = usePayCashbackMutation();
   const confirmPrint = useConfirmPrintedTicketMutation();
-  const validatePrint = useValidatePrintTicketMutation();
+  const abortPrint = useAbortPrintTicketMutation();
   const preparePrint = usePreparePrintTicketMutation();
   const updateStake = useUpdateTicketStakeMutation();
-  const printInFlightRef = useRef(false);
+  const removeSelection = useRemoveTicketSelectionMutation();
+  const sellBlockingQuery = useSellBlockingQuery(sellTicket?.id, {
+    enabled: Boolean(sellTicket?.id && leftTab === "sell"),
+  });
+
+  useEffect(() => {
+    if (leftTab !== "sell") return undefined;
+    const id = window.setInterval(() => setExpiryTick((t) => t + 1), 30_000);
+    return () => window.clearInterval(id);
+  }, [leftTab]);
+
+  const invalidSelectionIds = useMemo(() => {
+    if (!sellTicket?.selections) return new Set();
+    return collectInvalidSelectionIds(
+      sellTicket.selections,
+      sellBlockingQuery.data?.blockingLegs,
+    );
+  }, [sellTicket, sellBlockingQuery.data?.blockingLegs]);
+
+  const hasInvalidLegs = invalidSelectionIds.size > 0;
+  const onlyOneLeg = (sellTicket?.selections?.length || 0) <= 1;
 
   const sellStakeNum = Number(sellStakeInput);
   const sellAccPct = toNumber(sellTicket?.accumulatorBonusPercent);
@@ -1851,7 +2160,10 @@ export default function CashierTicketsPage() {
         ...sellTicket,
         cashierId: sellTicket.cashierId || user?.cashierId || user?.id || "",
         cashierName:
-          String(sellTicket.cashierName || "").trim() || user?.name || "",
+          String(sellTicket.cashierName || "").trim() ||
+          user?.fullname ||
+          user?.username ||
+          "",
       }
     : null;
   const {
@@ -1872,6 +2184,15 @@ export default function CashierTicketsPage() {
   const slipsEnabled = rightTab !== "inbox";
   const walletQuery = useCashierHistoryQuery({ page: 1 });
   const cashierBalance = walletQuery.data?.balance;
+  const stakeForFloatGate = Number.isFinite(sellStakeNum) && sellStakeNum > 0
+    ? sellStakeNum
+    : toNumber(sellTicket?.stake);
+  const insufficientFloat =
+    Boolean(sellTicket) &&
+    cashierBalance != null &&
+    Number.isFinite(stakeForFloatGate) &&
+    stakeForFloatGate > 0 &&
+    toNumber(cashierBalance) < stakeForFloatGate;
   const slipsQuery = useTodayTicketsQuery({
     status: slipsStatus,
     page: slipsPage,
@@ -1898,8 +2219,10 @@ export default function CashierTicketsPage() {
     payoutTicketMutation.isPending ||
     cashoutQuoteMutation.isPending ||
     executeCashoutMutation.isPending ||
+    cashbackQuoteMutation.isPending ||
+    payCashbackMutation.isPending ||
     confirmPrint.isPending ||
-    validatePrint.isPending ||
+    abortPrint.isPending ||
     preparePrint.isPending ||
     updateStake.isPending;
   const printerConnected = Boolean(printerStatus?.connected);
@@ -1938,6 +2261,7 @@ export default function CashierTicketsPage() {
     } else {
       setPayoutError("");
       setPayoutQuote(null);
+      setCompletedAction(null);
     }
 
     try {
@@ -1988,6 +2312,16 @@ export default function CashierTicketsPage() {
     if (!sellTicket) return;
     setSellError("");
 
+    if (hasInvalidLegs) {
+      setSellError("Remove expired or invalid selections before confirming.");
+      return;
+    }
+
+    if (insufficientFloat) {
+      setSellError(INSUFFICIENT_CASHIER_BALANCE_MESSAGE);
+      return;
+    }
+
     const parsedStake = Number(sellStakeInput);
     if (!Number.isFinite(parsedStake) || parsedStake <= 0) {
       setSellError("Stake must be a positive number");
@@ -2012,62 +2346,192 @@ export default function CashierTicketsPage() {
     setActionSuccess("Ticket confirmed. You can print now.");
   };
 
+  const handleRemoveSelection = async (selectionId) => {
+    if (!sellTicket?.id) return;
+    setSellError("");
+    setSellConfirmed(false);
+    setRemovingSelectionId(selectionId);
+    try {
+      const updated = await removeSelection.mutateAsync({
+        ticketId: sellTicket.id,
+        selectionId,
+      });
+      setSellTicket(updated);
+      setSellStakeInput(String(toNumber(updated?.stake)));
+    } catch (error) {
+      setSellError(error?.message || "Failed to remove selection");
+    } finally {
+      setRemovingSelectionId(null);
+    }
+  };
+
+  const sellBlockingLegs = sellBlockingQuery.data?.blockingLegs;
+  const removeSelectionMutateAsync = removeSelection.mutateAsync;
+  const sellSelectionIdsKey = (sellTicket?.selections || [])
+    .map((row) => String(row?.id || ""))
+    .join("|");
+  const blockingStartedKey = (sellBlockingLegs || [])
+    .filter((leg) => String(leg?.code || "") === "fixture_started")
+    .map((leg) => String(leg?.selectionId || ""))
+    .join("|");
+
+  useEffect(() => {
+    if (leftTab !== "sell" || !sellTicket?.id || sellConfirmed) return undefined;
+    if (autoRemoveExpiredInFlightRef.current) return undefined;
+
+    const ids = removableExpiredSelectionIds(
+      sellTicket.selections,
+      Date.now(),
+      sellBlockingLegs,
+    );
+    if (ids.length === 0) return undefined;
+
+    let cancelled = false;
+    autoRemoveExpiredInFlightRef.current = true;
+
+    (async () => {
+      try {
+        let updated = sellTicket;
+        let removed = 0;
+        for (const selectionId of ids) {
+          if (cancelled) break;
+          const stillOnTicket = (updated.selections || []).some(
+            (s) => String(s.id) === String(selectionId),
+          );
+          if (!stillOnTicket) continue;
+          setRemovingSelectionId(selectionId);
+          try {
+            updated = await removeSelectionMutateAsync({
+              ticketId: updated.id,
+              selectionId,
+            });
+            removed += 1;
+          } catch (err) {
+            const msg = String(err?.message || "").toLowerCase();
+            if (msg.includes("not found")) continue;
+            throw err;
+          }
+        }
+        if (cancelled || removed === 0) return;
+        setSellTicket(updated);
+        setSellStakeInput(String(toNumber(updated?.stake)));
+        setSellConfirmed(false);
+        setActionSuccess(
+          removed === 1
+            ? "Removed 1 expired selection."
+            : `Removed ${removed} expired selections.`,
+        );
+      } catch (error) {
+        if (!cancelled) {
+          setSellError(error?.message || "Failed to remove expired selections");
+        }
+      } finally {
+        autoRemoveExpiredInFlightRef.current = false;
+        setRemovingSelectionId(null);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    leftTab,
+    sellTicket,
+    sellConfirmed,
+    expiryTick,
+    sellSelectionIdsKey,
+    blockingStartedKey,
+    sellBlockingLegs,
+    removeSelectionMutateAsync,
+  ]);
+
   const handlePrint = async () => {
     if (!sellTicket || printInFlightRef.current) return;
     printInFlightRef.current = true;
     setSellError("");
     const ticketForWalletAndPrint = sellTicket;
-    setActionSuccess("Validating ticket before print...");
 
     const runWithDriftRetry = async (mutateAsync, basePayload) => {
-      try {
-        return await mutateAsync(basePayload);
-      } catch (error) {
-        const driftCode = String(error?.code || "");
-        if (PRINT_DRIFT_CODES.has(driftCode) && error?.details) {
+      let payload = basePayload;
+      for (let attempt = 0; attempt <= MAX_PRINT_DRIFT_RETRIES; attempt++) {
+        try {
+          return await mutateAsync(payload);
+        } catch (error) {
+          const driftCode = String(error?.code || "");
+          if (
+            !PRINT_DRIFT_CODES.has(driftCode) ||
+            !error?.details ||
+            attempt >= MAX_PRINT_DRIFT_RETRIES
+          ) {
+            throw error;
+          }
           const changedRows = Array.isArray(error.details.selections)
             ? error.details.selections
             : [];
-          const shouldAccept = window.confirm(printDriftConfirmMessage(driftCode));
-          if (!shouldAccept) {
-            throw Object.assign(new Error(printDriftCancelMessage(driftCode)), {
-              handled: true,
-            });
-          }
-          return mutateAsync({
+          setActionSuccess("Accepting updated market...");
+          payload = {
             ...basePayload,
             acceptOddsChanges: true,
             selections: buildAcceptDriftSelections(
               changedRows,
               ticketForWalletAndPrint,
             ),
-          });
+          };
         }
-        throw error;
       }
     };
 
+    const localPrintFailMessage = (result) => {
+      if (result?.code === "service_unreachable") {
+        return "Local print service unreachable. Start PrinterBridge.exe on this PC.";
+      }
+      if (result?.code === "com_unavailable") {
+        return "Printer queue unavailable. Check POS80 is installed in Windows Print queues.";
+      }
+      return String(
+        result?.error?.message ||
+          "Failed to send ticket to local printer service.",
+      );
+    };
+
+    let holdTaken = false;
+    let holdReleased = false;
+    let paperSent = false;
+    const releasePrintHold = async () => {
+      if (!holdTaken || holdReleased || paperSent) return true;
+      try {
+        await abortPrint.mutateAsync({
+          ticketId: ticketForWalletAndPrint.id,
+        });
+        holdReleased = true;
+        await walletQuery.refetch();
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const heldStakeMessage =
+      " Stake was taken. Retry print or cancel the ticket to refund.";
+
     try {
-      await runWithDriftRetry(validatePrint.mutateAsync, {
-        ticketId: ticketForWalletAndPrint.id,
-      });
-
-      setActionSuccess("Preparing receipt...");
-      const prepareResult = await preparePrint.mutateAsync({
-        ticketId: ticketForWalletAndPrint.id,
-      });
-      const ticketToPrint = prepareResult?.ticket
-        ? mapTicketDetail(prepareResult.ticket)
-        : ticketForWalletAndPrint;
-
+      // Fail fast when the printer is offline — before any network call.
       if (!printerConnected) {
-        setActionSuccess("");
         setSellError(
           "Printer offline. Ensure local print service is running and POS80 printer is connected.",
         );
         setTicketPreviewOpen(false);
         return;
       }
+
+      setActionSuccess("Validating ticket before print...");
+      const prepareResult = await runWithDriftRetry(preparePrint.mutateAsync, {
+        ticketId: ticketForWalletAndPrint.id,
+      });
+      holdTaken = true;
+      void walletQuery.refetch();
+      const ticketToPrint = prepareResult?.ticket
+        ? mapTicketDetail(prepareResult.ticket)
+        : ticketForWalletAndPrint;
 
       setActionSuccess("Sending ticket to printer...");
       const escposData = await encodeTicketAsync(ticketToPrint, {
@@ -2076,25 +2540,14 @@ export default function CashierTicketsPage() {
       });
       const localPrintResult = await printViaLocalService(escposData);
       if (!localPrintResult.success) {
-        const localError = String(
-          localPrintResult.error?.message ||
-            "Failed to send ticket to local printer service.",
-        );
+        const aborted = await releasePrintHold();
         setActionSuccess("");
-        if (localPrintResult.code === "service_unreachable") {
-          setSellError(
-            "Local print service unreachable. Start PrinterBridge.exe on this PC.",
-          );
-        } else if (localPrintResult.code === "com_unavailable") {
-          setSellError(
-            "Printer queue unavailable. Check POS80 is installed in Windows Print queues.",
-          );
-        } else {
-          setSellError(localError);
-        }
+        const printMessage = localPrintFailMessage(localPrintResult);
+        setSellError(aborted ? printMessage : `${printMessage}${heldStakeMessage}`);
         setTicketPreviewOpen(false);
         return;
       }
+      paperSent = true;
 
       setActionSuccess("Print sent. Confirming sale...");
       let confirmResult;
@@ -2129,15 +2582,28 @@ export default function CashierTicketsPage() {
       }
       setSellTicket(updatedTicket);
 
-      await Promise.all([slipsQuery.refetch(), walletQuery.refetch()]);
+      Promise.all([slipsQuery.refetch(), walletQuery.refetch()]).catch(() => {});
 
-      const walletMessage = confirmResult.alreadyPrinted
-        ? "Ticket already confirmed; wallet was not deducted again."
-        : `Wallet deducted by ${formatCurrency(confirmResult.deductedAmount)}.`;
+      const confirmDeducted = Number(confirmResult?.deductedAmount) || 0;
+      const walletMessage =
+        confirmDeducted > 0
+          ? `Wallet deducted by ${formatCurrency(confirmDeducted)}. Ticket printed successfully.`
+          : "Ticket printed successfully.";
 
       setTicketPreviewOpen(false);
-      setActionSuccess(`${walletMessage} Ticket printed successfully.`);
+      setActionSuccess(walletMessage);
     } catch (error) {
+      if (holdTaken && !paperSent) {
+        const aborted = await releasePrintHold();
+        if (!aborted) {
+          setSellError(
+            `${error?.handled ? error.message : error?.message || "Failed to print ticket"}${heldStakeMessage}`,
+          );
+          setActionSuccess("");
+          setTicketPreviewOpen(false);
+          return;
+        }
+      }
       if (error?.handled) {
         setSellError(error.message);
       } else {
@@ -2159,12 +2625,14 @@ export default function CashierTicketsPage() {
   const handleCancelTicket = async () => {
     if (!payoutTicket) return;
     setPayoutError("");
+    setCompletedAction(null);
     try {
       const response = await cancelTicket.mutateAsync(payoutTicket.id);
       setActionSuccess(response?.message || "Ticket canceled");
       const refreshed = await refreshPayoutTicket(payoutTicket);
       setPayoutTicket(refreshed);
-      await slipsQuery.refetch();
+      setCompletedAction("cancel");
+      await Promise.all([slipsQuery.refetch(), walletQuery.refetch()]);
     } catch (error) {
       setPayoutError(error?.message || "Failed to cancel ticket");
     }
@@ -2173,6 +2641,7 @@ export default function CashierTicketsPage() {
   const handlePayoutTicket = async () => {
     if (!payoutTicket) return;
     setPayoutError("");
+    setCompletedAction(null);
     try {
       const response = await payoutTicketMutation.mutateAsync({
         ticketId: payoutTicket.id,
@@ -2180,9 +2649,79 @@ export default function CashierTicketsPage() {
       setActionSuccess(response?.message || "Ticket payout completed");
       const refreshed = await refreshPayoutTicket(payoutTicket);
       setPayoutTicket(refreshed);
+      setCompletedAction("payout");
       await slipsQuery.refetch();
     } catch (error) {
       setPayoutError(error?.message || "Failed to payout ticket");
+    }
+  };
+
+  const handlePayCashbackTicket = async () => {
+    if (!payoutTicket) return;
+    setPayoutError("");
+    setCompletedAction(null);
+    try {
+      const response = await payCashbackMutation.mutateAsync({
+        ticketId: payoutTicket.id,
+      });
+      setActionSuccess(response?.message || "Cashback payout completed");
+      const refreshed = await refreshPayoutTicket(payoutTicket);
+      setPayoutTicket(refreshed);
+      setPayoutQuote(response?.quote || null);
+      setCompletedAction("cashback");
+      await Promise.all([slipsQuery.refetch(), walletQuery.refetch()]);
+    } catch (error) {
+      setPayoutError(error?.message || "Failed to pay cashback");
+    }
+  };
+
+  const handlePrintActionReceipt = async (type) => {
+    if (!payoutTicket) return;
+    setPayoutError("");
+
+    if (!printerConnected) {
+      setPayoutError(
+        "Printer offline. Ensure local print service is running and POS80 printer is connected.",
+      );
+      return;
+    }
+
+    try {
+      const escposData = await encodeActionReceiptAsync(payoutTicket, {
+        width: "80mm",
+        type,
+        amount:
+          type === "cashback" ? toNumber(payoutQuote?.amount) : undefined,
+      });
+      const localPrintResult = await printViaLocalService(escposData);
+      if (localPrintResult.success) {
+        setActionSuccess(
+          type === "payout"
+            ? "Payout receipt printed."
+            : type === "cashback"
+              ? "Cashback receipt printed."
+              : "Cancellation receipt printed.",
+        );
+        return;
+      }
+
+      const localError = String(
+        localPrintResult.error?.message ||
+          "Failed to send receipt to local printer service.",
+      );
+      if (localPrintResult.code === "service_unreachable") {
+        setPayoutError(
+          "Local print service unreachable. Start PrinterBridge.exe on this PC.",
+        );
+      } else if (localPrintResult.code === "com_unavailable") {
+        setPayoutError(
+          "Printer queue unavailable. Check POS80 is installed in Windows Print queues.",
+        );
+      } else {
+        setPayoutError(localError);
+      }
+    } catch (error) {
+      setPayoutError(error?.message || "Failed to print receipt");
     }
   };
 
@@ -2203,96 +2742,32 @@ export default function CashierTicketsPage() {
     }
   };
 
-  const handleUseCouponFromTable = (ticket) => {
-    if (!ticket?.id) return;
-    setSellCouponInput(ticket.couponNumber || "");
-    setPayoutReceiptInput(ticket.receiptNumber || "");
-    if (leftTab === "sell") {
-      void (async () => {
-        setSellError("");
-        try {
-          const detail = await loadTicketById.mutateAsync(ticket.id);
-          setSellTicket(detail);
-          setSellStakeInput(String(toNumber(detail?.stake)));
-        } catch (e) {
-          setSellError(e?.message || "Failed to load ticket");
-        }
-      })();
-    } else {
-      if (!String(ticket.receiptNumber || "").trim()) {
-        setPayoutError(
-          "This slip has no receipt yet. Print or complete payment first.",
-        );
-        return;
-      }
-      void loadCouponTicket({
-        type: "payout",
-        receiptNumber: ticket.receiptNumber,
-        payoutMode: payoutAction,
-      });
-    }
-  };
-
-  const handleReprint = async (ticket) => {
-    if (!ticket?.id) return;
-    setSellError("");
-    try {
-      const detail = await loadTicketById.mutateAsync(ticket.id);
-
-      if (!printerConnected) {
-        setSellError(
-          "Printer offline. Ensure local print service is running and POS80 printer is connected.",
-        );
-        setActionSuccess("");
-        return;
-      }
-
-      const escposData = await encodeTicketAsync(detail, {
-        width: "80mm",
-        platformWinningsTax,
-      });
-      const localPrintResult = await printViaLocalService(escposData);
-      if (localPrintResult.success) {
-        setActionSuccess("Ticket reprinted.");
-        window.setTimeout(() => setActionSuccess(""), 2500);
-        return;
-      }
-
-      const localError = String(
-        localPrintResult.error?.message ||
-          "Failed to send ticket to local printer service.",
-      );
-      if (localPrintResult.code === "service_unreachable") {
-        setSellError(
-          "Local print service unreachable. Start PrinterBridge.exe on this PC.",
-        );
-      } else if (localPrintResult.code === "com_unavailable") {
-        setSellError(
-          "Printer queue unavailable. Check POS80 is installed in Windows Print queues.",
-        );
-      } else {
-        setSellError(localError);
-      }
-      setTicketPreviewOpen(false);
-      setActionSuccess("");
-    } catch (e) {
-      setSellError(e?.message || "Failed to reprint");
-    }
-  };
-
   useEffect(() => {
     let cancelled = false;
     async function loadQuote() {
-      if (payoutAction !== "cashout" || !payoutTicket?.id) return;
+      if (
+        (payoutAction !== "cashout" && payoutAction !== "cashback") ||
+        !payoutTicket?.id
+      ) {
+        return;
+      }
       try {
-        const payload = await cashoutQuoteMutation.mutateAsync(payoutTicket.id);
+        const payload =
+          payoutAction === "cashback"
+            ? await cashbackQuoteMutation.mutateAsync(payoutTicket.id)
+            : await cashoutQuoteMutation.mutateAsync(payoutTicket.id);
         if (!cancelled) {
           setPayoutQuote(payload?.quote || null);
         }
       } catch (error) {
         if (!cancelled) {
           setPayoutQuote(null);
-          setPayoutError(error?.message || "Failed to load cashout quote");
+          setPayoutError(
+            error?.message ||
+              (payoutAction === "cashback"
+                ? "Failed to load cashback quote"
+                : "Failed to load cashout quote"),
+          );
         }
       }
     }
@@ -2422,7 +2897,9 @@ export default function CashierTicketsPage() {
                   <input
                     type="text"
                     value={sellCouponInput}
-                    onChange={(event) => setSellCouponInput(event.target.value)}
+                    onChange={(event) =>
+                      setSellCouponInput(formatCouponInput(event.target.value))
+                    }
                     placeholder="Enter Coupon ID"
                     className="w-full rounded-sm border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 text-sm outline-none focus:border-[var(--accent)]"
                   />
@@ -2441,6 +2918,61 @@ export default function CashierTicketsPage() {
                   </p>
                 )}
 
+                {sellTicket && (
+                  <div className="mt-4 flex flex-wrap items-end gap-2">
+                    <div>
+                      <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
+                        Edit Stake (ETB)
+                      </label>
+                      <input
+                        type="number"
+                        min="1"
+                        step="1"
+                        value={sellStakeInput}
+                        onChange={(event) =>
+                          setSellStakeInput(event.target.value)
+                        }
+                        disabled={sellConfirmed || isBusy}
+                        className="w-40 rounded-sm border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm outline-none focus:border-[var(--accent)] disabled:opacity-60"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleSellConfirm}
+                      disabled={
+                        isBusy ||
+                        sellConfirmed ||
+                        hasInvalidLegs ||
+                        insufficientFloat
+                      }
+                      className="rounded-sm bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                    >
+                      {updateStake.isPending ? "Saving..." : "Confirm"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSellTicket(null);
+                        setSellStakeInput("");
+                        setSellConfirmed(false);
+                        setTicketPreviewOpen(false);
+                      }}
+                      className="rounded-sm border border-[var(--border)] px-4 py-2 text-sm font-semibold text-[var(--muted)]"
+                    >
+                      Cancel
+                    </button>
+                    {sellConfirmed && (
+                      <PrimaryButton
+                        className="w-auto"
+                        onClick={handlePrint}
+                        disabled={isBusy}
+                      >
+                        Print Ticket
+                      </PrimaryButton>
+                    )}
+                  </div>
+                )}
+
                 {!sellTicket ? (
                   <div className="mt-4 rounded-sm border border-dashed border-[var(--border)] px-4 py-12 text-center text-sm text-[var(--muted)]">
                     Please provide valid ticket number.
@@ -2450,106 +2982,71 @@ export default function CashierTicketsPage() {
                     <TicketDetail
                       ticket={sellTicket}
                       platformWinningsTax={platformWinningsTax}
+                      highlightInvalid
+                      invalidSelectionIds={invalidSelectionIds}
+                      blockingLegs={sellBlockingQuery.data?.blockingLegs || []}
+                      onRemoveSelection={handleRemoveSelection}
+                      removeDisabled={sellConfirmed || onlyOneLeg}
+                      removingSelectionId={removingSelectionId}
                     />
 
+                    {hasInvalidLegs ? (
+                      <p className="mt-2 text-xs font-medium text-[#b91c1c]">
+                        Remove expired or invalid selections before confirming.
+                      </p>
+                    ) : null}
+
+                    {insufficientFloat ? (
+                      <p className="mt-2 text-xs font-medium text-[#b91c1c]">
+                        {INSUFFICIENT_CASHIER_BALANCE_MESSAGE}
+                      </p>
+                    ) : null}
+
                     <div className="mt-4 rounded-sm border border-[var(--border)] bg-[var(--surfaceMuted)] px-3 py-3">
-                      <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
-                        Edit Stake (ETB)
-                      </label>
-                      <div className="flex flex-wrap items-center gap-3">
-                        <input
-                          type="number"
-                          min="1"
-                          step="1"
-                          value={sellStakeInput}
-                          onChange={(event) =>
-                            setSellStakeInput(event.target.value)
-                          }
-                          disabled={sellConfirmed || isBusy}
-                          className="w-40 rounded-sm border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm outline-none focus:border-[var(--accent)] disabled:opacity-60"
-                        />
-                        {sellShowTax ? (
-                          <div className="min-w-0 flex-1 space-y-1 text-xs">
-                            <div className="flex justify-between gap-4">
-                              <span className="text-[var(--muted)]">
-                                Gross win
-                              </span>
-                              <span className="font-semibold text-[var(--foreground)]">
-                                {formatCurrency(sellTaxBreakdown.gross)}
-                              </span>
-                            </div>
-                            <div className="flex justify-between gap-4">
-                              <span className="text-[var(--muted)]">
-                                {sellTicket
-                                  ? formatTaxLineLabel(
-                                      sellTicket,
-                                      platformWinningsTax,
-                                    )
-                                  : "Tax"}
-                              </span>
-                              <span className="font-semibold text-[var(--foreground)]">
-                                {formatCurrency(sellTaxBreakdown.tax)}
-                              </span>
-                            </div>
-                            <div className="flex justify-between gap-4 border-t border-[var(--border)] pt-1">
-                              <span className="font-semibold text-[var(--muted)]">
-                                Net payout
-                              </span>
-                              <span className="font-semibold text-[var(--foreground)]">
-                                {formatCurrency(sellTaxBreakdown.net)}
-                              </span>
-                            </div>
-                          </div>
-                        ) : (
-                          <span className="text-xs text-[var(--muted)]">
-                            Possible Win:{" "}
+                      {sellShowTax ? (
+                        <div className="min-w-0 space-y-1 text-xs">
+                          <div className="flex justify-between gap-4">
+                            <span className="text-[var(--muted)]">Gross win</span>
                             <span className="font-semibold text-[var(--foreground)]">
-                              {formatCurrency(sellCappedPossibleWin)}
+                              {formatCurrency(sellTaxBreakdown.gross)}
                             </span>
+                          </div>
+                          <div className="flex justify-between gap-4">
+                            <span className="text-[var(--muted)]">
+                              {sellTicket
+                                ? formatTaxLineLabel(
+                                    sellTicket,
+                                    platformWinningsTax,
+                                  )
+                                : "Tax"}
+                            </span>
+                            <span className="font-semibold text-[var(--foreground)]">
+                              {formatCurrency(sellTaxBreakdown.tax)}
+                            </span>
+                          </div>
+                          <div className="flex justify-between gap-4 border-t border-[var(--border)] pt-1">
+                            <span className="font-semibold text-[var(--muted)]">
+                              Net payout
+                            </span>
+                            <span className="font-semibold text-[var(--foreground)]">
+                              {formatCurrency(sellTaxBreakdown.net)}
+                            </span>
+                          </div>
+                        </div>
+                      ) : (
+                        <span className="text-xs text-[var(--muted)]">
+                          Possible Win:{" "}
+                          <span className="font-semibold text-[var(--foreground)]">
+                            {formatCurrency(sellCappedPossibleWin)}
                           </span>
-                        )}
-                      </div>
+                        </span>
+                      )}
                       {sellConfirmed && (
                         <p className="mt-2 text-[11px] text-[var(--muted)]">
                           Stake is locked once the ticket is confirmed.
                         </p>
                       )}
                     </div>
-
-                    <div className="mt-4 flex flex-wrap gap-2">
-                      <button
-                        type="button"
-                        onClick={handleSellConfirm}
-                        disabled={isBusy || sellConfirmed}
-                        className="rounded-sm bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
-                      >
-                        {updateStake.isPending ? "Saving..." : "Confirm"}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setSellTicket(null);
-                          setSellStakeInput("");
-                          setSellConfirmed(false);
-                          setTicketPreviewOpen(false);
-                        }}
-                        className="rounded-sm border border-[var(--border)] px-4 py-2 text-sm font-semibold text-[var(--muted)]"
-                      >
-                        Reject
-                      </button>
-                    </div>
-
-                    {sellConfirmed && (
-                      <div className="mt-3 space-y-2">
-                        <PrimaryButton
-                          className="max-w-xs"
-                          onClick={handlePrint}
-                          disabled={isBusy}
-                        >
-                          Print Ticket
-                        </PrimaryButton>
-                      </div>
-                    )}
                   </>
                 )}
               </div>
@@ -2567,12 +3064,19 @@ export default function CashierTicketsPage() {
                     onChange={(event) => {
                       setPayoutAction(event.target.value);
                       setPayoutQuote(null);
+                      setCompletedAction(null);
                     }}
                     disabled={isBusy}
                     className="min-w-[8.5rem] rounded-sm border border-slate-700 bg-slate-900 px-3 py-2.5 text-sm font-semibold text-white outline-none focus:border-[var(--accent)] disabled:opacity-60"
                   >
                     <option value="payout" className="bg-slate-900 text-white">
                       Payout
+                    </option>
+                    <option
+                      value="cashback"
+                      className="bg-slate-900 text-white"
+                    >
+                      Pay Cashback
                     </option>
                     <option value="cancel" className="bg-slate-900 text-white">
                       Cancel
@@ -2585,7 +3089,9 @@ export default function CashierTicketsPage() {
                     type="text"
                     value={payoutReceiptInput}
                     onChange={(event) =>
-                      setPayoutReceiptInput(event.target.value)
+                      setPayoutReceiptInput(
+                        formatCouponInput(event.target.value),
+                      )
                     }
                     placeholder="Receipt #####-#####"
                     className="w-full rounded-sm border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 text-sm outline-none focus:border-[var(--accent)]"
@@ -2614,6 +3120,7 @@ export default function CashierTicketsPage() {
                     <TicketDetail
                       ticket={payoutTicket}
                       platformWinningsTax={platformWinningsTax}
+                      highlightSelections={payoutAction === "payout"}
                     />
 
                     <div className="mt-4 flex flex-wrap items-end gap-3">
@@ -2622,6 +3129,8 @@ export default function CashierTicketsPage() {
                         onClick={() => {
                           if (payoutAction === "payout") {
                             void handlePayoutTicket();
+                          } else if (payoutAction === "cashback") {
+                            void handlePayCashbackTicket();
                           } else if (payoutAction === "cancel") {
                             void handleCancelTicket();
                           } else if (payoutAction === "cashout") {
@@ -2630,7 +3139,8 @@ export default function CashierTicketsPage() {
                         }}
                         disabled={
                           isBusy ||
-                          (payoutAction === "cashout" &&
+                          ((payoutAction === "cashout" ||
+                            payoutAction === "cashback") &&
                             payoutQuote &&
                             !payoutQuote.allowed)
                         }
@@ -2644,8 +3154,29 @@ export default function CashierTicketsPage() {
                           ? "Cancel Ticket"
                           : payoutAction === "cashout"
                             ? "Execute Cash Out"
-                            : "Pay Winner"}
+                            : payoutAction === "cashback"
+                              ? "Pay Cashback"
+                              : "Pay Winner"}
                       </button>
+
+                      {(completedAction === "payout" ||
+                        completedAction === "cancel" ||
+                        completedAction === "cashback") && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void handlePrintActionReceipt(completedAction)
+                          }
+                          disabled={isBusy}
+                          className="rounded-sm border border-[var(--accent)] px-4 py-2 text-sm font-semibold text-[var(--accent)] disabled:opacity-60"
+                        >
+                          {completedAction === "payout"
+                            ? "Print Payout Receipt"
+                            : completedAction === "cashback"
+                              ? "Print Cashback Receipt"
+                              : "Print Cancel Receipt"}
+                        </button>
+                      )}
                     </div>
 
                     {payoutAction === "cashout" && payoutQuote && (
@@ -2673,6 +3204,35 @@ export default function CashierTicketsPage() {
                       </div>
                     )}
 
+                    {payoutAction === "cashback" && payoutQuote && (
+                      <div className="mt-3 rounded-sm border border-[var(--border)] bg-[var(--surfaceMuted)] p-3 text-xs">
+                        <p>
+                          Cashback amount:{" "}
+                          <span className="font-semibold">
+                            {formatCurrency(payoutQuote.amount)}
+                          </span>
+                        </p>
+                        {payoutQuote.result != null && (
+                          <p className="mt-1 text-[var(--muted)]">
+                            Result ratio:{" "}
+                            {toNumber(payoutQuote.result).toFixed(2)}
+                            {payoutQuote.tier?.stakeMultiplier != null && (
+                              <>
+                                {" "}
+                                | Tier ×{payoutQuote.tier.stakeMultiplier}
+                              </>
+                            )}
+                          </p>
+                        )}
+                        {!payoutQuote.allowed && (
+                          <p className="mt-1 text-[var(--danger)]">
+                            Not eligible (
+                            {payoutQuote.reasonCode || "unavailable"}).
+                          </p>
+                        )}
+                      </div>
+                    )}
+
                     <p className="mt-2 text-[11px] text-[var(--muted)]">
                       Current status:{" "}
                       <span className="font-mono">{payoutTicket.status}</span>
@@ -2681,6 +3241,14 @@ export default function CashierTicketsPage() {
                           <>
                             {" "}
                             &middot; Payout is only available for WON tickets.
+                          </>
+                        )}
+                      {payoutAction === "cashback" &&
+                        payoutTicket.status !== "LOST" && (
+                          <>
+                            {" "}
+                            &middot; Cashback is only available for LOST printed
+                            tickets.
                           </>
                         )}
                       {payoutAction === "cancel" &&
@@ -2699,6 +3267,14 @@ export default function CashierTicketsPage() {
                           cannot be edited.
                         </>
                       )}
+                      {payoutAction === "cashback" &&
+                        payoutTicket.status === "LOST" && (
+                          <>
+                            {" "}
+                            &middot; Cashback eligibility is calculated at claim
+                            time and cannot be edited.
+                          </>
+                        )}
                     </p>
                   </>
                 )}
@@ -2763,8 +3339,6 @@ export default function CashierTicketsPage() {
                     page={slipsPage}
                     totalPages={totalPages}
                     onPageChange={setSlipsPage}
-                    onReprint={handleReprint}
-                    onUseCoupon={handleUseCouponFromTable}
                   />
                 </div>
               )}
@@ -2772,6 +3346,7 @@ export default function CashierTicketsPage() {
           </PanelCard>
         </div>
       </div>
+
 
       <Modal
         open={ticketPreviewOpen}
@@ -2842,30 +3417,115 @@ export default function CashierTicketsPage() {
 ### `admin/src/hook/useCashierTickets.js` (print mutations)
 
 ```javascript
-export function usePreparePrintTicketMutation() {
+}
+
+export function useCashoutQuoteMutation() {
+  return useMutation({
+    mutationFn: async (ticketId) => {
+      const payload = await apiRequest(`/tickets/${ticketId}/cashout-quote`);
+      return payload;
+    },
+  });
+}
+
+export function useExecuteCashoutMutation() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ ticketId }) =>
-      apiRequest(`/tickets/${ticketId}/prepare-print`, {
+    mutationFn: async (ticketId) => {
+      const payload = await apiRequest(`/tickets/${ticketId}/cashout`, {
         method: "POST",
-        body: JSON.stringify({}),
-      }),
+      });
+      return payload;
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: TICKETS_KEY });
     },
   });
 }
 
-export function useValidatePrintTicketMutation() {
+export function useUpdateTicketStakeMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ ticketId, stake }) => {
+      const payload = await apiRequest(`/tickets/${ticketId}/stake`, {
+        method: "PATCH",
+        body: JSON.stringify({ stake: Number(stake) }),
+      });
+      return mapTicketDetail(payload);
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: TICKETS_KEY });
+    },
+  });
+}
+
+export function useSellBlockingQuery(ticketId, { enabled = true } = {}) {
+  const id = String(ticketId || "").trim();
+  return useQuery({
+    queryKey: [...TICKETS_KEY, "sell-blocking", id],
+    queryFn: async () => {
+      const payload = await apiRequest(`/tickets/${id}/sell-blocking`);
+      return {
+        blockingLegs: Array.isArray(payload?.blockingLegs)
+          ? payload.blockingLegs
+          : [],
+        hasBlockingLegs: Boolean(payload?.hasBlockingLegs),
+      };
+    },
+    enabled: Boolean(enabled && id),
+  });
+}
+
+export function useRemoveTicketSelectionMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ ticketId, selectionId }) => {
+      const payload = await apiRequest(
+        `/tickets/${ticketId}/selections/${encodeURIComponent(selectionId)}`,
+        { method: "DELETE" },
+      );
+      return mapTicketDetail(payload);
+    },
+    onSuccess: (_data, variables) => {
+      qc.invalidateQueries({ queryKey: TICKETS_KEY });
+      if (variables?.ticketId) {
+        qc.invalidateQueries({
+          queryKey: [...TICKETS_KEY, "sell-blocking", String(variables.ticketId)],
+        });
+      }
+    },
+  });
+}
+
+export function usePreparePrintTicketMutation() {
+  const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ ticketId, acceptOddsChanges = false, selections = [] }) =>
-      apiRequest(`/tickets/${ticketId}/validate-print`, {
+      apiRequest(`/tickets/${ticketId}/prepare-print`, {
         method: "POST",
         body: JSON.stringify({
           acceptOddsChanges,
           selections,
         }),
       }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: TICKETS_KEY });
+      qc.invalidateQueries({ queryKey: ["cashier", "wallet"] });
+    },
+  });
+}
+
+export function useAbortPrintTicketMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ ticketId }) =>
+      apiRequest(`/tickets/${ticketId}/abort-print`, {
+        method: "POST",
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: TICKETS_KEY });
+      qc.invalidateQueries({ queryKey: ["cashier", "wallet"] });
+    },
   });
 }
 
@@ -2882,6 +3542,7 @@ export function useConfirmPrintedTicketMutation() {
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: TICKETS_KEY });
+      qc.invalidateQueries({ queryKey: ["cashier", "wallet"] });
     },
   });
 }
@@ -2895,15 +3556,18 @@ export function useConfirmPrintedTicketMutation() {
 ```javascript
 import express from "express";
 import {
+  abortPrintTicket,
   cancelTicket,
   confirmPrintTicket,
   preparePrintTicket,
-  validatePrintTicket,
   createTicket,
   getTicketById,
   getTicketByReceipt,
+  getTicketByCoupon,
+  getTicketSellBlocking,
   listTickets,
   payoutTicket,
+  removeTicketSelection,
   updateTicketStake,
   voidTicket,
 } from "../controllers/ticketsController.js";
@@ -2911,6 +3575,10 @@ import {
   executeTicketCashout,
   quoteTicketCashout,
 } from "../controllers/cashoutController.js";
+import {
+  payoutTicketCashback,
+  quoteTicketCashback,
+} from "../controllers/cashbackPayoutController.js";
 import { authorizePermission } from "../middleware/auth.js";
 import { createSportsbookRateLimiter } from "../middleware/rateLimit.js";
 
@@ -2922,13 +3590,28 @@ router.get(
   authorizePermission("tickets:read"),
   getTicketByReceipt,
 );
+router.get(
+  "/by-coupon",
+  authorizePermission("tickets:read"),
+  getTicketByCoupon,
+);
 router.get("/:id", authorizePermission("tickets:read"), getTicketById);
+router.get(
+  "/:id/sell-blocking",
+  authorizePermission("tickets:read"),
+  getTicketSellBlocking,
+);
 
 router.post("/", authorizePermission("tickets:create"), createTicket);
 router.patch(
   "/:id/stake",
   authorizePermission("tickets:create"),
   updateTicketStake,
+);
+router.delete(
+  "/:id/selections/:selectionId",
+  authorizePermission("tickets:create"),
+  removeTicketSelection,
 );
 router.post(
   "/:id/prepare-print",
@@ -2937,10 +3620,10 @@ router.post(
   preparePrintTicket,
 );
 router.post(
-  "/:id/validate-print",
+  "/:id/abort-print",
   authorizePermission("tickets:create"),
   createSportsbookRateLimiter("cashier_confirm_print"),
-  validatePrintTicket,
+  abortPrintTicket,
 );
 router.patch(
   "/:id/confirm-print",
@@ -2960,6 +3643,16 @@ router.patch(
   payoutTicket,
 );
 router.get(
+  "/:id/cashback-quote",
+  authorizePermission("tickets:payout"),
+  quoteTicketCashback,
+);
+router.patch(
+  "/:id/cashback-payout",
+  authorizePermission("tickets:payout"),
+  payoutTicketCashback,
+);
+router.get(
   "/:id/cashout-quote",
   authorizePermission("cashout:execute"),
   quoteTicketCashout,
@@ -2975,7 +3668,11 @@ export default router;
 ### `backend/services/ticketPrintValidation.js`
 
 ```javascript
-import { validatePlacementSelections } from "./odds-engine/validateSelections.js";
+import {
+  validatePlacementSelections,
+  collectBlockingPlacementLegs,
+} from "./odds-engine/validateSelections.js";
+import { selectionIdForTicketLeg } from "../lib/ticketSelectionHelpers.js";
 
 /**
  * Build normalized selection rows from ticket snapshot for print validation.
@@ -2990,13 +3687,19 @@ export function normalizeSnapshotForPrintValidation(
     for (const row of requestBody.selections) {
       const idx = Number.parseInt(row?.index, 10);
       const accepted = Number(row?.acceptedOdds);
-      const acceptedVersion = Number(
-        row?.acceptedMarketVersion ?? row?.marketVersion,
-      );
+      const rawVersion = row?.acceptedMarketVersion ?? row?.marketVersion;
+      const acceptedVersion =
+        rawVersion == null || rawVersion === ""
+          ? NaN
+          : Number(rawVersion);
       if (Number.isFinite(idx) && Number.isFinite(accepted)) {
         acceptedOddsByIndex.set(idx, accepted);
       }
-      if (Number.isFinite(idx) && Number.isFinite(acceptedVersion)) {
+      if (
+        Number.isFinite(idx) &&
+        Number.isFinite(acceptedVersion) &&
+        acceptedVersion > 0
+      ) {
         acceptedVersionsByIndex.set(idx, acceptedVersion);
       }
     }
@@ -3016,7 +3719,7 @@ export function normalizeSnapshotForPrintValidation(
       : Number(entry?.odds),
     marketVersion: Number.isFinite(acceptedVersionsByIndex.get(index))
       ? acceptedVersionsByIndex.get(index)
-      : Number(entry?.marketVersion),
+      : Number(entry?.serverMarketVersion ?? entry?.marketVersion),
     fromLive: false,
   }));
 
@@ -3137,524 +3840,564 @@ export async function validateOpenTicketForPrint({
 
   return { ok: true, validated, normalized };
 }
+
+/**
+ * All sell/print-blocking legs for cashier sell UI (ignores odds drift).
+ *
+ * @returns {Promise<{ blockingLegs: Array<{ index: number, selectionId: string, code: string, kickoffAt?: string|null }> }>}
+ */
+export async function collectSellBlockingLegs({ prismaClient, ticket }) {
+  const snapshotSelections = Array.isArray(ticket?.selection_snapshot)
+    ? ticket.selection_snapshot
+    : [];
+
+  if (snapshotSelections.length === 0) {
+    return { blockingLegs: [] };
+  }
+
+  const { normalized, fullyStructured } = normalizeSnapshotForPrintValidation(
+    snapshotSelections,
+    {},
+  );
+
+  if (!fullyStructured) {
+    return { blockingLegs: [] };
+  }
+
+  const rawBlocking = await collectBlockingPlacementLegs({
+    prismaClient,
+    rawSelections: normalized,
+    live: false,
+    now: new Date(),
+  });
+
+  const blockingLegs = rawBlocking.map((leg) => ({
+    index: leg.index,
+    selectionId: selectionIdForTicketLeg(ticket, leg.index),
+    code: leg.code,
+    kickoffAt: leg.kickoffAt ?? null,
+  }));
+
+  return { blockingLegs };
+}
 ```
 ### `backend/controllers/ticketsController.js` (lines 2322-2835)
 
 ```javascript
-/**
- * POST /api/tickets/:id/validate-print
- * Dry-run odds/market validation before physical print (no wallet debit).
- */
-export async function validatePrintTicket(req, res) {
-  try {
-    const requestBody = req.body ?? {};
-    const acceptOddsChanges = parseAcceptOddsChanges(
-      requestBody.acceptOddsChanges,
-    );
-    const ticket = await prisma.ticket.findUnique({
-      where: { id: req.params.id },
-      include: { selections: true },
-    });
-    if (!ticket) {
-      return res.status(404).json({ message: "Ticket not found" });
-    }
-
-    const cashier = await resolveCashierByUserId(req.user.sub);
-    if (!cashier) {
-      return res.status(404).json({ message: CASHIER_PROFILE_MISSING_MESSAGE });
-    }
-    if (ticket.cashier_id && ticket.cashier_id !== cashier.id) {
-      return res.status(403).json({ message: "Access denied" });
-    }
-    if (ticket.status !== "OPEN") {
-      return res.status(400).json({
-        message: "Only OPEN tickets can be validated for print",
       });
+    } catch (txErr) {
+      if (txErr?.statusCode === 409) {
+        return res.status(409).json({
+          message: "Ticket status changed concurrently; cancel rejected",
+          code: "status_conflict",
+        });
+      }
+      throw txErr;
     }
 
-    const validation = await validateOpenTicketForPrint({
-      prismaClient: prisma,
-      ticket,
-      cashierId: cashier.id,
-      requestBody,
-      acceptOddsChanges,
+    await logAuditEvent({
+      req,
+      action: "TICKET_CANCELED",
+      module: "TICKETS",
+      entityType: "TICKET",
+      entityId: ticket.id,
+      before: { status: ticket.status },
+      after: { status: "CANCELED" },
+      meta: refunds.length > 0 ? { refunds } : undefined,
     });
-
-    if (!validation.ok) {
-      await logValidationFailure({
-        action: "TICKET_VALIDATE_PRINT_FAILED",
-        req,
-        code: validation.logCode,
-        meta: validation.logMeta || {},
-      });
-      return res.status(validation.statusCode).json(validation.body);
-    }
 
     return res.json({
-      ok: true,
-      message: "Ticket is valid for print",
-      acceptOddsChanges,
+      message: "Ticket canceled successfully",
+      ticket: { ...ticket, status: "CANCELED" },
+      ...(refunds.length > 0 ? { refunds } : {}),
     });
   } catch (error) {
-    console.error("validatePrintTicket error:", error);
-    return res.status(500).json({ message: "Failed to validate ticket print" });
+    console.error("cancelTicket error:", error);
+    return res.status(500).json({ message: "Failed to cancel ticket" });
   }
 }
 
 /**
- * POST /api/tickets/:id/prepare-print
- * Reserves receipt number for an OPEN ticket before physical print (no wallet debit).
+ * PATCH /api/tickets/:id/void
+ * Admin void — only OPEN or PRINTED tickets can be voided.
+ * If the ticket was printed (cashier wallet debited), the stake is
+ * refunded to the cashier wallet atomically.
  */
-export async function preparePrintTicket(req, res) {
+const VOIDABLE_STATUSES = new Set(["OPEN", "PRINTED"]);
+
+export async function voidTicket(req, res) {
   try {
     const ticket = await prisma.ticket.findUnique({
       where: { id: req.params.id },
     });
+
     if (!ticket) {
       return res.status(404).json({ message: "Ticket not found" });
     }
 
-    const cashier = await resolveCashierByUserId(req.user.sub);
-    if (!cashier) {
-      return res.status(404).json({ message: CASHIER_PROFILE_MISSING_MESSAGE });
-    }
-    if (ticket.cashier_id && ticket.cashier_id !== cashier.id) {
-      return res.status(403).json({ message: "Access denied" });
-    }
-    if (ticket.status !== "OPEN") {
-      return res.status(400).json({
-        message: "Only OPEN tickets can be prepared for print",
-      });
+    if (!VOIDABLE_STATUSES.has(ticket.status)) {
+      return res
+        .status(400)
+        .json({ message: `Cannot void a ${ticket.status} ticket` });
     }
 
-    let receiptNumber = ticket.receipt_number;
-    if (!receiptNumber) {
-      receiptNumber = await reserveUniqueReceiptNumber(prisma);
-      await prisma.ticket.update({
-        where: { id: ticket.id },
-        data: {
-          receipt_number: receiptNumber,
-          cashier_id: ticket.cashier_id || cashier.id,
-          branch_name: ticket.branch_name || cashier.branch_name,
-          branch_location: ticket.branch_location || cashier.branch_location,
-        },
-      });
-    }
-
-    const preparedTicket = await prisma.ticket.findUnique({
-      where: { id: ticket.id },
-      include: ticketDetailInclude,
+    const printTx = await prisma.transaction.findFirst({
+      where: { type: "BET", reference: `ticket-print:${ticket.id}` },
+      select: { id: true, wallet_id: true, amount: true },
     });
-    const printedSet = preparedTicket?.cashier_id
-      ? await getPrintedTicketIdSet({
-          cashierId: preparedTicket.cashier_id,
-          ticketIds: [ticket.id],
-        })
-      : new Set();
 
-    return res.json({
-      message: "Ticket prepared for print",
-      ticket: preparedTicket
-        ? mapTicket(preparedTicket, { printed: printedSet.has(ticket.id) })
+    const result = await prisma.$transaction(async (tx) => {
+      const { count } = await tx.ticket.updateMany({
+        where: { id: ticket.id, status: { in: [...VOIDABLE_STATUSES] } },
+        data: { status: "VOID" },
+      });
+      if (count === 0) {
+        throw Object.assign(new Error("STATUS_CONFLICT"), {
+          statusCode: 409,
+        });
+      }
+
+      let refundResult = null;
+      if (printTx?.wallet_id) {
+        const voidRefundRef = `void-refund:${ticket.id}`;
+        const existingRefund = await tx.transaction.findFirst({
+          where: { reference: voidRefundRef },
+          select: { id: true },
+        });
+        if (!existingRefund) {
+          const wallet = await tx.wallet.findUnique({
+            where: { id: printTx.wallet_id },
+          });
+          if (wallet) {
+            const amount =
+              Number(printTx.amount) || Number(ticket.stake) || 0;
+            if (amount > 0) {
+              const balanceBefore = Number(wallet.balance) || 0;
+              const balanceAfter = balanceBefore + amount;
+              await tx.wallet.update({
+                where: { id: wallet.id },
+                data: { balance: balanceAfter },
+              });
+              await tx.transaction.create({
+                data: {
+                  wallet_id: wallet.id,
+                  type: "DEPOSIT",
+                  amount,
+                  balance_before: balanceBefore,
+                  balance_after: balanceAfter,
+                  reference: voidRefundRef,
+                },
+              });
+              refundResult = { amount, walletId: wallet.id, balanceAfter };
+            }
+          }
+        }
+      }
+
+      return { refundResult };
+    });
+
+    await logAuditEvent({
+      req,
+      action: "TICKET_VOIDED",
+      module: "TICKETS",
+      entityType: "TICKET",
+      entityId: ticket.id,
+      before: { status: ticket.status },
+      after: { status: "VOID" },
+      meta: result.refundResult
+        ? { cashierRefund: result.refundResult }
         : undefined,
     });
+
+    return res.json({
+      message: "Ticket voided successfully",
+      ticket: { ...ticket, status: "VOID" },
+    });
   } catch (error) {
-    console.error("preparePrintTicket error:", error);
-    return res.status(500).json({ message: "Failed to prepare ticket print" });
+    if (error?.statusCode === 409) {
+      return res
+        .status(409)
+        .json({ message: "Ticket status changed concurrently" });
+    }
+    console.error("voidTicket error:", error);
+    return res.status(500).json({ message: "Failed to void ticket" });
   }
 }
 
 /**
- * PATCH /api/tickets/:id/confirm-print
- * Deducts cashier stake only after print confirmation.
+ * PATCH /api/tickets/:id/payout
+ * Body: { cashierId } — must equal ticket.cashier_id (payout only at selling cashier).
+ * Credits cashier wallet, records PAYOUT transaction, sets ticket PAID.
  */
-export async function confirmPrintTicket(req, res) {
+export async function payoutTicket(req, res) {
   try {
-    const requestBody = req.body ?? {};
-    const acceptOddsChanges = parseAcceptOddsChanges(
-      requestBody.acceptOddsChanges,
-    );
+    const { cashierId } = req.body ?? {};
+    let effectiveCashierId = cashierId;
+
+    if (req.user.role === "CASHIER") {
+      const cashier = await resolveCashierByUserId(req.user.sub);
+      if (!cashier) {
+        return res
+          .status(404)
+          .json({ message: CASHIER_PROFILE_MISSING_MESSAGE });
+      }
+      effectiveCashierId = cashier.id;
+    } else if (!effectiveCashierId) {
+      return res.status(400).json({ message: "cashierId is required" });
+    }
+
     const ticket = await prisma.ticket.findUnique({
       where: { id: req.params.id },
-      include: { selections: true },
     });
+
     if (!ticket) {
       return res.status(404).json({ message: "Ticket not found" });
     }
 
-    const cashier = await resolveCashierByUserId(req.user.sub);
-    if (!cashier) {
-      return res.status(404).json({ message: CASHIER_PROFILE_MISSING_MESSAGE });
-    }
-    if (ticket.cashier_id && ticket.cashier_id !== cashier.id) {
-      return res.status(403).json({ message: "Access denied" });
-    }
-    const printReference = `ticket-print:${ticket.id}`;
-    const existingPrint = await prisma.transaction.findFirst({
-      where: {
-        type: "BET",
-        reference: printReference,
-      },
-      select: { id: true, wallet_id: true },
-    });
-    if (existingPrint || ticket.status === "PRINTED") {
-      if (!ticket.receipt_number) {
-        try {
-          const rn = await reserveUniqueReceiptNumber(prisma);
-          await prisma.ticket.update({
-            where: { id: ticket.id },
-            data: { receipt_number: rn },
-          });
-        } catch (e) {
-          console.error("confirmPrint assign receipt (alreadyPrinted)", e);
-        }
-      }
-      if (ticket.status === "OPEN") {
-        await prisma.ticket.update({
-          where: { id: ticket.id },
-          data: { status: "PRINTED" },
-        });
-      }
-      const wallet = await prisma.wallet.findUnique({
-        where: { id: existingPrint?.wallet_id || cashier.wallet_id },
-        select: { balance: true },
-      });
-      const printedTicket = await prisma.ticket.findUnique({
-        where: { id: ticket.id },
-        include: ticketDetailInclude,
-      });
-      const printedSet = printedTicket?.cashier_id
-        ? await getPrintedTicketIdSet({
-            cashierId: printedTicket.cashier_id,
-            ticketIds: [ticket.id],
-          })
-        : new Set();
-      return res.json({
-        message: "Ticket was already print-confirmed",
-        alreadyPrinted: true,
-        deductedAmount: 0,
-        cashierWalletBalance: Number(wallet?.balance || 0),
-        ticket: printedTicket
-          ? mapTicket(printedTicket, { printed: printedSet.has(ticket.id) })
-          : undefined,
-      });
-    }
-    if (ticket.status !== "OPEN") {
+    if (ticket.status !== "WON") {
       return res.status(400).json({
-        message: "Only OPEN tickets can be print-confirmed",
+        message: "Only WON tickets can be paid out",
       });
     }
 
-    const snapshotSelections = Array.isArray(ticket.selection_snapshot)
-      ? ticket.selection_snapshot
-      : [];
-    let normalizedForValidation = [];
-    if (snapshotSelections.length > 0) {
-      const acceptedOddsByIndex = new Map();
-      const acceptedVersionsByIndex = new Map();
-      if (Array.isArray(requestBody.selections)) {
-        for (const row of requestBody.selections) {
-          const idx = Number.parseInt(row?.index, 10);
-          const accepted = Number(row?.acceptedOdds);
-          const acceptedVersion = Number(
-            row?.acceptedMarketVersion ?? row?.marketVersion,
-          );
-          if (Number.isFinite(idx) && Number.isFinite(accepted)) {
-            acceptedOddsByIndex.set(idx, accepted);
-          }
-          if (Number.isFinite(idx) && Number.isFinite(acceptedVersion)) {
-            acceptedVersionsByIndex.set(idx, acceptedVersion);
-          }
-        }
-      }
-      normalizedForValidation = snapshotSelections.map((entry, index) => ({
-        apiFixtureId: Number.parseInt(entry?.apiFixtureId, 10),
-        marketLabel: String(entry?.marketLabel || "").trim(),
-        marketCode: entry?.marketCode ? String(entry.marketCode).trim() : null,
-        marketParams:
-          entry?.marketParams && typeof entry.marketParams === "object"
-            ? entry.marketParams
-            : null,
-        label: String(entry?.label || "").trim(),
-        odds: Number.isFinite(acceptedOddsByIndex.get(index))
-          ? acceptedOddsByIndex.get(index)
-          : Number(entry?.odds),
-        marketVersion: Number.isFinite(acceptedVersionsByIndex.get(index))
-          ? acceptedVersionsByIndex.get(index)
-          : Number(entry?.marketVersion),
-        fromLive: false,
-      }));
-      const fullyStructuredSnapshot = normalizedForValidation.every(
-        (row) =>
-          Number.isFinite(Number(row.apiFixtureId)) &&
-          row.marketLabel &&
-          row.label &&
-          Number.isFinite(Number(row.odds)),
-      );
-      if (fullyStructuredSnapshot) {
-        const validated = await validatePlacementSelections({
-          prismaClient: prisma,
-          rawSelections: normalizedForValidation,
-          live: false,
-          actorId: `cashier:${cashier.id}`,
-          writeFreeze: false,
-          now: new Date(),
-        });
-        if (!validated.ok && validated.code === "odds_changed") {
-          await logValidationFailure({
-            action: "TICKET_CONFIRM_PRINT_VALIDATION_FAILED",
-            req,
-            code: "odds_changed",
-            meta: { ticketId: ticket.id, selections: validated.drift },
-          });
-          return res.status(409).json({
-            code: "odds_changed",
-            requiresConfirmation: true,
-            message:
-              "Odds changed. Review and confirm latest odds before print.",
-            selections: validated.drift,
-            newTotalOdds: Number(validated.totalOdds || 0),
-            acceptOddsChanges,
-          });
-        }
-        if (!validated.ok && validated.code === "market_version_changed") {
-          await logValidationFailure({
-            action: "TICKET_CONFIRM_PRINT_VALIDATION_FAILED",
-            req,
-            code: "market_version_changed",
-            meta: {
-              ticketId: ticket.id,
-              selections: validated.versionDrift || [],
-            },
-          });
-          return res.status(409).json({
-            code: "market_version_changed",
-            requiresConfirmation: true,
-            message:
-              "Market version changed. Confirm latest market before print.",
-            selections: validated.versionDrift || [],
-            newTotalOdds: Number(validated.totalOdds || 0),
-          });
-        }
-        if (!validated.ok && validated.code === "market_locked") {
-          await logValidationFailure({
-            action: "TICKET_CONFIRM_PRINT_VALIDATION_FAILED",
-            req,
-            code: "market_locked",
-            meta: { ticketId: ticket.id },
-          });
-          return res.status(409).json({
-            code: "market_locked",
-            selections: validated.selections || [],
-          });
-        }
-        if (!validated.ok) {
-          await logValidationFailure({
-            action: "TICKET_CONFIRM_PRINT_VALIDATION_FAILED",
-            req,
-            code: validated.code || "validation_failed",
-            meta: { ticketId: ticket.id },
-          });
-          return res.status(409).json({
-            code: validated.code || "validation_failed",
-            selections: validated.selections || [],
-          });
-        }
-        // If cashier submitted explicit acceptance with updated odds, refresh
-        // ticket snapshots/rows before wallet debit so printed data stays aligned.
-        if (acceptOddsChanges) {
-          const resolvedByIndex = new Map(
-            (validated.resolved || []).map((row) => [row.index, row]),
-          );
-          const nextSnapshot = snapshotSelections.map((entry, index) => {
-            const row = resolvedByIndex.get(index);
-            return row && Number.isFinite(row.serverOdds)
-              ? {
-                  ...entry,
-                  odds: Number(row.serverOdds),
-                  marketVersion: Number(
-                    row.serverMarketVersion || entry.marketVersion || 0,
-                  ),
-                  serverMarketVersion: Number(row.serverMarketVersion || 0),
-                  marketState: row.marketState || "OPEN",
-                }
-              : entry;
-          });
-          const limits = await resolveBettingLimits(prisma);
-          const accPct = Number(ticket.accumulator_bonus_percent) || 0;
-          const nextTotalOdds = Number(
-            validated.totalOdds || ticket.total_odds || 0,
-          );
-          const nextPotentialWin = capGrossPotentialWin(
-            limits,
-            Number(
-              (
-                Number(ticket.stake) *
-                nextTotalOdds *
-                (1 + accPct / 100)
-              ).toFixed(2),
-            ),
-          );
-          await prisma.ticket.update({
-            where: { id: ticket.id },
-            data: {
-              total_odds: nextTotalOdds,
-              potential_win: nextPotentialWin,
-              selection_snapshot: nextSnapshot,
-            },
-          });
-          for (
-            let index = 0;
-            index < (ticket.selections || []).length;
-            index++
-          ) {
-            const row = ticket.selections[index];
-            const resolved = resolvedByIndex.get(index);
-            if (!resolved || !Number.isFinite(resolved.serverOdds)) continue;
-            await prisma.ticketSelection.update({
-              where: { id: row.id },
-              data: {
-                odds: Number(resolved.serverOdds),
-                server_odds: Number(resolved.serverOdds),
-                server_odds_at: new Date(),
-                market_state: resolved.marketState || "OPEN",
-                market_version: Number(resolved.serverMarketVersion || 0),
-                server_market_version: Number(
-                  resolved.serverMarketVersion || 0,
-                ),
-              },
-            });
-          }
-        }
-      }
+    if (ticket.cashier_id !== effectiveCashierId) {
+      return res.status(403).json({
+        message: "Payout rejected: ticket must be paid by the selling cashier",
+      });
     }
 
-    const result = await withWalletLock(cashier.wallet_id, {}, async () =>
-      prisma.$transaction(async (tx) => {
-        let effectiveTicket = ticket;
-        if (!ticket.cashier_id) {
-          effectiveTicket = await tx.ticket.update({
-            where: { id: ticket.id },
-            data: {
-              cashier_id: cashier.id,
-              branch_name: cashier.branch_name,
-              branch_location: cashier.branch_location,
-            },
-          });
-        }
+    if (!ticket.receipt_number) {
+      return res.status(400).json({
+        message:
+          "Ticket has no receipt number; complete pay-in or print before payout",
+      });
+    }
 
+    const cashier = await prisma.cashier.findUnique({
+      where: { id: effectiveCashierId },
+    });
+
+    if (!cashier) {
+      return res.status(400).json({ message: "Invalid cashierId" });
+    }
+
+    // potential_win is gross; pay net after snapshotted tax (if any)
+    const payoutAmount = ticketWinningsTaxBreakdown(ticket).netPayout;
+
+    if (!Number.isFinite(payoutAmount) || payoutAmount <= 0) {
+      return res.status(400).json({
+        message: "Computed payout amount is not positive",
+      });
+    }
+
+    const payoutRef = `ticket:${ticket.id}`;
+    // Idempotency guard: another request may have paid this ticket
+    // between the status check above and the transaction. The
+    // `Transaction.reference @unique` constraint converts that race
+    // into a P2002 which we translate to a 409 below.
+    const alreadyPaid = await prisma.transaction.findFirst({
+      where: { reference: payoutRef },
+      select: { id: true },
+    });
+    if (alreadyPaid) {
+      return res.status(409).json({
+        message: "Ticket has already been paid out",
+        code: "already_paid",
+      });
+    }
+
+    let result;
+    try {
+      result = await prisma.$transaction(async (tx) => {
         const wallet = await tx.wallet.findUnique({
           where: { id: cashier.wallet_id },
         });
-        if (!wallet) throw new Error("CASHIER_WALLET_NOT_FOUND");
 
-        const stakeAmount = toMoney(effectiveTicket.stake);
-        const balanceBefore = toMoney(wallet.balance);
-        if (balanceBefore < stakeAmount)
-          throw new Error("INSUFFICIENT_BALANCE");
+        if (!wallet) {
+          throw new Error("Cashier wallet not found");
+        }
 
-        const balanceAfter = toMoney(sub(balanceBefore, stakeAmount));
+        const balanceBefore = Number(wallet.balance);
+        const balanceAfter = balanceBefore + payoutAmount;
+
         await tx.wallet.update({
           where: { id: wallet.id },
           data: { balance: balanceAfter },
         });
+
         await tx.transaction.create({
           data: {
             wallet_id: wallet.id,
-            type: "BET",
-            amount: stakeAmount,
+            type: "PAYOUT",
+            amount: payoutAmount,
             balance_before: balanceBefore,
             balance_after: balanceAfter,
-            reference: printReference,
+            reference: payoutRef,
           },
         });
 
-        let receiptNumber = effectiveTicket.receipt_number;
-        if (!receiptNumber) {
-          receiptNumber = await reserveUniqueReceiptNumber(tx);
-        }
-
+        const paidAt = new Date();
         const { count } = await tx.ticket.updateMany({
-          where: { id: effectiveTicket.id, status: "OPEN" },
-          data: { status: "PRINTED", receipt_number: receiptNumber },
+          where: { id: ticket.id, status: "WON" },
+          data: { status: "PAID", paid_at: paidAt },
         });
         if (count === 0) {
           throw Object.assign(new Error("STATUS_CONFLICT"), {
             statusCode: 409,
           });
         }
-        return { stakeAmount, balanceAfter, ticketId: effectiveTicket.id };
-      }),
-    );
 
+        return {
+          paidTicket: { ...ticket, status: "PAID", paid_at: paidAt },
+          walletBalance: balanceAfter,
+        };
+      });
+    } catch (err) {
+      if (err?.code === "P2002") {
+        return res.status(409).json({
+          message: "Ticket has already been paid out",
+          code: "already_paid",
+        });
+      }
+      if (err?.statusCode === 409) {
+        return res.status(409).json({
+          message: "Ticket status changed concurrently; payout rejected",
+          code: "status_conflict",
+        });
+      }
+      throw err;
+    }
     await logAuditEvent({
       req,
-      action: "TICKET_PRINT_CONFIRMED",
+      action: "TICKET_PAID_OUT",
       module: "TICKETS",
       entityType: "TICKET",
       entityId: ticket.id,
-      meta: {
-        cashierId: cashier.id,
-        ticketClaimed: !ticket.cashier_id,
-        deductedAmount: result.stakeAmount,
-        walletBalance: result.balanceAfter,
+      before: { status: ticket.status },
+      after: {
+        status: result.paidTicket.status,
+        cashierWalletBalance: result.walletBalance,
       },
+      meta: { cashierId: effectiveCashierId },
     });
-
-    const printedTicket = await prisma.ticket.findUnique({
-      where: { id: ticket.id },
-      include: ticketDetailInclude,
-    });
-    const printedSet = printedTicket?.cashier_id
-      ? await getPrintedTicketIdSet({
-          cashierId: printedTicket.cashier_id,
-          ticketIds: [ticket.id],
-        })
-      : new Set();
 
     return res.json({
-      message: "Print confirmed and cashier wallet deducted",
-      alreadyPrinted: false,
-      deductedAmount: result.stakeAmount,
-      cashierWalletBalance: result.balanceAfter,
-      ticket: printedTicket
-        ? mapTicket(printedTicket, { printed: printedSet.has(ticket.id) })
-        : undefined,
+      message: "Ticket paid successfully",
+      ticket: result.paidTicket,
+      cashierWalletBalance: result.walletBalance,
     });
   } catch (error) {
-    if (error?.code === "wallet_busy" || error?.message === "WALLET_BUSY") {
-      await logPlacementValidation({
-        actorUserId: req.user?.sub || null,
-        actorRole: req.user?.role || "CASHIER",
-        flowChannel: "CASHIER",
-        rejectionReason: "wallet_busy",
-        status: "REJECTED",
-      });
-      return res.status(409).json({
-        code: "wallet_busy",
-        message: "Cashier wallet is busy. Retry shortly.",
-      });
-    }
-    if (error?.message === "INSUFFICIENT_BALANCE") {
-      await logPlacementValidation({
-        actorUserId: req.user?.sub || null,
-        actorRole: req.user?.role || "CASHIER",
-        flowChannel: "CASHIER",
-        rejectionReason: "insufficient_balance",
-        status: "REJECTED",
-      });
-      return res.status(400).json({ message: "Insufficient cashier balance" });
-    }
-    if (error?.statusCode === 409) {
-      return res.status(409).json({
-        message: "Ticket status changed concurrently; print rejected",
-        code: "status_conflict",
-      });
-    }
-    console.error("confirmPrintTicket error:", error);
-    return res.status(500).json({ message: "Failed to confirm ticket print" });
+    console.error("payoutTicket error:", error);
+    return res.status(500).json({ message: "Failed to payout ticket" });
   }
 }
+
+/**
+ * PATCH /api/tickets/:id/stake
+ * Body: { stake: number }
+ * Updates ticket stake and recomputes potential_win.
+ * Only allowed while ticket is OPEN and has not been print-confirmed yet.
+ */
+export async function updateTicketStake(req, res) {
+  try {
+    const { stake } = req.body ?? {};
+    const numericStake = Number(stake);
+    if (!Number.isFinite(numericStake) || numericStake <= 0) {
+      return res
+        .status(400)
+        .json({ message: "stake must be a positive number" });
+    }
+
+    const ticket = await prisma.ticket.findUnique({
+      where: { id: req.params.id },
+    });
+    if (!ticket) {
+      return res.status(404).json({ message: "Ticket not found" });
+    }
+
+    if (ticket.status !== "OPEN") {
+      return res.status(400).json({
+        message: "Only OPEN tickets can have stake updated",
+      });
+    }
+
+    if (req.user.role === "CASHIER") {
+      const cashier = await resolveCashierByUserId(req.user.sub);
+      if (!cashier) {
+        return res
+          .status(404)
+          .json({ message: CASHIER_PROFILE_MISSING_MESSAGE });
+      }
+      if (ticket.cashier_id && ticket.cashier_id !== cashier.id) {
+        return res.status(403).json({ message: "Access denied" });
+      }
+    }
+
+    // Don't allow stake edits after cashier wallet has already been debited
+    const printReference = `ticket-print:${ticket.id}`;
+    const existingPrint = await prisma.transaction.findFirst({
+      where: { type: "BET", reference: printReference },
+      select: { id: true },
+    });
+    if (existingPrint) {
+      return res.status(400).json({
+        message: "Stake cannot be changed after the ticket has been printed",
+      });
+    }
+
+    const totalOdds = Number(ticket.total_odds);
+    const accPct = Number(ticket.accumulator_bonus_percent) || 0;
+
+    const limits = await resolveBettingLimits(prisma);
+    const potentialWin = capGrossPotentialWin(
+      limits,
+      Number((numericStake * totalOdds * (1 + accPct / 100)).toFixed(2)),
+    );
+    const limitMsg = getStakeAndPotentialWinViolation(
+      limits,
+      numericStake,
+      potentialWin,
+    );
+    if (limitMsg) {
+      return res.status(400).json({ message: limitMsg });
+    }
+
+    const updated = await prisma.ticket.update({
+      where: { id: ticket.id },
+      data: {
+        stake: numericStake,
+        potential_win: potentialWin,
+      },
+      include: ticketDetailInclude,
+    });
+
+    await logAuditEvent({
+      req,
+      action: "TICKET_STAKE_UPDATED",
+      module: "TICKETS",
+      entityType: "TICKET",
+      entityId: ticket.id,
+      before: {
+        stake: Number(ticket.stake),
+        potentialWin: Number(ticket.potential_win),
+      },
+      after: { stake: numericStake, potentialWin },
+    });
+
+    return res.json(mapTicket(updated));
+  } catch (error) {
+    console.error("updateTicketStake error:", error);
+    return res.status(500).json({ message: "Failed to update ticket stake" });
+  }
+}
+
+async function mappedTicketForPrint(ticketId) {
+  const preparedTicket = await prisma.ticket.findUnique({
+    where: { id: ticketId },
+    include: ticketDetailInclude,
+  });
+  const printedSet = preparedTicket?.cashier_id
+    ? await getPrintedTicketIdSet({
+        cashierId: preparedTicket.cashier_id,
+        ticketIds: [ticketId],
+      })
+    : new Set();
+  return preparedTicket
+    ? mapTicket(preparedTicket, { printed: printedSet.has(ticketId) })
+    : undefined;
+}
+
+/**
+ * Persist accepted live odds/version onto the ticket so thermal print and
+ * confirm-print use the same values the cashier just accepted.
+ */
+async function applyAcceptedPrintOdds(ticket, validated) {
+  if (!ticket || !validated) return;
+  const snapshotSelections = Array.isArray(ticket.selection_snapshot)
+    ? ticket.selection_snapshot
+    : [];
+  const resolvedByIndex = new Map(
+    (validated.resolved || []).map((row) => [row.index, row]),
+  );
+  const nextSnapshot = snapshotSelections.map((entry, index) => {
+    const row = resolvedByIndex.get(index);
+    return row && Number.isFinite(row.serverOdds)
+      ? {
+          ...entry,
+          odds: Number(row.serverOdds),
+          serverMarketVersion: Number(row.serverMarketVersion || 0),
+          marketState: row.marketState || "OPEN",
+        }
+      : entry;
+  });
+  const limits = await resolveBettingLimits(prisma);
+  const accPct = Number(ticket.accumulator_bonus_percent) || 0;
+  const nextTotalOdds = Number(validated.totalOdds || ticket.total_odds || 0);
+  const nextPotentialWin = capGrossPotentialWin(
+    limits,
+    Number(
+      (
+        Number(ticket.stake) *
+        nextTotalOdds *
+        (1 + accPct / 100)
+      ).toFixed(2),
+    ),
+  );
+  await prisma.ticket.update({
+    where: { id: ticket.id },
+    data: {
+      total_odds: nextTotalOdds,
+      potential_win: nextPotentialWin,
+      selection_snapshot: nextSnapshot,
+    },
+  });
+  for (let index = 0; index < (ticket.selections || []).length; index++) {
+    const row = ticket.selections[index];
+    const resolved = resolvedByIndex.get(index);
+    if (!resolved || !Number.isFinite(resolved.serverOdds)) continue;
+    await prisma.ticketSelection.update({
+      where: { id: row.id },
+      data: {
+        odds: Number(resolved.serverOdds),
+        server_odds: Number(resolved.serverOdds),
+        server_odds_at: new Date(),
+        market_state: resolved.marketState || "OPEN",
+        server_market_version: Number(resolved.serverMarketVersion || 0),
+      },
+    });
+  }
+}
+
+async function respondPrintWalletError(req, res, error) {
+  if (error?.code === "wallet_busy" || error?.message === "WALLET_BUSY") {
+    await logPlacementValidation({
+      actorUserId: req.user?.sub || null,
+      actorRole: req.user?.role || "CASHIER",
+      flowChannel: "CASHIER",
+      rejectionReason: "wallet_busy",
+      status: "REJECTED",
+    });
+    return res.status(409).json({
+      code: "wallet_busy",
+      message: "Cashier wallet is busy. Retry shortly.",
+    });
+  }
+  if (error?.message === "INSUFFICIENT_BALANCE") {
+    await logPlacementValidation({
+      actorUserId: req.user?.sub || null,
+      actorRole: req.user?.role || "CASHIER",
+      flowChannel: "CASHIER",
+      rejectionReason: "insufficient_balance",
+      status: "REJECTED",
+    });
+    return res.status(400).json({ message: "Insufficient cashier balance" });
+  }
+  if (error?.message === "INVALID_AMOUNT") {
+    return res.status(400).json({ message: "stake must be a positive number" });
+  }
+  if (error?.message === "ACCESS_DENIED" || error?.statusCode === 403) {
+    return res.status(403).json({ message: "Access denied" });
 ```
 
 ## 12. Printer service source files
@@ -3910,6 +4653,29 @@ async function start() {
   });
 }
 
+let shuttingDown = false;
+function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  log("info", "service_shutdown", { signal });
+  try {
+    printerManager.dispose();
+  } catch {
+    // ignore
+  }
+  process.exit(0);
+}
+
+process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("exit", () => {
+  try {
+    printerManager.dispose();
+  } catch {
+    // ignore
+  }
+});
+
 void start();
 ```
 ### `printer-service/printerManager.js`
@@ -3919,14 +4685,17 @@ import path from "path";
 import { createRequire } from "module";
 import { getEffectiveConfig } from "./config.js";
 import { log } from "./logger.js";
+import { PowerShellPrinter } from "./powershellPrinter.js";
 import {
+  getWindowsPrinterByName,
   listWindowsPrintersViaPowerShell,
-  printRawViaPowerShell,
 } from "./windowsPrinters.js";
 
 export const RECONNECT_INTERVAL_MS = 5000;
 export const WRITE_TIMEOUT_MS = Number(process.env.WRITE_TIMEOUT_MS) || 60_000;
-const PRINTER_LIST_TTL_MS = 5000;
+const PRINTER_LIST_TTL_MS = 60_000;
+/** How long a verified connection is trusted before re-resolving the queue. */
+const CONNECTION_TTL_MS = 30_000;
 const DEFAULT_PRINTER_NAME = "POS80";
 
 let printerApiPromise = null;
@@ -4025,6 +4794,9 @@ export class PrinterManager {
     /** @type {Array<any> | null} */
     this.cachedPrinters = null;
     this.cachedPrintersAt = 0;
+    /** Timestamp of the last successful queue resolution (for connection caching). */
+    this.lastConnectVerifiedAt = 0;
+    this.psPrinter = new PowerShellPrinter();
   }
 
   async listQueues() {
@@ -4070,6 +4842,16 @@ export class PrinterManager {
     const preferred = String(
       process.env.PRINTER_NAME || config.printerName || DEFAULT_PRINTER_NAME,
     ).trim();
+
+    // PowerShell path: never enumerate ALL queues (Get-Printer can block for
+    // minutes on offline/network/redirected printers). Query just the
+    // configured queue by name.
+    if (nativePrinterDisabled) {
+      if (!preferred) return "";
+      const scoped = await getWindowsPrinterByName(preferred);
+      return scoped ? scoped.name || preferred : "";
+    }
+
     const printers = await this.listQueues();
     if (printers.length === 0) return "";
 
@@ -4086,8 +4868,25 @@ export class PrinterManager {
   async forceDisconnect(error) {
     const message = error?.message || "Disconnected";
     this.connectionState = "disconnected";
+    this.lastConnectVerifiedAt = 0;
     this.lastError = message;
     log("warn", "disconnect", { printer: this.printerName, error: message });
+  }
+
+  /**
+   * Reuse an already-verified connection instead of re-resolving the queue on
+   * every print. Only re-resolves when disconnected or the verification is
+   * stale, which keeps the hot path free of repeated printer enumeration.
+   */
+  async ensureConnected() {
+    if (
+      this.connectionState === "connected" &&
+      this.printerName &&
+      Date.now() - this.lastConnectVerifiedAt < CONNECTION_TTL_MS
+    ) {
+      return true;
+    }
+    return this.connect();
   }
 
   async connect() {
@@ -4095,20 +4894,13 @@ export class PrinterManager {
     const expected = String(
       process.env.PRINTER_NAME || config.printerName || DEFAULT_PRINTER_NAME,
     ).trim();
+    // resolveQueueName already confirms the queue exists (native cached list or
+    // a scoped `Get-Printer -Name`), so there is no need to enumerate again.
     const queueName = await this.resolveQueueName();
     if (!queueName) {
       this.connectionState = "disconnected";
+      this.lastConnectVerifiedAt = 0;
       this.lastError = `Printer queue "${expected}" not found in Windows. Check Settings → Printers & scanners.`;
-      return false;
-    }
-
-    const printers = await this.listQueues();
-    const exists = printers.some((entry) =>
-      equalsIgnoreCase(printerNameOf(entry), queueName),
-    );
-    if (!exists) {
-      this.connectionState = "disconnected";
-      this.lastError = `Printer queue unavailable: ${queueName}`;
       return false;
     }
 
@@ -4116,6 +4908,7 @@ export class PrinterManager {
     this.connectionState = "connected";
     this.reconnectAttempts = 0;
     this.lastError = null;
+    this.lastConnectVerifiedAt = Date.now();
     log("info", "connect", { printer: queueName });
     return true;
   }
@@ -4144,9 +4937,12 @@ export class PrinterManager {
   }
 
   async sendRawWithPowerShell(buffer, queueName) {
-    const result = await printRawViaPowerShell(buffer, queueName);
+    const base64 = Buffer.from(buffer).toString("base64");
+    const result = await this.psPrinter.print(queueName, base64, WRITE_TIMEOUT_MS);
     if (!result.ok) {
-      throw new Error(result.error || "PowerShell raw print failed");
+      const err = new Error(result.error || "PowerShell raw print failed");
+      if (result.code) err.code = result.code;
+      throw err;
     }
   }
 
@@ -4166,7 +4962,7 @@ export class PrinterManager {
   }
 
   async write(buffer, timeoutMs = WRITE_TIMEOUT_MS, jobId = "") {
-    const connected = await this.connect();
+    const connected = await this.ensureConnected();
     if (!connected) {
       const err = new Error(this.lastError || "Printer not connected");
       throw err;
@@ -4244,6 +5040,22 @@ export class PrinterManager {
   }
 
   async probe() {
+    // Status is polled frequently; serve a recently verified connection from
+    // cache instead of re-resolving the queue (and spawning PowerShell) each
+    // time. A failed write resets lastConnectVerifiedAt, so genuine printer
+    // loss is still surfaced quickly.
+    if (
+      this.connectionState === "connected" &&
+      this.printerName &&
+      Date.now() - this.lastConnectVerifiedAt < CONNECTION_TTL_MS
+    ) {
+      return {
+        connected: true,
+        port: this.printerName,
+        message: "Printer ready",
+      };
+    }
+
     const resolvedQueue = await this.resolveQueueName();
     if (!resolvedQueue) {
       return {
@@ -4283,25 +5095,29 @@ export class PrinterManager {
     const printers = await this.listQueues();
     return printers.map(normalizePrinterInfo);
   }
+
+  /** Release the persistent PowerShell worker and timers (process shutdown). */
+  dispose() {
+    this.stopReconnectLoop();
+    this.psPrinter?.dispose?.();
+  }
 }
 ```
 ### `printer-service/windowsPrinters.js`
 
 ```javascript
-import { execFile, spawn } from "child_process";
+import { execFile } from "child_process";
 import { promisify } from "util";
 import { log } from "./logger.js";
 
 const execFileAsync = promisify(execFile);
 
-const RAW_PRINT_SCRIPT = `$ErrorActionPreference = "Stop"
-$PrinterName = $env:SOKA_PRINTER_NAME
-if ([string]::IsNullOrWhiteSpace($PrinterName)) {
-    Write-Error "Missing SOKA_PRINTER_NAME"
-    exit 2
-}
-Add-Type -TypeDefinition @"
-using System;
+/**
+ * C# definition of the Win32 raw-print helper, shared by the persistent
+ * PowerShell worker (see powershellPrinter.js). Kept separate from any loop
+ * logic so the worker can `Add-Type` it exactly once per process.
+ */
+export const RAW_PRINTER_HELPER_CSHARP = `using System;
 using System.IO;
 using System.Runtime.InteropServices;
 
@@ -4356,77 +5172,64 @@ public class RawPrinterHelper {
         } finally { ClosePrinter(hPrinter); }
     }
 }
-"@
-
-$stdin = [System.Console]::OpenStandardInput()
-$ms = New-Object System.IO.MemoryStream
-$stdin.CopyTo($ms)
-$bytes = $ms.ToArray()
-$result = [RawPrinterHelper]::SendBytesToPrinter($PrinterName, $bytes)
-if ($result -lt 0) {
-    $stage = switch ($result) {
-        -1 { "OpenPrinter" }
-        -2 { "StartDocPrinter" }
-        -3 { "StartPagePrinter" }
-        -4 { "WritePrinter" }
-        default { "Unknown" }
-    }
-    $win = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
-    Write-Error ("$stage failed for '$PrinterName' (Win32 error $win)")
-    exit 1
-}
-Write-Output ("written=" + $result)
 `;
 
 /**
- * Send raw ESC/POS bytes to a Windows print queue via PowerShell + Win32 WritePrinter.
- * @param {Buffer} buffer
- * @param {string} printerName
- * @returns {Promise<{ ok: boolean, error?: string, bytesWritten?: number }>}
+ * Look up a single Windows print queue by exact name. Unlike enumerating all
+ * queues with `Get-Printer`, scoping by `-Name` avoids the multi-second (or
+ * multi-minute) stalls Windows incurs while querying the live status of every
+ * offline / network / RDP-redirected printer on the machine.
+ *
+ * @param {string} name
+ * @returns {Promise<{ name: string, driverName: string, portName: string, status: string, isDefault: boolean } | null>}
  */
-export function printRawViaPowerShell(buffer, printerName) {
-  if (process.platform !== "win32") {
-    return Promise.resolve({ ok: false, error: "PowerShell printing only supported on Windows" });
-  }
+export async function getWindowsPrinterByName(name) {
+  if (process.platform !== "win32") return null;
+  const target = String(name || "").trim();
+  if (!target) return null;
 
-  return new Promise((resolve) => {
-    const child = spawn(
+  try {
+    // A non-matching `-Name` makes Get-Printer raise a terminating error and
+    // exit non-zero; catch it and exit 0 so a simply-absent queue returns empty
+    // output rather than a logged failure on every reconnect attempt. Real
+    // failures (timeout, missing cmdlet) still surface via the JS catch below.
+    const script =
+      "try { " +
+      "$p = Get-Printer -Name $env:SOKA_PRINTER_NAME -ErrorAction Stop; " +
+      "$p | Select-Object Name, DriverName, PortName, PrinterStatus | " +
+      "ConvertTo-Json -Compress " +
+      "} catch { } exit 0";
+    const { stdout } = await execFileAsync(
       "powershell.exe",
-      ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", RAW_PRINT_SCRIPT],
+      ["-NoProfile", "-Command", script],
       {
+        timeout: 8000,
         windowsHide: true,
-        env: { ...process.env, SOKA_PRINTER_NAME: printerName },
+        env: { ...process.env, SOKA_PRINTER_NAME: target },
       },
     );
 
-    let stdout = "";
-    let stderr = "";
-    let settled = false;
-    const settle = (value) => {
-      if (settled) return;
-      settled = true;
-      resolve(value);
+    const trimmed = String(stdout || "").trim();
+    if (!trimmed) return null;
+
+    const parsed = JSON.parse(trimmed);
+    const row = Array.isArray(parsed) ? parsed[0] : parsed;
+    if (!row || !row.Name) return null;
+
+    return {
+      name: String(row.Name).trim(),
+      driverName: String(row.DriverName || "").trim(),
+      portName: String(row.PortName || "").trim(),
+      status: String(row.PrinterStatus ?? "").trim(),
+      isDefault: false,
     };
-
-    child.stdout.on("data", (chunk) => (stdout += chunk.toString()));
-    child.stderr.on("data", (chunk) => (stderr += chunk.toString()));
-    child.on("error", (err) =>
-      settle({ ok: false, error: err?.message || "powershell spawn failed" }),
-    );
-    child.on("close", (code) => {
-      if (code === 0) {
-        const match = /written=(\d+)/.exec(stdout);
-        settle({ ok: true, bytesWritten: match ? Number(match[1]) : buffer.length });
-      } else {
-        settle({
-          ok: false,
-          error: (stderr || stdout || `powershell exit ${code}`).trim(),
-        });
-      }
+  } catch (error) {
+    log("warn", "powershell_printer_lookup_failed", {
+      printer: target,
+      error: error?.message || "Failed to look up printer via PowerShell",
     });
-
-    child.stdin.end(buffer);
-  });
+    return null;
+  }
 }
 
 /**
@@ -4826,7 +5629,7 @@ export const PROTOCOL_VERSION = "1";
   }
 }
 ```
-### `printer-service/dist/config.json`
+### `printer-service/config.json`
 
 ```json
 {

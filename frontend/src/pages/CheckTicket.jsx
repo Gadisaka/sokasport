@@ -76,8 +76,7 @@ function CheckTicket() {
             </p>
             <p className="mb-4 text-center text-[11px] leading-relaxed text-[rgba(255,255,255,0.5)]">
               Enter the coupon number from your slip. This shows the selections
-              linked to that code. Stake and payout follow your receipt when the
-              bet is paid or printed.
+              and whether the ticket is lost, won, or paid a bonus.
             </p>
             <div className="flex gap-2">
               <input

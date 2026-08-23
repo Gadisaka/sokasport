@@ -222,9 +222,10 @@ export async function payoutTicketCashback(req, res) {
           },
         });
 
+        const paidAt = new Date();
         const { count } = await tx.ticket.updateMany({
           where: { id: ticket.id, status: "LOST" },
-          data: { status: "CASHBACK_PAID" },
+          data: { status: "CASHBACK_PAID", paid_at: paidAt },
         });
         if (count === 0) {
           throw Object.assign(new Error("STATUS_CONFLICT"), {
@@ -233,7 +234,7 @@ export async function payoutTicketCashback(req, res) {
         }
 
         return {
-          paidTicket: { ...fresh, status: "CASHBACK_PAID" },
+          paidTicket: { ...fresh, status: "CASHBACK_PAID", paid_at: paidAt },
           walletBalance: balanceAfter,
           quote,
           amount,

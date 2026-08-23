@@ -50,6 +50,11 @@ import {
   couponLookupCandidates,
   normalizeCouponLookupInput,
 } from "../lib/couponNumber.js";
+import { resolvePublicTicketOutcome } from "../lib/publicTicketOutcome.js";
+import {
+  ticketListDateField,
+  ticketListOrderBy,
+} from "../lib/ticketPayday.js";
 
 const LIVE_ACCEPTANCE_DELAY_MS = Math.max(
   0,
@@ -590,6 +595,7 @@ function mapTicket(ticket, { printed = false } = {}) {
     netPayout: taxBreakdown.netPayout,
     status: ticket.status,
     createdAt: ticket.created_at,
+    paidAt: ticket.paid_at ?? null,
     printed,
     selections:
       normalSelections.length > 0 ? normalSelections : snapshotSelections,
@@ -604,7 +610,7 @@ function toIsoOrNull(value) {
 }
 
 /** Public sportsbook coupon lookup — no cashier/player PII. */
-function mapPublicCouponPayload(ticket) {
+async function mapPublicCouponPayload(ticket) {
   const snapshot = Array.isArray(ticket.selection_snapshot)
     ? ticket.selection_snapshot
     : [];
@@ -688,6 +694,10 @@ function mapPublicCouponPayload(ticket) {
         });
 
   const taxBreakdown = ticketWinningsTaxBreakdown(ticket);
+  const { outcome, outcomeAmount } = await resolvePublicTicketOutcome(
+    prisma,
+    ticket,
+  );
 
   return {
     couponNumber: ticket.coupon_number,
@@ -700,6 +710,8 @@ function mapPublicCouponPayload(ticket) {
     winningsTaxRate: ticket.winnings_tax_rate ?? null,
     winningsTaxAmount: taxBreakdown.taxAmount,
     netPayout: taxBreakdown.netPayout,
+    outcome,
+    outcomeAmount,
     selections: selectionLegs,
   };
 }
@@ -746,7 +758,7 @@ export async function getPublicCouponTicket(req, res) {
       });
     }
 
-    return res.json(mapPublicCouponPayload(ticket));
+    return res.json(await mapPublicCouponPayload(ticket));
   } catch (error) {
     console.error("getPublicCouponTicket error:", error);
     return res.status(500).json({ message: "Failed to load ticket" });
@@ -782,7 +794,7 @@ export async function getPublicReceiptTicket(req, res) {
       });
     }
 
-    return res.json(mapPublicCouponPayload(ticket));
+    return res.json(await mapPublicCouponPayload(ticket));
   } catch (error) {
     console.error("getPublicReceiptTicket error:", error);
     return res.status(500).json({ message: "Failed to load ticket" });
@@ -1900,7 +1912,8 @@ export async function createPrebookTicket(req, res) {
 /**
  * GET /api/tickets
  * Query filters: couponNumber, receiptId (ticket id), status, cashierId,
- * branchName, branchLocation, date (YYYY-MM-DD), page, limit
+ * branchName, branchLocation, date (YYYY-MM-DD), page, limit.
+ * date + PAID/CASHBACK_PAID filters by paid_at; other statuses use created_at.
  */
 export async function listTickets(req, res) {
   try {
@@ -1991,13 +2004,14 @@ export async function listTickets(req, res) {
       if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
         return res.status(400).json({ message: "Invalid date filter" });
       }
-      where.created_at = { gte: start, lte: end };
+      const dateField = ticketListDateField(status);
+      where[dateField] = { gte: start, lte: end };
     }
 
     const [items, total] = await Promise.all([
       prisma.ticket.findMany({
         where,
-        orderBy: { created_at: "desc" },
+        orderBy: ticketListOrderBy(status),
         skip,
         take: limit,
       }),
@@ -2558,9 +2572,10 @@ export async function payoutTicket(req, res) {
           },
         });
 
+        const paidAt = new Date();
         const { count } = await tx.ticket.updateMany({
           where: { id: ticket.id, status: "WON" },
-          data: { status: "PAID" },
+          data: { status: "PAID", paid_at: paidAt },
         });
         if (count === 0) {
           throw Object.assign(new Error("STATUS_CONFLICT"), {
@@ -2569,7 +2584,7 @@ export async function payoutTicket(req, res) {
         }
 
         return {
-          paidTicket: { ...ticket, status: "PAID" },
+          paidTicket: { ...ticket, status: "PAID", paid_at: paidAt },
           walletBalance: balanceAfter,
         };
       });
@@ -2728,6 +2743,67 @@ async function mappedTicketForPrint(ticketId) {
     : undefined;
 }
 
+/**
+ * Persist accepted live odds/version onto the ticket so thermal print and
+ * confirm-print use the same values the cashier just accepted.
+ */
+async function applyAcceptedPrintOdds(ticket, validated) {
+  if (!ticket || !validated) return;
+  const snapshotSelections = Array.isArray(ticket.selection_snapshot)
+    ? ticket.selection_snapshot
+    : [];
+  const resolvedByIndex = new Map(
+    (validated.resolved || []).map((row) => [row.index, row]),
+  );
+  const nextSnapshot = snapshotSelections.map((entry, index) => {
+    const row = resolvedByIndex.get(index);
+    return row && Number.isFinite(row.serverOdds)
+      ? {
+          ...entry,
+          odds: Number(row.serverOdds),
+          serverMarketVersion: Number(row.serverMarketVersion || 0),
+          marketState: row.marketState || "OPEN",
+        }
+      : entry;
+  });
+  const limits = await resolveBettingLimits(prisma);
+  const accPct = Number(ticket.accumulator_bonus_percent) || 0;
+  const nextTotalOdds = Number(validated.totalOdds || ticket.total_odds || 0);
+  const nextPotentialWin = capGrossPotentialWin(
+    limits,
+    Number(
+      (
+        Number(ticket.stake) *
+        nextTotalOdds *
+        (1 + accPct / 100)
+      ).toFixed(2),
+    ),
+  );
+  await prisma.ticket.update({
+    where: { id: ticket.id },
+    data: {
+      total_odds: nextTotalOdds,
+      potential_win: nextPotentialWin,
+      selection_snapshot: nextSnapshot,
+    },
+  });
+  for (let index = 0; index < (ticket.selections || []).length; index++) {
+    const row = ticket.selections[index];
+    const resolved = resolvedByIndex.get(index);
+    if (!resolved || !Number.isFinite(resolved.serverOdds)) continue;
+    await prisma.ticketSelection.update({
+      where: { id: row.id },
+      data: {
+        odds: Number(resolved.serverOdds),
+        server_odds: Number(resolved.serverOdds),
+        server_odds_at: new Date(),
+        market_state: resolved.marketState || "OPEN",
+        server_market_version: Number(resolved.serverMarketVersion || 0),
+      },
+    });
+  }
+}
+
 async function respondPrintWalletError(req, res, error) {
   if (error?.code === "wallet_busy" || error?.message === "WALLET_BUSY") {
     await logPlacementValidation({
@@ -2823,6 +2899,10 @@ export async function preparePrintTicket(req, res) {
         meta: validation.logMeta || {},
       });
       return res.status(validation.statusCode).json(validation.body);
+    }
+
+    if (acceptOddsChanges && validation.validated) {
+      await applyAcceptedPrintOdds(ticket, validation.validated);
     }
 
     const hold = await perfSpan(req.id, "print.prepare.holdFloat", () =>
@@ -3038,62 +3118,7 @@ export async function confirmPrintTicket(req, res) {
     }
 
     if (acceptOddsChanges && validation.validated) {
-      const validated = validation.validated;
-      const snapshotSelections = Array.isArray(ticket.selection_snapshot)
-        ? ticket.selection_snapshot
-        : [];
-      const resolvedByIndex = new Map(
-        (validated.resolved || []).map((row) => [row.index, row]),
-      );
-      const nextSnapshot = snapshotSelections.map((entry, index) => {
-        const row = resolvedByIndex.get(index);
-        return row && Number.isFinite(row.serverOdds)
-          ? {
-              ...entry,
-              odds: Number(row.serverOdds),
-              serverMarketVersion: Number(row.serverMarketVersion || 0),
-              marketState: row.marketState || "OPEN",
-            }
-          : entry;
-      });
-      const limits = await resolveBettingLimits(prisma);
-      const accPct = Number(ticket.accumulator_bonus_percent) || 0;
-      const nextTotalOdds = Number(
-        validated.totalOdds || ticket.total_odds || 0,
-      );
-      const nextPotentialWin = capGrossPotentialWin(
-        limits,
-        Number(
-          (
-            Number(ticket.stake) *
-            nextTotalOdds *
-            (1 + accPct / 100)
-          ).toFixed(2),
-        ),
-      );
-      await prisma.ticket.update({
-        where: { id: ticket.id },
-        data: {
-          total_odds: nextTotalOdds,
-          potential_win: nextPotentialWin,
-          selection_snapshot: nextSnapshot,
-        },
-      });
-      for (let index = 0; index < (ticket.selections || []).length; index++) {
-        const row = ticket.selections[index];
-        const resolved = resolvedByIndex.get(index);
-        if (!resolved || !Number.isFinite(resolved.serverOdds)) continue;
-        await prisma.ticketSelection.update({
-          where: { id: row.id },
-          data: {
-            odds: Number(resolved.serverOdds),
-            server_odds: Number(resolved.serverOdds),
-            server_odds_at: new Date(),
-            market_state: resolved.marketState || "OPEN",
-            server_market_version: Number(resolved.serverMarketVersion || 0),
-          },
-        });
-      }
+      await applyAcceptedPrintOdds(ticket, validation.validated);
     }
 
     const result = await withWalletLock(cashier.wallet_id, {}, async () =>

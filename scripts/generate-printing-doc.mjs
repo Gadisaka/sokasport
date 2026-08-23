@@ -306,7 +306,7 @@ const printerFiles = [
   "printer-service/logger.js",
   "printer-service/version.js",
   "printer-service/package.json",
-  "printer-service/dist/config.json",
+  "printer-service/config.json",
   "printer-service/install/install.ps1",
   "printer-service/scripts/build-exe.mjs",
 ];

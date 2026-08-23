@@ -1,4 +1,10 @@
 import { prisma } from "../Config/db.js";
+import {
+  applyAgentPaydayTicket,
+  applyAgentSaleTicket,
+  emptyAgentBranchRow,
+  emptyAgentCashierRow,
+} from "../lib/ticketPayday.js";
 
 function parseDateYmd(value) {
   if (!value) return null;
@@ -440,19 +446,34 @@ export async function getAgentReports(req, res) {
       .map((cashier) => cashier.id);
 
     const ticketCashierIds = branchName ? scopedCashierIds : cashierIds;
-    const tickets = await prisma.ticket.findMany({
-      where: {
-        cashier_id: { in: ticketCashierIds },
-        created_at: { gte: start, lte: end },
-      },
-      select: {
-        id: true,
-        cashier_id: true,
-        branch_name: true,
-        stake: true,
-        status: true,
-      },
-    });
+    const [tickets, paidTickets] = await Promise.all([
+      prisma.ticket.findMany({
+        where: {
+          cashier_id: { in: ticketCashierIds },
+          created_at: { gte: start, lte: end },
+        },
+        select: {
+          id: true,
+          cashier_id: true,
+          branch_name: true,
+          stake: true,
+          status: true,
+        },
+      }),
+      prisma.ticket.findMany({
+        where: {
+          cashier_id: { in: ticketCashierIds },
+          paid_at: { gte: start, lte: end },
+          status: "PAID",
+        },
+        select: {
+          id: true,
+          cashier_id: true,
+          branch_name: true,
+          status: true,
+        },
+      }),
+    ]);
 
     const cashierNameById = new Map(
       cashiers.map((cashier) => [cashier.id, cashier.user?.fullname || "Cashier"]),
@@ -460,43 +481,31 @@ export async function getAgentReports(req, res) {
     const branchMap = new Map();
     const cashierMap = new Map();
 
-    for (const ticket of tickets) {
+    const ensureAgentRows = (ticket) => {
       const branchKey = ticket.branch_name || "Unknown";
-      const branchRow = branchMap.get(branchKey) || {
-        branchName: branchKey,
-        tickets: 0,
-        stake: 0,
-        open: 0,
-        won: 0,
-        lost: 0,
-        paid: 0,
-      };
-      branchRow.tickets += 1;
-      branchRow.stake += Number(ticket.stake || 0);
-      if (isUnsettledTicketStatus(ticket.status)) branchRow.open += 1;
-      if (ticket.status === "WON") branchRow.won += 1;
-      if (ticket.status === "LOST") branchRow.lost += 1;
-      if (ticket.status === "PAID") branchRow.paid += 1;
+      const branchRow =
+        branchMap.get(branchKey) || emptyAgentBranchRow(branchKey);
       branchMap.set(branchKey, branchRow);
 
       const cashierKey = ticket.cashier_id || "unknown";
-      const cashierRow = cashierMap.get(cashierKey) || {
-        cashierProfileId: cashierKey,
-        cashierName: cashierNameById.get(cashierKey) || "Cashier",
-        tickets: 0,
-        stake: 0,
-        open: 0,
-        won: 0,
-        lost: 0,
-        paid: 0,
-      };
-      cashierRow.tickets += 1;
-      cashierRow.stake += Number(ticket.stake || 0);
-      if (isUnsettledTicketStatus(ticket.status)) cashierRow.open += 1;
-      if (ticket.status === "WON") cashierRow.won += 1;
-      if (ticket.status === "LOST") cashierRow.lost += 1;
-      if (ticket.status === "PAID") cashierRow.paid += 1;
+      const cashierRow =
+        cashierMap.get(cashierKey) ||
+        emptyAgentCashierRow(
+          cashierKey,
+          cashierNameById.get(cashierKey) || "Cashier",
+        );
       cashierMap.set(cashierKey, cashierRow);
+      return { branchRow, cashierRow };
+    };
+
+    for (const ticket of tickets) {
+      const { branchRow, cashierRow } = ensureAgentRows(ticket);
+      applyAgentSaleTicket(ticket, branchRow, cashierRow);
+    }
+
+    for (const ticket of paidTickets) {
+      const { branchRow, cashierRow } = ensureAgentRows(ticket);
+      applyAgentPaydayTicket(ticket, branchRow, cashierRow);
     }
 
     const totalStake = tickets.reduce(
@@ -518,7 +527,7 @@ export async function getAgentReports(req, res) {
         ).length,
         wonTickets: tickets.filter((ticket) => ticket.status === "WON").length,
         lostTickets: tickets.filter((ticket) => ticket.status === "LOST").length,
-        paidTickets: tickets.filter((ticket) => ticket.status === "PAID").length,
+        paidTickets: paidTickets.length,
       },
       byBranch: [...branchMap.values()].sort((a, b) =>
         a.branchName.localeCompare(b.branchName),
