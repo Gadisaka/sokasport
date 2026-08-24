@@ -199,6 +199,7 @@ async function main() {
         module: "TICKETS",
         entityType: "TICKET",
         entityId: ticketId,
+        actorRole: "SYSTEM",
         before: { status: ticket.status, credited, owed },
         after: { status: "LOST", delta, reason: ev.reason },
         meta: {
@@ -207,6 +208,11 @@ async function main() {
           creditRef: credit.reference,
           reversalRef,
         },
+      }).catch((auditErr) => {
+        console.error(
+          `[cashback-reverse] audit failed ticket=${ticketId}:`,
+          auditErr?.message || auditErr,
+        );
       });
 
       summary.reversed++;

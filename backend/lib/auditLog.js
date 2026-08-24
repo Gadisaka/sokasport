@@ -1,14 +1,22 @@
 import { prisma } from "../Config/db.js";
 
 function buildRequestMeta(req) {
+  if (!req) {
+    return {
+      ip: null,
+      userAgent: null,
+      method: null,
+      path: null,
+    };
+  }
   return {
     ip:
-      req.headers["x-forwarded-for"]?.split(",")[0]?.trim() ||
+      req.headers?.["x-forwarded-for"]?.split(",")[0]?.trim() ||
       req.socket?.remoteAddress ||
       null,
-    userAgent: req.headers["user-agent"] || null,
-    method: req.method,
-    path: req.originalUrl,
+    userAgent: req.headers?.["user-agent"] || null,
+    method: req.method ?? null,
+    path: req.originalUrl ?? null,
   };
 }
 
