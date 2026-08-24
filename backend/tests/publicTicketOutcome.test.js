@@ -165,6 +165,39 @@ test("CASHBACK_PAID uses cashier payout ledger", async () => {
   assert.deepEqual(result, { outcome: "bonus", outcomeAmount: 150 });
 });
 
+test("reversed cashback ledger is lost, not bonus", async () => {
+  const lostAfterReversal = await resolvePublicTicketOutcome(
+    makeDb({
+      ledger: {
+        "cashback-payout:tk-1": { amount: 200 },
+        "cashback-reversal:tk-1": { amount: 200 },
+      },
+    }),
+    {
+      id: "tk-1",
+      status: "LOST",
+      stake: 20,
+      total_odds: 500,
+      created_at: new Date(),
+    },
+  );
+  assert.deepEqual(lostAfterReversal, { outcome: "lost", outcomeAmount: null });
+
+  const paidAfterReversal = await resolvePublicTicketOutcome(
+    makeDb({
+      ledger: {
+        "cashback-payout:tk-1": { amount: 200 },
+        "cashback-reversal:tk-1": { amount: 200 },
+      },
+    }),
+    {
+      id: "tk-1",
+      status: "CASHBACK_PAID",
+    },
+  );
+  assert.deepEqual(paidAfterReversal, { outcome: "lost", outcomeAmount: null });
+});
+
 test("LOST eligible unpaid cashback is bonus (quoted amount)", async () => {
   const result = await resolvePublicTicketOutcome(
     makeDb({

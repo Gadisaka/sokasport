@@ -110,3 +110,5 @@ node backend/scripts/reverseWrongCashback.js --apply  # write
 ```
 
 Each reversal writes a `BET` row `cashback-reversal:<ticketId>` (burns non-withdrawable funds first) and returns cashier tickets from `CASHBACK_PAID` to `LOST`. Tickets whose wallet cannot cover the debit are listed as needs-manual instead of going negative.
+
+Check-coupon / public outcome nets `cashback-reversal:` against the original credit. A fully clawed-back slip shows **Lost**, not Bonus, even though the original `cashback-payout:` / `bonus:cashback:` row is kept for audit.

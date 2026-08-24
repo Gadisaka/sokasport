@@ -6,6 +6,7 @@
 import {
   cashbackBonusRef,
   cashbackPayoutRef,
+  cashbackReversalRef,
 } from "./bonusEngine.js";
 import { ticketWinningsTaxBreakdown } from "./winningsTax.js";
 import { buildCashbackQuote } from "../services/cashbackPayoutService.js";
@@ -21,16 +22,29 @@ const CANCELLED_STATUSES = new Set(["CANCELED", "CASHED_OUT"]);
  */
 export async function findCashbackLedgerAmount(db, ticketId) {
   if (!ticketId) return null;
+  const reversal = await db.transaction.findFirst({
+    where: { reference: cashbackReversalRef(ticketId) },
+    select: { amount: true },
+  });
+  const reversed = Number(reversal?.amount);
+  const reversedAmt = Number.isFinite(reversed) && reversed > 0 ? reversed : 0;
+
   const refs = [cashbackBonusRef(ticketId), cashbackPayoutRef(ticketId)];
+  let credited = 0;
   for (const reference of refs) {
     const row = await db.transaction.findFirst({
       where: { reference },
       select: { amount: true },
     });
     const amount = Number(row?.amount);
-    if (Number.isFinite(amount) && amount > 0) return amount;
+    if (Number.isFinite(amount) && amount > 0) {
+      credited = amount;
+      break;
+    }
   }
-  return null;
+  const net = credited - reversedAmt;
+  if (!(net > 0)) return null;
+  return net;
 }
 
 /**
@@ -64,7 +78,10 @@ export async function resolvePublicTicketOutcome(db, ticket, opts = {}) {
 
   if (status === "CASHBACK_PAID") {
     const credited = await findCashbackLedgerAmount(db, ticket.id);
-    return { outcome: "bonus", outcomeAmount: credited };
+    if (credited != null) {
+      return { outcome: "bonus", outcomeAmount: credited };
+    }
+    return { outcome: "lost", outcomeAmount: null };
   }
 
   if (status === "LOST") {
