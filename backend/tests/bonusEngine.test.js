@@ -676,3 +676,46 @@ test("computeCashbackAmount uses v3 profiles when present", () => {
   );
   assert.equal(amount, 20);
 });
+
+test("v3 gate: pending legs block cashback until every match finishes", () => {
+  const sels = profileSelections({ count: 5, lostOdds: 2.3, wonOdds: 1.5 });
+  sels[0].result = "PENDING";
+  const ev = evaluateCashback({
+    ticket: { user_id: "u1", stake: 10, total_odds: 96, created_at: new Date() },
+    selections: sels,
+    bonus: profileBonus(),
+    isOnline: true,
+  });
+  assert.equal(ev.eligible, false);
+  assert.equal(ev.reason, "pending_legs");
+});
+
+test("v3 gate: VOID legs count as resolved", () => {
+  const sels = profileSelections({ count: 5, lostOdds: 2.3, wonOdds: 1.5 });
+  sels[0].result = "VOID";
+  const ev = evaluateCashback({
+    ticket: { user_id: "u1", stake: 10, total_odds: 96, created_at: new Date() },
+    selections: sels,
+    bonus: profileBonus(),
+    isOnline: true,
+  });
+  assert.equal(ev.eligible, true);
+  assert.equal(ev.profileKey, "oneLoss");
+});
+
+test("legacy flat cashback is 0 when supplied selections still have a pending leg", () => {
+  const bonus = {
+    type: "CASHBACK",
+    status: true,
+    percentage: 0,
+    rules: { minTotalOdds: 2, percentOfStake: 5 },
+  };
+  const ticket = { user_id: "u1", stake: 100, total_odds: 3 };
+  assert.equal(computeCashbackAmount(ticket, bonus), 5);
+  assert.equal(
+    computeCashbackAmount(ticket, bonus, {
+      selections: [{ result: "LOST", odds: 3 }, { result: "PENDING", odds: 2 }],
+    }),
+    0,
+  );
+});

@@ -267,3 +267,26 @@ test("buildCashbackQuote: v3 public path treats missing print tx as online", asy
   assert.equal(quote.amount, 20);
   assert.equal(quote.profileKey, "oneLoss");
 });
+
+test("buildCashbackQuote: denies while a leg is still pending", async () => {
+  const sels = lostSelections(5, 2);
+  sels[0].result = "PENDING";
+  const quote = await buildCashbackQuote(
+    makeDb({
+      bonus: v3Bonus,
+      selections: sels,
+      printTx: true,
+    }),
+    {
+      id: "tk-1",
+      status: "LOST",
+      user_id: null,
+      stake: 20,
+      total_odds: 80,
+      created_at: new Date(),
+    },
+  );
+  assert.equal(quote.allowed, false);
+  assert.equal(quote.reasonCode, "pending_legs");
+  assert.equal(quote.amount, 0);
+});

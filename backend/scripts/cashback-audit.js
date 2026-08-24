@@ -53,8 +53,12 @@ for (const t of tickets) {
 
   if (!sels.length) { bump(kind + ":no_selections"); continue; }
 
-  const pending = sels.filter((s) => s.result === "PENDING").length;
-  if (pending) pendingLegCases++;
+  const pending = sels.filter((s) => !["WON", "LOST", "VOID"].includes(String(s.result || "").toUpperCase())).length;
+  if (pending) {
+    pendingLegCases++;
+    bump(kind + ":pending_legs");
+    continue;
+  }
 
   const lost = sels.filter((s) => s.result === "LOST" && Number(s.odds) > 0);
   if (!lost.length) { bump(kind + ":no_lost_leg"); continue; }

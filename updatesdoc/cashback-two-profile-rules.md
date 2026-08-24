@@ -1,7 +1,7 @@
 # Cashback two-profile rules (v3)
 
 **Status:** Implemented  
-**Last reviewed:** 2026-08-23
+**Last reviewed:** 2026-08-24
 
 ---
 
@@ -66,6 +66,7 @@ Customers are eligible for cashback on a **LOST** ticket under one of two tracks
 - The 2-loss table has no band for `60`. `pickCashbackTier` rounds down to the band fully reached (e.g. 60.4 pays the 46–59 multiplier).
 - `minLegs` is inclusive (`>=`). This is deliberately different from the v2 `minSelections` field, which meant strictly greater than.
 - `maxHours` is measured from `ticket.created_at` to settlement (online) or claim scan (cashier).
+- **Every leg must be resolved** (`WON` / `LOST` / `VOID`) before cashback is evaluated. A ticket that is already `LOST` because one leg lost, but still has pending matches, is denied with `pending_legs`. Online settlement retries on each later grade; cashier quotes re-check at scan time. A stuck pending leg means no cashback, and the 48-hour window can expire.
 
 ---
 
@@ -92,3 +93,20 @@ node backend/scripts/setCashbackProfiles.js
 Or open **Settings → Cashback**, confirm the two profiles, and save. Then toggle **Active** when ready.
 
 Fresh seeds already store the v3 shape with `status: false`.
+
+---
+
+## Remediation: cashback paid while legs were still pending
+
+Coupon `63926-15026` was paid 200 ETB as a 1-loss cashback because only one of three eventual losses had graded at claim time. The other two lost ~3 hours later.
+
+After this gate, that slip would be denied (`too_many_lost_legs`) once all legs finished.
+
+To claw back cashback already paid under the old behavior (cashier `cashback-payout:` and online `bonus:cashback:`), where the correct amount is now lower:
+
+```bash
+node backend/scripts/reverseWrongCashback.js          # dry run
+node backend/scripts/reverseWrongCashback.js --apply  # write
+```
+
+Each reversal writes a `BET` row `cashback-reversal:<ticketId>` (burns non-withdrawable funds first) and returns cashier tickets from `CASHBACK_PAID` to `LOST`. Tickets whose wallet cannot cover the debit are listed as needs-manual instead of going negative.

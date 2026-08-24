@@ -90,6 +90,7 @@ const CASHBACK_REASON_LABELS = {
   too_many_lost_legs: "More than two lost bets — cashback is only for 1 or 2 losses",
   live_leg_excluded: "Live bets are not eligible for online cashback",
   no_matching_profile: "No cashback profile for this number of lost bets",
+  pending_legs: "Some matches on this ticket have not finished yet",
   already_paid: "Cashback already paid",
   ticket_not_lost: "Cashback is only available for lost tickets",
   not_cashier_ticket: "Cashback is only available for printed tickets",

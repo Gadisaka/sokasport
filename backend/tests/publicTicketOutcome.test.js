@@ -184,6 +184,27 @@ test("LOST eligible unpaid cashback is bonus (quoted amount)", async () => {
   assert.equal(result.outcomeAmount, 150);
 });
 
+test("LOST with pending legs is lost, not a prospective bonus", async () => {
+  const sels = lostSelections(10, 1.63);
+  sels[0].result = "PENDING";
+  const result = await resolvePublicTicketOutcome(
+    makeDb({
+      bonus: activeBonus,
+      selections: sels,
+    }),
+    {
+      id: "tk-1",
+      status: "LOST",
+      user_id: "player-1",
+      stake: 30,
+      total_odds: 500.99,
+      created_at: new Date(),
+    },
+  );
+  assert.equal(result.outcome, "lost");
+  assert.equal(result.outcomeAmount, null);
+});
+
 test("VOID and cancelled statuses are not Lost/Won/Bonus", async () => {
   const voided = await resolvePublicTicketOutcome(makeDb(), {
     id: "tk-1",

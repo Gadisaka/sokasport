@@ -622,6 +622,8 @@ test("LOST ticket credits tiered cashback (totalOdds/lostOdds picks tier)", asyn
   seedSelection({ id: "s-l", ticketId: "tk-t", fixtureId: "fx-l", selection: "1", marketCode: "MATCH_WINNER", odds: 2 });
   seedWallet({ id: "w-t", userId: "u-t", balance: 0 });
 
+  await settlement.settleFixture("fx-w1");
+  await settlement.settleFixture("fx-w2");
   const summary = await settlement.settleFixture("fx-l");
   assert.equal(summary.ticketsLost, 1);
 
@@ -630,6 +632,44 @@ test("LOST ticket credits tiered cashback (totalOdds/lostOdds picks tier)", asyn
   assert.equal(bonusTx.reference, "bonus:cashback:tk-t");
   assert.equal(bonusTx.amount, 20); // stake 10 x tier multiplier 2
   assert.equal(store.wallet.get("w-t").balance, 20);
+});
+
+test("LOST ticket does not credit cashback until remaining pending legs grade", async () => {
+  resetStore();
+  const store = getStore();
+  seedTieredCashbackBonus();
+  seedFixture({ id: "fx-dw1", status: "FT", homeScore: 2, awayScore: 0 });
+  seedFixture({ id: "fx-dw2", status: "FT", homeScore: 1, awayScore: 0 });
+  seedFixture({ id: "fx-dl", status: "FT", homeScore: 0, awayScore: 2 });
+  seedTicket({ id: "tk-defer", userId: "u-defer", stake: 10, totalOdds: 80 });
+  seedSelection({ id: "def-w1", ticketId: "tk-defer", fixtureId: "fx-dw1", selection: "1", marketCode: "MATCH_WINNER", odds: 4 });
+  seedSelection({ id: "def-w2", ticketId: "tk-defer", fixtureId: "fx-dw2", selection: "1", marketCode: "MATCH_WINNER", odds: 10 });
+  seedSelection({ id: "def-l", ticketId: "tk-defer", fixtureId: "fx-dl", selection: "1", marketCode: "MATCH_WINNER", odds: 2 });
+  seedWallet({ id: "w-defer", userId: "u-defer", balance: 0 });
+
+  const first = await settlement.settleFixture("fx-dl");
+  assert.equal(first.ticketsLost, 1);
+  assert.equal(store.ticket.get("tk-defer").status, "LOST");
+  assert.equal(
+    [...store.transaction.values()].find((t) => t.type === "BONUS"),
+    undefined,
+    "cashback must wait for pending legs",
+  );
+  assert.equal(store.wallet.get("w-defer").balance, 0);
+
+  await settlement.settleFixture("fx-dw1");
+  assert.equal(
+    [...store.transaction.values()].find((t) => t.type === "BONUS"),
+    undefined,
+    "one pending leg still blocks cashback",
+  );
+
+  await settlement.settleFixture("fx-dw2");
+  const bonusTx = [...store.transaction.values()].find((t) => t.type === "BONUS");
+  assert.ok(bonusTx, "cashback credits once every leg is graded");
+  assert.equal(bonusTx.reference, "bonus:cashback:tk-defer");
+  assert.equal(bonusTx.amount, 20);
+  assert.equal(store.wallet.get("w-defer").balance, 20);
 });
 
 test("LOST ticket with a postponed leg is NOT eligible for tiered cashback", async () => {

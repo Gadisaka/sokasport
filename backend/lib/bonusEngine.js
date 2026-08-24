@@ -35,6 +35,8 @@ export function cashbackBonusRef(ticketId) {
 export const DEFAULT_DISQUALIFY_FIXTURE_STATUSES = ["PST", "CANC", "ABD"];
 /** Admin-managed Match statuses that void a ticket's cashback eligibility. */
 export const DEFAULT_DISQUALIFY_MATCH_STATUSES = ["SUSPENDED"];
+/** Legs that count as graded for the all-resolved cashback gate. */
+const RESOLVED_SELECTION_RESULTS = new Set(["WON", "LOST", "VOID"]);
 
 const MS_PER_HOUR = 1000 * 60 * 60;
 
@@ -294,6 +296,15 @@ function ticketHasLiveLeg(ticket, selections) {
   return selections.some((s) => s && s.live_at_placement === true);
 }
 
+function hasPendingLeg(selections) {
+  if (!Array.isArray(selections) || selections.length === 0) return false;
+  return selections.some(
+    (s) =>
+      !s ||
+      !RESOLVED_SELECTION_RESULTS.has(String(s.result ?? "").toUpperCase()),
+  );
+}
+
 function defaultProfileKey(lostLegCount, profile) {
   if (profile?.key) return String(profile.key);
   if (lostLegCount === 1) return "oneLoss";
@@ -475,7 +486,9 @@ function evaluateCashbackV2({
 }
 
 /**
- * Cashback evaluation (pure, no DB).
+ * Cashback evaluation (pure, no DB). A ticket is only evaluated once
+ * every leg is terminal (`WON` / `LOST` / `VOID`); pending legs return
+ * `pending_legs` so settlement / cashier claim can retry later.
  *
  * v3 (`rules.profiles`): pick a profile by lost-leg count, then
  * `result = sold total odds / sum of lost-leg odds`.
@@ -506,6 +519,7 @@ export function evaluateCashback({
   // user_id is required only for online wallet credit (caller-enforced).
   // Cashier-printed slips have no player and are paid at the counter.
   if (!ticket) return cashbackFail("no_ticket");
+  if (hasPendingLeg(selections)) return cashbackFail("pending_legs");
 
   const rules =
     bonus.rules && typeof bonus.rules === "object" ? bonus.rules : {};
@@ -565,6 +579,15 @@ export function computeCashbackAmount(ticket, bonus, context = null) {
   }
 
   // Legacy flat `% of stake` when total odds meet a single minimum.
+  // When the caller supplied legs, still wait until every one is graded.
+  if (
+    Array.isArray(context?.selections) &&
+    context.selections.length > 0 &&
+    hasPendingLeg(context.selections)
+  ) {
+    return 0;
+  }
+
   const minOdds = Number(rules.minTotalOdds ?? 1);
   const pctStake = Number(rules.percentOfStake ?? bonus.percentage ?? 0);
   const totalOdds = Number(ticket.total_odds);
@@ -691,6 +714,11 @@ export async function loadCashbackContext(db, ticketId) {
 /** Ledger reference for cashier cashback payout at the counter. */
 export function cashbackPayoutRef(ticketId) {
   return `cashback-payout:${ticketId}`;
+}
+
+/** Ledger reference for clawing back cashback paid under the old pending-leg bug. */
+export function cashbackReversalRef(ticketId) {
+  return `cashback-reversal:${ticketId}`;
 }
 
 /**

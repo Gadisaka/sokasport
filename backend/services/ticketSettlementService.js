@@ -628,9 +628,10 @@ async function recomputeAndCreditTickets(tx, ticketIds) {
         if (refund.refunded) refundsIssued++;
       }
       if (ticket?.status === "LOST") {
-        // Already LOST on an earlier leg; a now-graded leg may have been
-        // the last pending one. Cashback defers until all legs resolve
-        // (see creditCashbackOnLostTicketInTx) and is idempotent.
+        // Already LOST on an earlier leg. evaluateCashback returns
+        // pending_legs until every selection is WON/LOST/VOID, so this
+        // retry is a no-op until the last pending leg grades. The
+        // bonus:cashback:<id> ledger reference keeps it idempotent.
         await creditCashbackOnLostTicketInTx(tx, ticketId);
       }
       continue;

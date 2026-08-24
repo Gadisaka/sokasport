@@ -32,7 +32,8 @@
     "db:reset-ingestion": "node scripts/resetIngestionData.mjs",
     "db:reset-ingestion-and-sync": "node scripts/resetIngestionData.mjs --sync",
     "settlement:shadow-report": "node scripts/shadowSettlementReport.js",
-    "settlement:backfill-references": "node scripts/backfillReferences.js --apply"
+    "settlement:backfill-references": "node scripts/backfillReferences.js --apply",
+    "cashback:reverse-wrong": "node scripts/reverseWrongCashback.js"
   },
   "keywords": [],
   "author": "",
