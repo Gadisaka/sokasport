@@ -42,11 +42,13 @@ const ALLOWED_PATCH_KEYS = new Set([
   "minSelections",
   "minStake",
   "maxHours",
-  "minResult",
-  "cashbackTiers",
-  "disqualifyFixtureStatuses",
-  "disqualifyMatchStatuses",
-]);
+    "minResult",
+    "cashbackTiers",
+    "cashbackProfiles",
+    "excludeLiveForOnline",
+    "disqualifyFixtureStatuses",
+    "disqualifyMatchStatuses",
+  ]);
 
 const MAX_ACCUMULATOR_TIERS = 5;
 const MAX_CASHBACK_TIERS = 10;
@@ -123,6 +125,73 @@ function validateCashbackTiers(raw) {
     }
   }
   return { tiers };
+}
+
+const MAX_CASHBACK_PROFILES = 2;
+
+/**
+ * Validate + normalize v3 cashback profiles (1-loss / 2-loss).
+ * Returns `{ profiles }` on success or `{ error }`.
+ */
+function validateCashbackProfiles(raw) {
+  if (!Array.isArray(raw)) return { error: "cashbackProfiles must be an array" };
+  if (raw.length < 1 || raw.length > MAX_CASHBACK_PROFILES) {
+    return { error: `cashbackProfiles must contain 1–${MAX_CASHBACK_PROFILES} entries` };
+  }
+
+  const profiles = [];
+  const seenLostLegs = new Set();
+  for (const p of raw) {
+    if (!p || typeof p !== "object") {
+      return { error: "Each cashback profile must be an object" };
+    }
+    const lostLegs = Number(p.lostLegs);
+    if (!Number.isInteger(lostLegs) || lostLegs < 1) {
+      return { error: "profile.lostLegs must be an integer >= 1" };
+    }
+    if (seenLostLegs.has(lostLegs)) {
+      return { error: "profile.lostLegs values must be unique" };
+    }
+    seenLostLegs.add(lostLegs);
+
+    const minLegs = Number(p.minLegs);
+    if (!Number.isInteger(minLegs) || minLegs < 1) {
+      return { error: "profile.minLegs must be an integer >= 1" };
+    }
+    const minLegOdds = Number(p.minLegOdds);
+    if (!Number.isFinite(minLegOdds) || minLegOdds < 1) {
+      return { error: "profile.minLegOdds must be a number >= 1" };
+    }
+    const minStakeOnline = Number(p.minStakeOnline);
+    if (!Number.isFinite(minStakeOnline) || minStakeOnline < 0) {
+      return { error: "profile.minStakeOnline must be a number >= 0" };
+    }
+    const minStakeOffline = Number(p.minStakeOffline);
+    if (!Number.isFinite(minStakeOffline) || minStakeOffline < 0) {
+      return { error: "profile.minStakeOffline must be a number >= 0" };
+    }
+    const minResult = Number(p.minResult);
+    if (!Number.isFinite(minResult) || minResult < 0) {
+      return { error: "profile.minResult must be a number >= 0" };
+    }
+    const { tiers, error } = validateCashbackTiers(p.tiers);
+    if (error) return { error: `profile (lostLegs ${lostLegs}): ${error}` };
+
+    const key =
+      typeof p.key === "string" && p.key.trim() !== "" ? p.key.trim() : null;
+
+    profiles.push({
+      key,
+      lostLegs,
+      minLegs,
+      minLegOdds,
+      minStakeOnline,
+      minStakeOffline,
+      minResult,
+      tiers,
+    });
+  }
+  return { profiles };
 }
 
 /** Validate a list of uppercase status codes (e.g. ["PST","CANC"]). */
@@ -271,6 +340,16 @@ function buildSafeUpdateData(existing, body) {
       const { tiers, error } = validateCashbackTiers(body.cashbackTiers);
       if (error) return { error };
       base.tiers = tiers;
+      touched = true;
+    }
+    if (has("cashbackProfiles")) {
+      const { profiles, error } = validateCashbackProfiles(body.cashbackProfiles);
+      if (error) return { error };
+      base.profiles = profiles;
+      touched = true;
+    }
+    if (has("excludeLiveForOnline")) {
+      base.excludeLiveForOnline = Boolean(body.excludeLiveForOnline);
       touched = true;
     }
     if (has("disqualifyFixtureStatuses")) {

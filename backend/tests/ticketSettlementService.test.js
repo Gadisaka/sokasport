@@ -567,19 +567,31 @@ test("LOST player ticket credits cashback when CASHBACK bonus active", async () 
 });
 
 const TIERED_CASHBACK_RULES = {
-  minSelections: 2,
-  minStake: 10,
   maxHours: 0,
-  minResult: 20,
+  excludeLiveForOnline: true,
   disqualifyFixtureStatuses: ["PST", "CANC", "ABD"],
   disqualifyMatchStatuses: ["SUSPENDED"],
-  tiers: [
-    { minResult: 20, maxResult: 44, stakeMultiplier: 1 },
-    { minResult: 45, maxResult: 79, stakeMultiplier: 2 },
-    { minResult: 80, maxResult: 99, stakeMultiplier: 3 },
-    { minResult: 100, maxResult: 199, stakeMultiplier: 4 },
-    { minResult: 200, maxResult: 399, stakeMultiplier: 5 },
-    { minResult: 400, maxResult: null, stakeMultiplier: 10 },
+  profiles: [
+    {
+      key: "oneLoss",
+      lostLegs: 1,
+      minLegs: 3,
+      minLegOdds: 1.01,
+      minStakeOnline: 10,
+      minStakeOffline: 20,
+      minResult: 19,
+      tiers: [
+        { minResult: 19, maxResult: 39, stakeMultiplier: 1 },
+        { minResult: 40, maxResult: 59, stakeMultiplier: 2 },
+        { minResult: 60, maxResult: 89, stakeMultiplier: 3 },
+        { minResult: 90, maxResult: 250, stakeMultiplier: 5 },
+        { minResult: 251, maxResult: 499, stakeMultiplier: 10 },
+        { minResult: 500, maxResult: 999, stakeMultiplier: 20 },
+        { minResult: 1000, maxResult: 1999, stakeMultiplier: 30 },
+        { minResult: 2000, maxResult: 2999, stakeMultiplier: 50 },
+        { minResult: 3000, maxResult: null, stakeMultiplier: 100 },
+      ],
+    },
   ],
 };
 
@@ -600,7 +612,7 @@ test("LOST ticket credits tiered cashback (totalOdds/lostOdds picks tier)", asyn
   const store = getStore();
   seedTieredCashbackBonus();
   // Two home-win legs (4, 10) + one away-win leg (odds 2) that loses.
-  // After recompute total_odds = 4*10*2 = 80; result = 80/2 = 40 -> tier x1.
+  // After recompute total_odds = 4*10*2 = 80; result = 80/2 = 40 -> 1-loss ×2.
   seedFixture({ id: "fx-w1", status: "FT", homeScore: 2, awayScore: 0 });
   seedFixture({ id: "fx-w2", status: "FT", homeScore: 1, awayScore: 0 });
   seedFixture({ id: "fx-l", status: "FT", homeScore: 0, awayScore: 2 });
@@ -616,8 +628,8 @@ test("LOST ticket credits tiered cashback (totalOdds/lostOdds picks tier)", asyn
   const bonusTx = [...store.transaction.values()].find((t) => t.type === "BONUS");
   assert.ok(bonusTx, "expected a BONUS cashback transaction");
   assert.equal(bonusTx.reference, "bonus:cashback:tk-t");
-  assert.equal(bonusTx.amount, 10); // stake 10 x tier multiplier 1
-  assert.equal(store.wallet.get("w-t").balance, 10);
+  assert.equal(bonusTx.amount, 20); // stake 10 x tier multiplier 2
+  assert.equal(store.wallet.get("w-t").balance, 20);
 });
 
 test("LOST ticket with a postponed leg is NOT eligible for tiered cashback", async () => {

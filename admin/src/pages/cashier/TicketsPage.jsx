@@ -71,6 +71,42 @@ function formatCurrency(value) {
   return `${toNumber(value).toLocaleString()} ETB`;
 }
 
+const CASHBACK_REASON_LABELS = {
+  eligible: "Eligible",
+  inactive: "Cashback is turned off",
+  no_ticket: "Ticket not found",
+  no_tiers: "No cashback tiers configured",
+  invalid_stake: "Invalid stake",
+  below_min_stake: "Stake is below the minimum",
+  too_few_selections: "Not enough bets on the ticket",
+  outside_time_window: "Outside the 48-hour claim window",
+  disqualified_selection: "Ticket has a postponed, canceled, or suspended match",
+  no_lost_leg: "No lost bet on this ticket",
+  invalid_total_odds: "Invalid ticket odds",
+  below_min_result: "Loss ratio is below the minimum",
+  no_matching_tier: "No matching cashback tier",
+  non_positive_amount: "Cashback amount is zero",
+  leg_odds_below_min: "A bet on the ticket is below the minimum odds",
+  too_many_lost_legs: "More than two lost bets — cashback is only for 1 or 2 losses",
+  live_leg_excluded: "Live bets are not eligible for online cashback",
+  no_matching_profile: "No cashback profile for this number of lost bets",
+  already_paid: "Cashback already paid",
+  ticket_not_lost: "Cashback is only available for lost tickets",
+  not_cashier_ticket: "Cashback is only available for printed tickets",
+  ticket_not_found: "Ticket not found",
+  not_eligible: "Not eligible for cashback",
+};
+
+const CASHBACK_PROFILE_LABELS = {
+  oneLoss: "1 loss",
+  twoLoss: "2 losses",
+};
+
+function cashbackReasonLabel(code) {
+  if (!code) return "unavailable";
+  return CASHBACK_REASON_LABELS[code] || code;
+}
+
 const PRINT_DRIFT_CODES = new Set(["odds_changed", "market_version_changed"]);
 const MAX_PRINT_DRIFT_RETRIES = 3;
 
@@ -1531,6 +1567,13 @@ export default function CashierTicketsPage() {
                             {formatCurrency(payoutQuote.amount)}
                           </span>
                         </p>
+                        {payoutQuote.profileKey && (
+                          <p className="mt-1 text-[var(--muted)]">
+                            Profile:{" "}
+                            {CASHBACK_PROFILE_LABELS[payoutQuote.profileKey] ||
+                              payoutQuote.profileKey}
+                          </p>
+                        )}
                         {payoutQuote.result != null && (
                           <p className="mt-1 text-[var(--muted)]">
                             Result ratio:{" "}
@@ -1546,7 +1589,7 @@ export default function CashierTicketsPage() {
                         {!payoutQuote.allowed && (
                           <p className="mt-1 text-[var(--danger)]">
                             Not eligible (
-                            {payoutQuote.reasonCode || "unavailable"}).
+                            {cashbackReasonLabel(payoutQuote.reasonCode)}).
                           </p>
                         )}
                       </div>

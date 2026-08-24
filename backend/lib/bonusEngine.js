@@ -240,76 +240,27 @@ function placementTotalOdds(ticket, selections) {
   return product > stored ? product : stored;
 }
 
-/**
- * Tiered cashback evaluation (pure, no DB). Computes eligibility against
- * the configured gates and resolves the payout tier from the ratio
- * `result = total_odds / largestLostLegOdds`.
- *
- * @param {Object} p
- * @param {import("@prisma/client").Ticket} p.ticket — pre-LOST total_odds, stake, created_at
- * @param {Array<{ result?: string, odds?: number }>} [p.selections]
- * @param {Array<string>} [p.fixtureStatuses] — feed statuses for the ticket's fixtures
- * @param {Array<string>} [p.matchStatuses] — admin Match statuses for the ticket's matches
- * @param {import("@prisma/client").Bonus | null} p.bonus
- * @param {Date} [p.now]
- * @returns {{ eligible: boolean, amount: number, reason: string, result: number | null, tier: object | null }}
- */
-export function evaluateCashback({
-  ticket,
-  selections = [],
-  fixtureStatuses = [],
-  matchStatuses = [],
-  bonus,
-  now = new Date(),
-}) {
-  const fail = (reason) => ({
+function cashbackFail(reason, extra = {}) {
+  return {
     eligible: false,
     amount: 0,
     reason,
-    result: null,
-    tier: null,
-  });
+    result: extra.result ?? null,
+    tier: extra.tier ?? null,
+    profileKey: extra.profileKey ?? null,
+  };
+}
 
-  if (!bonus || bonus.type !== "CASHBACK" || !bonus.status) {
-    return fail("inactive");
-  }
-  // user_id is required only for online wallet credit (caller-enforced).
-  // Cashier-printed slips have no player and are paid at the counter.
-  if (!ticket) return fail("no_ticket");
+function outsideCashbackWindow(ticket, now, maxHours) {
+  const hours = Number(maxHours ?? 0);
+  if (!Number.isFinite(hours) || hours <= 0 || !ticket.created_at) return false;
+  const created = new Date(ticket.created_at).getTime();
+  const settledAt = new Date(now).getTime();
+  if (!Number.isFinite(created) || !Number.isFinite(settledAt)) return false;
+  return (settledAt - created) / MS_PER_HOUR > hours;
+}
 
-  const rules =
-    bonus.rules && typeof bonus.rules === "object" ? bonus.rules : {};
-  const tiers = Array.isArray(rules.tiers) ? rules.tiers : [];
-  if (tiers.length === 0) return fail("no_tiers");
-
-  const stake = Number(ticket.stake);
-  if (!Number.isFinite(stake) || stake <= 0) return fail("invalid_stake");
-
-  const minStake = Number(rules.minStake ?? 0);
-  if (Number.isFinite(minStake) && minStake > 0 && stake < minStake) {
-    return fail("below_min_stake");
-  }
-
-  const minSelections = Number(rules.minSelections ?? 0);
-  const selectionCount = Array.isArray(selections) ? selections.length : 0;
-  if (
-    Number.isFinite(minSelections) &&
-    minSelections > 0 &&
-    !(selectionCount > minSelections)
-  ) {
-    return fail("too_few_selections");
-  }
-
-  const maxHours = Number(rules.maxHours ?? 0);
-  if (Number.isFinite(maxHours) && maxHours > 0 && ticket.created_at) {
-    const created = new Date(ticket.created_at).getTime();
-    const settledAt = new Date(now).getTime();
-    if (Number.isFinite(created) && Number.isFinite(settledAt)) {
-      const elapsedHours = (settledAt - created) / MS_PER_HOUR;
-      if (elapsedHours > maxHours) return fail("outside_time_window");
-    }
-  }
-
+function hasDisqualifiedCashbackLeg(rules, fixtureStatuses, matchStatuses) {
   const fixtureDq = Array.isArray(rules.disqualifyFixtureStatuses)
     ? rules.disqualifyFixtureStatuses
     : DEFAULT_DISQUALIFY_FIXTURE_STATUSES;
@@ -324,7 +275,168 @@ export function evaluateCashback({
   const hasDqMatch = matchStatuses.some(
     (s) => s && matchDqSet.has(String(s).toUpperCase()),
   );
-  if (hasDqFixture || hasDqMatch) return fail("disqualified_selection");
+  return hasDqFixture || hasDqMatch;
+}
+
+function collectLostLegs(selections) {
+  const lost = [];
+  for (const sel of selections) {
+    if (!sel) continue;
+    if (String(sel.result ?? "").toUpperCase() !== "LOST") continue;
+    const o = Number(sel.odds);
+    if (Number.isFinite(o) && o > 0) lost.push(o);
+  }
+  return lost;
+}
+
+function ticketHasLiveLeg(ticket, selections) {
+  if (String(ticket?.channel ?? "").toUpperCase() === "LIVE") return true;
+  return selections.some((s) => s && s.live_at_placement === true);
+}
+
+function defaultProfileKey(lostLegCount, profile) {
+  if (profile?.key) return String(profile.key);
+  if (lostLegCount === 1) return "oneLoss";
+  if (lostLegCount === 2) return "twoLoss";
+  return null;
+}
+
+/**
+ * v3: two (or more) loss-count profiles. `result = sold total odds / sum
+ * of lost-leg odds`. `minLegs` is inclusive (>=).
+ */
+function evaluateCashbackProfiles({
+  ticket,
+  selections,
+  fixtureStatuses,
+  matchStatuses,
+  rules,
+  now,
+  isOnline,
+}) {
+  const stake = Number(ticket.stake);
+  if (!Number.isFinite(stake) || stake <= 0) {
+    return cashbackFail("invalid_stake");
+  }
+
+  const lostOdds = collectLostLegs(selections);
+  if (lostOdds.length === 0) return cashbackFail("no_lost_leg");
+
+  const profiles = Array.isArray(rules.profiles) ? rules.profiles : [];
+  const profile = profiles.find((p) => Number(p?.lostLegs) === lostOdds.length);
+  if (!profile) {
+    return cashbackFail(
+      lostOdds.length >= 3 ? "too_many_lost_legs" : "no_matching_profile",
+    );
+  }
+  const profileKey = defaultProfileKey(lostOdds.length, profile);
+  const fail = (reason, extra = {}) =>
+    cashbackFail(reason, { profileKey, ...extra });
+
+  const selectionCount = Array.isArray(selections) ? selections.length : 0;
+  const minLegs = Number(profile.minLegs ?? 0);
+  if (Number.isFinite(minLegs) && minLegs > 0 && selectionCount < minLegs) {
+    return fail("too_few_selections");
+  }
+
+  const minLegOdds = Number(profile.minLegOdds ?? 0);
+  if (Number.isFinite(minLegOdds) && minLegOdds > 0) {
+    const below = selections.some((s) => {
+      if (!s) return true;
+      const o = Number(s.odds);
+      return !Number.isFinite(o) || !(o > minLegOdds);
+    });
+    if (below) return fail("leg_odds_below_min");
+  }
+
+  const minStake = Number(
+    isOnline
+      ? (profile.minStakeOnline ?? 0)
+      : (profile.minStakeOffline ?? 0),
+  );
+  if (Number.isFinite(minStake) && minStake > 0 && stake < minStake) {
+    return fail("below_min_stake");
+  }
+
+  if (outsideCashbackWindow(ticket, now, rules.maxHours)) {
+    return fail("outside_time_window");
+  }
+
+  if (hasDisqualifiedCashbackLeg(rules, fixtureStatuses, matchStatuses)) {
+    return fail("disqualified_selection");
+  }
+
+  const excludeLive = rules.excludeLiveForOnline !== false;
+  if (isOnline && excludeLive && ticketHasLiveLeg(ticket, selections)) {
+    return fail("live_leg_excluded");
+  }
+
+  const lostOddsSum = lostOdds.reduce((acc, o) => acc + o, 0);
+  if (!(lostOddsSum > 0)) return fail("no_lost_leg");
+
+  const totalOdds = placementTotalOdds(ticket, selections);
+  if (!Number.isFinite(totalOdds) || totalOdds <= 0) {
+    return fail("invalid_total_odds");
+  }
+
+  const result = totalOdds / lostOddsSum;
+  const minResult = Number(profile.minResult ?? 0);
+  if (Number.isFinite(minResult) && minResult > 0 && result < minResult) {
+    return fail("below_min_result", { result });
+  }
+
+  const tiers = Array.isArray(profile.tiers) ? profile.tiers : [];
+  if (tiers.length === 0) return fail("no_tiers");
+
+  const tier = pickCashbackTier(result, tiers);
+  if (!tier) return fail("no_matching_tier", { result });
+
+  const amount = roundMoney(stake * tier.stakeMultiplier);
+  if (!(amount > 0)) return fail("non_positive_amount", { result, tier });
+
+  return { eligible: true, amount, reason: "eligible", result, tier, profileKey };
+}
+
+/**
+ * v2 single-track: `result = total_odds / largestLostLegOdds`.
+ * `minSelections` means strictly greater than.
+ */
+function evaluateCashbackV2({
+  ticket,
+  selections,
+  fixtureStatuses,
+  matchStatuses,
+  rules,
+  now,
+}) {
+  const tiers = Array.isArray(rules.tiers) ? rules.tiers : [];
+  if (tiers.length === 0) return cashbackFail("no_tiers");
+
+  const stake = Number(ticket.stake);
+  if (!Number.isFinite(stake) || stake <= 0) return cashbackFail("invalid_stake");
+
+  const minStake = Number(rules.minStake ?? 0);
+  if (Number.isFinite(minStake) && minStake > 0 && stake < minStake) {
+    return cashbackFail("below_min_stake");
+  }
+
+  const minSelections = Number(rules.minSelections ?? 0);
+  const selectionCount = Array.isArray(selections) ? selections.length : 0;
+  if (
+    Number.isFinite(minSelections) &&
+    minSelections > 0 &&
+    !(selectionCount > minSelections)
+  ) {
+    return cashbackFail("too_few_selections");
+  }
+
+  if (outsideCashbackWindow(ticket, now, rules.maxHours)) {
+    return cashbackFail("outside_time_window");
+  }
+
+  if (hasDisqualifiedCashbackLeg(rules, fixtureStatuses, matchStatuses)) {
+    return cashbackFail("disqualified_selection");
+  }
 
   let largestLostOdds = 0;
   for (const sel of selections) {
@@ -333,37 +445,102 @@ export function evaluateCashback({
     const o = Number(sel.odds);
     if (Number.isFinite(o) && o > largestLostOdds) largestLostOdds = o;
   }
-  if (largestLostOdds <= 0) return fail("no_lost_leg");
+  if (largestLostOdds <= 0) return cashbackFail("no_lost_leg");
 
   const totalOdds = placementTotalOdds(ticket, selections);
   if (!Number.isFinite(totalOdds) || totalOdds <= 0) {
-    return fail("invalid_total_odds");
+    return cashbackFail("invalid_total_odds");
   }
 
   const result = totalOdds / largestLostOdds;
   const minResult = Number(rules.minResult ?? 0);
   if (Number.isFinite(minResult) && minResult > 0 && result < minResult) {
-    return fail("below_min_result");
+    return cashbackFail("below_min_result", { result });
   }
 
   const tier = pickCashbackTier(result, tiers);
-  if (!tier) return fail("no_matching_tier");
+  if (!tier) return cashbackFail("no_matching_tier", { result });
 
   const amount = roundMoney(stake * tier.stakeMultiplier);
-  if (!(amount > 0)) return fail("non_positive_amount");
+  if (!(amount > 0)) return cashbackFail("non_positive_amount", { result, tier });
 
-  return { eligible: true, amount, reason: "eligible", result, tier };
+  return {
+    eligible: true,
+    amount,
+    reason: "eligible",
+    result,
+    tier,
+    profileKey: null,
+  };
 }
 
 /**
- * Cashback amount for a LOST ticket. When the bonus uses v2 tiered rules
- * (`rules.tiers` present) the full eligibility + tier evaluation runs and
- * requires `context` (selections, fixture/match statuses, now). Otherwise
+ * Cashback evaluation (pure, no DB).
+ *
+ * v3 (`rules.profiles`): pick a profile by lost-leg count, then
+ * `result = sold total odds / sum of lost-leg odds`.
+ * v2 (`rules.tiers` only): `result = total_odds / largestLostLegOdds`.
+ *
+ * @param {Object} p
+ * @param {import("@prisma/client").Ticket} p.ticket — pre-LOST total_odds, stake, created_at
+ * @param {Array<{ result?: string, odds?: number, live_at_placement?: boolean }>} [p.selections]
+ * @param {Array<string>} [p.fixtureStatuses] — feed statuses for the ticket's fixtures
+ * @param {Array<string>} [p.matchStatuses] — admin Match statuses for the ticket's matches
+ * @param {import("@prisma/client").Bonus | null} p.bonus
+ * @param {Date} [p.now]
+ * @param {boolean} [p.isOnline] — true for player-wallet tickets; false for cashier-printed
+ * @returns {{ eligible: boolean, amount: number, reason: string, result: number | null, tier: object | null, profileKey: string | null }}
+ */
+export function evaluateCashback({
+  ticket,
+  selections = [],
+  fixtureStatuses = [],
+  matchStatuses = [],
+  bonus,
+  now = new Date(),
+  isOnline = false,
+}) {
+  if (!bonus || bonus.type !== "CASHBACK" || !bonus.status) {
+    return cashbackFail("inactive");
+  }
+  // user_id is required only for online wallet credit (caller-enforced).
+  // Cashier-printed slips have no player and are paid at the counter.
+  if (!ticket) return cashbackFail("no_ticket");
+
+  const rules =
+    bonus.rules && typeof bonus.rules === "object" ? bonus.rules : {};
+  const profiles = Array.isArray(rules.profiles) ? rules.profiles : [];
+  if (profiles.length > 0) {
+    return evaluateCashbackProfiles({
+      ticket,
+      selections,
+      fixtureStatuses,
+      matchStatuses,
+      rules,
+      now,
+      isOnline,
+    });
+  }
+
+  return evaluateCashbackV2({
+    ticket,
+    selections,
+    fixtureStatuses,
+    matchStatuses,
+    rules,
+    now,
+  });
+}
+
+/**
+ * Cashback amount for a LOST ticket. When the bonus uses v3 profiles or
+ * v2 tiers the full eligibility + tier evaluation runs and requires
+ * `context` (selections, fixture/match statuses, now, isOnline). Otherwise
  * falls back to the legacy flat `% of stake` model for backward compat.
  *
  * @param {import("@prisma/client").Ticket} ticket — pre-LOST total_odds & stake
  * @param {import("@prisma/client").Bonus | null} bonus
- * @param {{ selections?: Array, fixtureStatuses?: Array<string>, matchStatuses?: Array<string>, now?: Date } | null} [context]
+ * @param {{ selections?: Array, fixtureStatuses?: Array<string>, matchStatuses?: Array<string>, now?: Date, isOnline?: boolean } | null} [context]
  */
 export function computeCashbackAmount(ticket, bonus, context = null) {
   if (!bonus || bonus.type !== "CASHBACK" || !bonus.status) return 0;
@@ -371,9 +548,10 @@ export function computeCashbackAmount(ticket, bonus, context = null) {
 
   const rules =
     bonus.rules && typeof bonus.rules === "object" ? bonus.rules : {};
-  const tiers = Array.isArray(rules.tiers) ? rules.tiers : [];
+  const hasProfiles = Array.isArray(rules.profiles) && rules.profiles.length > 0;
+  const hasTiers = Array.isArray(rules.tiers) && rules.tiers.length > 0;
 
-  if (tiers.length > 0) {
+  if (hasProfiles || hasTiers) {
     const ev = evaluateCashback({
       ticket,
       selections: context?.selections ?? [],
@@ -381,6 +559,7 @@ export function computeCashbackAmount(ticket, bonus, context = null) {
       matchStatuses: context?.matchStatuses ?? [],
       bonus,
       now: context?.now ?? new Date(),
+      isOnline: context?.isOnline ?? true,
     });
     return ev.eligible ? ev.amount : 0;
   }
@@ -547,6 +726,7 @@ export async function creditCashbackOnLostTicketInTx(tx, ticketId) {
     fixtureStatuses,
     matchStatuses,
     now: new Date(),
+    isOnline: true,
   });
   if (amount <= 0) return { credited: false, reason: "not_eligible" };
 

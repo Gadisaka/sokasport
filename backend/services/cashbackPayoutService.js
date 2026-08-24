@@ -50,6 +50,7 @@ export async function hasCashbackPayoutTx(db, ticketId) {
  *   amount: number,
  *   result: number | null,
  *   tier: object | null,
+ *   profileKey: string | null,
  *   reasonCode: string,
  * }>}
  */
@@ -62,6 +63,7 @@ export async function buildCashbackQuote(db, ticket, opts = {}) {
     amount: 0,
     result: null,
     tier: null,
+    profileKey: null,
     reasonCode,
   });
 
@@ -69,10 +71,8 @@ export async function buildCashbackQuote(db, ticket, opts = {}) {
   if (ticket.status === "CASHBACK_PAID") return deny("already_paid");
   if (ticket.status !== "LOST") return deny("ticket_not_lost");
 
-  if (requirePrinted) {
-    const printed = await hasCashierPrintTx(db, ticket.id);
-    if (!printed) return deny("not_cashier_ticket");
-  }
+  const printed = await hasCashierPrintTx(db, ticket.id);
+  if (requirePrinted && !printed) return deny("not_cashier_ticket");
 
   if (await hasCashbackPayoutTx(db, ticket.id)) {
     return deny("already_paid");
@@ -91,6 +91,7 @@ export async function buildCashbackQuote(db, ticket, opts = {}) {
     matchStatuses,
     bonus,
     now,
+    isOnline: !printed,
   });
 
   if (!ev.eligible) {
@@ -99,6 +100,7 @@ export async function buildCashbackQuote(db, ticket, opts = {}) {
       amount: 0,
       result: ev.result,
       tier: ev.tier,
+      profileKey: ev.profileKey ?? null,
       reasonCode: ev.reason || "not_eligible",
     };
   }
@@ -108,6 +110,7 @@ export async function buildCashbackQuote(db, ticket, opts = {}) {
     amount: ev.amount,
     result: ev.result,
     tier: ev.tier,
+    profileKey: ev.profileKey ?? null,
     reasonCode: "eligible",
   };
 }
