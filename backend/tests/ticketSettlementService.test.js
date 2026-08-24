@@ -743,3 +743,55 @@ test("settleFixture force bypasses postponed wait", async () => {
     SELECTION_RESULT.VOID,
   );
 });
+
+test("settleFixture grades and pays across multiple $transaction chunks", async () => {
+  resetStore();
+  seedFixture({ id: "fx-chunk", status: "FT", homeScore: 2, awayScore: 0 });
+  for (let i = 1; i <= 3; i++) {
+    seedTicket({
+      id: `tk-chunk-${i}`,
+      userId: `user-chunk-${i}`,
+      stake: 10,
+      totalOdds: 2,
+    });
+    seedSelection({
+      id: `sel-chunk-${i}`,
+      ticketId: `tk-chunk-${i}`,
+      fixtureId: "fx-chunk",
+      selection: "1",
+      marketCode: "MATCH_WINNER",
+      odds: 2,
+    });
+    seedWallet({ id: `w-chunk-${i}`, userId: `user-chunk-${i}`, balance: 0 });
+  }
+
+  const originalTx = prisma.$transaction.bind(prisma);
+  let txCalls = 0;
+  prisma.$transaction = async (...args) => {
+    txCalls += 1;
+    return originalTx(...args);
+  };
+
+  try {
+    const summary = await settlement.settleFixture("fx-chunk");
+    assert.equal(summary.skipped, undefined);
+    assert.equal(summary.selectionsUpdated, 3);
+    assert.equal(summary.ticketsWon, 3);
+    assert.equal(summary.payoutsCredited, 3);
+    assert.equal(summary.pendingLegsRemaining, 0);
+    assert.equal(summary.gradingCompleted, true);
+    assert.ok(
+      txCalls >= 2,
+      `expected chunked settlement (>=2 transactions), got ${txCalls}`,
+    );
+
+    const store = getStore();
+    assert.ok(store.fixture.get("fx-chunk").grading_completed_at instanceof Date);
+    for (let i = 1; i <= 3; i++) {
+      assert.equal(store.ticket.get(`tk-chunk-${i}`).status, "PAID");
+      assert.equal(store.wallet.get(`w-chunk-${i}`).balance, 20);
+    }
+  } finally {
+    prisma.$transaction = originalTx;
+  }
+});

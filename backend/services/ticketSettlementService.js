@@ -79,6 +79,38 @@ const TERMINAL_TICKET_STATUSES = new Set([
   "CASHBACK_PAID",
 ]);
 
+// Prisma's interactive-transaction default is 5s, which popular fixtures
+// (hundreds of pending legs) blow past — the transaction expires, everything
+// rolls back, and the retry job loops on the same fixture forever. Settlement
+// work is therefore split into bounded chunks, each inside its own
+// transaction with an explicit budget.
+const TX_TIMEOUT_MS = Number(process.env.SETTLEMENT_TX_TIMEOUT_MS || 60_000);
+const TX_MAX_WAIT_MS = Number(process.env.SETTLEMENT_TX_MAX_WAIT_MS || 10_000);
+const SETTLEMENT_TX_OPTIONS = {
+  timeout: TX_TIMEOUT_MS,
+  maxWait: TX_MAX_WAIT_MS,
+};
+// Legs graded per transaction. Grading a leg only depends on the fixture
+// result and is idempotent, so cross-leg atomicity is not required.
+const GRADE_CHUNK_SIZE = Math.max(
+  1,
+  Number(process.env.SETTLEMENT_GRADE_CHUNK || 100),
+);
+// Tickets recomputed/credited per transaction. The ticket-status write and
+// the wallet credit/refund for a given ticket always share one transaction.
+const TICKET_CHUNK_SIZE = Math.max(
+  1,
+  Number(process.env.SETTLEMENT_TICKET_CHUNK || 25),
+);
+
+function chunkArray(items, size) {
+  const out = [];
+  for (let i = 0; i < items.length; i += size) {
+    out.push(items.slice(i, i + size));
+  }
+  return out;
+}
+
 export function isFinalFixtureStatus(status) {
   return FINAL_FIXTURE_STATUSES.has(String(status || "").toUpperCase());
 }
@@ -644,6 +676,25 @@ async function recomputeAndCreditTickets(tx, ticketIds) {
  * its own — the retry job relies on `grading_completed_at` being
  * null when pending legs remain.
  *
+ * The work is deliberately NOT one monolithic transaction: a popular
+ * fixture can carry hundreds of pending legs and a single interactive
+ * transaction expires (default 5s) before the loop finishes, rolling
+ * everything back — the fixture then never settles no matter how often
+ * the retry job re-runs it. Instead:
+ *
+ *   1. Legs are graded in `GRADE_CHUNK_SIZE` batches, each in its own
+ *      transaction. Grading depends only on the (terminal) fixture
+ *      result and skips already-graded legs, so partial progress is
+ *      safe and re-runnable.
+ *   2. Ticket recompute + wallet credit/refund run in
+ *      `TICKET_CHUNK_SIZE` batches. The money-critical invariant —
+ *      ticket status and wallet movement change together — holds
+ *      because both writes for a ticket share one transaction, backed
+ *      by the unique `Transaction.reference` idempotency keys.
+ *   3. `grading_completed_at` is only written once a final count shows
+ *      zero pending legs, so a crash mid-way leaves the fixture
+ *      eligible for the settlement-retry job to finish the remainder.
+ *
  * @param {string} fixtureId
  * @param {{ force?: boolean, resetLegs?: boolean }} options
  *   `force` bypasses the `grading_completed_at` skip gate.
@@ -655,45 +706,41 @@ export async function settleFixture(fixtureId, options = {}) {
   console.log(
     `[settlement] start fixture=${fixtureId} force=${!!options.force}`,
   );
+  const skippedResult = (reason, extra = {}) => {
+    console.log(`[settlement] skipped fixture=${fixtureId} reason=${reason}`);
+    return { skipped: true, reason, ...extra };
+  };
   try {
-    const result = await prisma.$transaction(async (tx) => {
-      const fixture = await tx.fixture.findUnique({
-        where: { id: fixtureId },
+    const fixture = await prisma.fixture.findUnique({
+      where: { id: fixtureId },
+    });
+    if (!fixture) return skippedResult("fixture_not_found");
+
+    if (fixture.grading_completed_at && !options.force) {
+      return skippedResult("already_settled", {
+        settledAt: fixture.grading_completed_at,
       });
-      if (!fixture) return { skipped: true, reason: "fixture_not_found" };
+    }
+    if (!isTerminalFixtureStatus(fixture.status)) {
+      return skippedResult("not_terminal", { status: fixture.status });
+    }
 
-      if (fixture.grading_completed_at && !options.force) {
-        return {
-          skipped: true,
-          reason: "already_settled",
-          settledAt: fixture.grading_completed_at,
-        };
-      }
-      if (!isTerminalFixtureStatus(fixture.status)) {
-        return {
-          skipped: true,
-          reason: "not_terminal",
-          status: fixture.status,
-        };
-      }
+    const postponedWait = evaluatePostponedSettlementWait(fixture, options);
+    if (!postponedWait.ok) {
+      return skippedResult(postponedWait.reason, {
+        waitHoursRemaining: postponedWait.waitHoursRemaining,
+        postponedAt: postponedWait.postponedAt,
+        postponedWaitExpires: postponedWait.postponedWaitExpires,
+      });
+    }
 
-      const postponedWait = evaluatePostponedSettlementWait(fixture, options);
-      if (!postponedWait.ok) {
-        return {
-          skipped: true,
-          reason: postponedWait.reason,
-          waitHoursRemaining: postponedWait.waitHoursRemaining,
-          postponedAt: postponedWait.postponedAt,
-          postponedWaitExpires: postponedWait.postponedWaitExpires,
-        };
-      }
+    const matchResults = {
+      v1: buildV1FixtureMatchResult(fixture),
+      v2: buildMatchResultV2FromFixture(fixture),
+    };
 
-      const matchResults = {
-        v1: buildV1FixtureMatchResult(fixture),
-        v2: buildMatchResultV2FromFixture(fixture),
-      };
-
-      if (options.resetLegs) {
+    if (options.resetLegs) {
+      await prisma.$transaction(async (tx) => {
         await tx.ticketSelection.updateMany({
           where: { fixture_id: fixtureId },
           data: { result: SELECTION_RESULT.PENDING, result_meta: null },
@@ -702,79 +749,96 @@ export async function settleFixture(fixtureId, options = {}) {
           where: { id: fixtureId },
           data: { grading_completed_at: null },
         });
-      }
-
-      const selections = await tx.ticketSelection.findMany({
-        where: { fixture_id: fixtureId },
-      });
-
-      const { ticketIds, updated, pendingAfter } = await gradeSelectionsInTx(
-        tx,
-        selections,
-        matchResults,
-        fixture.market_result_overrides,
-        { kind: "FIXTURE", id: fixtureId },
-      );
-      const {
-        ticketsWon,
-        ticketsLost,
-        ticketsVoided,
-        payoutsCredited,
-        refundsIssued,
-      } = await recomputeAndCreditTickets(tx, ticketIds);
-
-      const remaining = await tx.ticketSelection.count({
-        where: { fixture_id: fixtureId, result: SELECTION_RESULT.PENDING },
-      });
-
-      const updateData = {
-        settled_at: new Date(),
-        settled_status: fixture.status,
-      };
-      if (remaining === 0) updateData.grading_completed_at = new Date();
-
-      await tx.fixture.update({
-        where: { id: fixtureId },
-        data: updateData,
-      });
-
-      return {
-        fixtureId,
-        status: fixture.status,
-        voided: VOID_FIXTURE_STATUSES.has(
-          String(fixture.status || "").toUpperCase(),
-        ),
-        finalized: FINAL_FIXTURE_STATUSES.has(
-          String(fixture.status || "").toUpperCase(),
-        ),
-        selectionsUpdated: updated,
-        pendingLegsRemaining: remaining,
-        gradingCompleted: remaining === 0,
-        ticketsAffected: ticketIds.size,
-        ticketsWon,
-        ticketsLost,
-        ticketsVoided,
-        payoutsCredited,
-        refundsIssued,
-        engine: useV2Engine() ? "v2" : "v1",
-        shadow: useShadow() ? (useV2Engine() ? "v1" : "v2") : null,
-        engineVersion: useV2Engine() ? V2_ENGINE_VERSION : 1,
-      };
-    });
-    if (!result.skipped) {
-      console.log(
-        `[settlement] completed fixture=${fixtureId} status=${result.status} graded=${result.selectionsUpdated} pending=${result.pendingLegsRemaining} won=${result.ticketsWon} lost=${result.ticketsLost} voided=${result.ticketsVoided} payouts=${result.payoutsCredited} refunds=${result.refundsIssued}`,
-      );
-    } else {
-      console.log(
-        `[settlement] skipped fixture=${fixtureId} reason=${result.reason}`,
-      );
+      }, SETTLEMENT_TX_OPTIONS);
     }
+
+    const selections = await prisma.ticketSelection.findMany({
+      where: { fixture_id: fixtureId },
+    });
+
+    // Phase 1: grade legs in bounded chunks, one transaction each.
+    const ticketIds = new Set();
+    let updated = 0;
+    for (const batch of chunkArray(selections, GRADE_CHUNK_SIZE)) {
+      const graded = await prisma.$transaction(
+        (tx) =>
+          gradeSelectionsInTx(
+            tx,
+            batch,
+            matchResults,
+            fixture.market_result_overrides,
+            { kind: "FIXTURE", id: fixtureId },
+          ),
+        SETTLEMENT_TX_OPTIONS,
+      );
+      for (const id of graded.ticketIds) ticketIds.add(id);
+      updated += graded.updated;
+    }
+
+    // Phase 2: recompute tickets + move money, in bounded chunks.
+    let ticketsWon = 0;
+    let ticketsLost = 0;
+    let ticketsVoided = 0;
+    let payoutsCredited = 0;
+    let refundsIssued = 0;
+    for (const batch of chunkArray([...ticketIds], TICKET_CHUNK_SIZE)) {
+      const credited = await prisma.$transaction(
+        (tx) => recomputeAndCreditTickets(tx, batch),
+        SETTLEMENT_TX_OPTIONS,
+      );
+      ticketsWon += credited.ticketsWon;
+      ticketsLost += credited.ticketsLost;
+      ticketsVoided += credited.ticketsVoided;
+      payoutsCredited += credited.payoutsCredited;
+      refundsIssued += credited.refundsIssued;
+    }
+
+    // Phase 3: fixture bookkeeping, gated on a fresh pending count.
+    const remaining = await prisma.ticketSelection.count({
+      where: { fixture_id: fixtureId, result: SELECTION_RESULT.PENDING },
+    });
+
+    const updateData = {
+      settled_at: new Date(),
+      settled_status: fixture.status,
+    };
+    if (remaining === 0) updateData.grading_completed_at = new Date();
+
+    await prisma.fixture.update({
+      where: { id: fixtureId },
+      data: updateData,
+    });
+
+    const result = {
+      fixtureId,
+      status: fixture.status,
+      voided: VOID_FIXTURE_STATUSES.has(
+        String(fixture.status || "").toUpperCase(),
+      ),
+      finalized: FINAL_FIXTURE_STATUSES.has(
+        String(fixture.status || "").toUpperCase(),
+      ),
+      selectionsUpdated: updated,
+      pendingLegsRemaining: remaining,
+      gradingCompleted: remaining === 0,
+      ticketsAffected: ticketIds.size,
+      ticketsWon,
+      ticketsLost,
+      ticketsVoided,
+      payoutsCredited,
+      refundsIssued,
+      engine: useV2Engine() ? "v2" : "v1",
+      shadow: useShadow() ? (useV2Engine() ? "v1" : "v2") : null,
+      engineVersion: useV2Engine() ? V2_ENGINE_VERSION : 1,
+    };
+    console.log(
+      `[settlement] completed fixture=${fixtureId} status=${result.status} graded=${result.selectionsUpdated} pending=${result.pendingLegsRemaining} won=${result.ticketsWon} lost=${result.ticketsLost} voided=${result.ticketsVoided} payouts=${result.payoutsCredited} refunds=${result.refundsIssued}`,
+    );
     return result;
   } catch (err) {
     console.error(
       `[settlement] FAILED fixture=${fixtureId}:`,
-      err?.message || err,
+      err?.message || err?.code || err,
     );
     throw err;
   }
@@ -782,7 +846,10 @@ export async function settleFixture(fixtureId, options = {}) {
 
 /**
  * Settle every selection on an admin-managed Match. Used by the manual
- * override endpoint. Idempotent through `Match.settled_at`.
+ * override endpoint. Idempotent through `Match.settled_at`. Admin
+ * matches carry few legs, so a single transaction is fine — but it
+ * still gets the explicit settlement budget instead of Prisma's 5s
+ * default.
  */
 export async function settleMatch(matchId, resultString, options = {}) {
   if (!matchId) return { skipped: true, reason: "missing_match_id" };
@@ -853,5 +920,5 @@ export async function settleMatch(matchId, resultString, options = {}) {
       engine: useV2Engine() ? "v2" : "v1",
       shadow: useShadow() ? (useV2Engine() ? "v1" : "v2") : null,
     };
-  });
+  }, SETTLEMENT_TX_OPTIONS);
 }
